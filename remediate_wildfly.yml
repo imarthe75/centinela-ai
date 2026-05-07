@@ -1,0 +1,40 @@
+---
+- name: Remediar Vulnerabilidad WildFly (WILDFLY-SEC-2026)
+  hosts: all
+  become: yes
+  tasks:
+    - name: Bloqueo IPv4 (Tabla RAW para máxima prioridad)
+      iptables:
+        table: raw
+        chain: PREROUTING
+        protocol: tcp
+        destination_port: 9990
+        jump: DROP
+        comment: "CASMARTS: Bloqueo RAW IPv4"
+
+    - name: Bloqueo IPv6 (Stack Dual)
+      iptables:
+        ip_version: ipv6
+        chain: INPUT
+        protocol: tcp
+        destination_port: 9990
+        jump: DROP
+        rule_num: 1
+        comment: "CASMARTS: Bloqueo IPv6"
+      ignore_errors: yes
+
+    - name: Asegurar bloqueo en cadena INPUT IPv4 (Back-up)
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 9990
+        jump: DROP
+        rule_num: 1
+        comment: "CASMARTS: Bloqueo INPUT IPv4"
+
+    - name: Intentar Hardening de Configuración (WildFly)
+      replace:
+        path: /opt/wildfly/standalone/configuration/standalone.xml
+        regexp: '(<interface name="management">.*<inet-address value=")[^"]*("/>)'
+        replace: '\1127.0.0.1\2'
+      ignore_errors: yes
