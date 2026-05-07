@@ -1,11 +1,12 @@
+import docker
 import os
 import yaml
 import psycopg2
 import db_manager
-import subprocess
 from psycopg2.extras import RealDictCursor
 
-# DB Config moved to db_manager.py
+# Initialize Docker Client
+docker_client = docker.from_env()
 
 def discover_core_assets():
     print("🔍 [Centinela-AI] Starting Core Asset Discovery...")
@@ -23,33 +24,25 @@ def discover_core_assets():
     services = compose_data.get('services', {})
     
     for service_name, config in services.items():
-        # Try to get image from compose, if local-build, try to get it from running container
         image_name = config.get('image')
         if not image_name:
             try:
-                # Get image ID of running container
-                inspect_cmd = ["docker", "inspect", "--format", "{{.Image}}", f"casmarts-core-{service_name}"]
-                result = subprocess.run(inspect_cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    image_name = result.stdout.strip() # This will be the sha256 ID
-                else:
-                    image_name = "local-build"
+                # Get image from container inspect
+                container = docker_client.containers.get(f"casmarts-core-{service_name}")
+                image_name = container.image.tags[0] if container.image.tags else container.image.id
             except:
                 image_name = "local-build"
 
         print(f"📦 Found service: {service_name} (Image: {image_name})")
         
-        # Skip Wazuh stack to avoid self-auditing noise
         if "wazuh" in service_name:
             print(f"⏭️ Skipping security stack component: {service_name}")
             continue
             
-        # Determine criticality (basic logic for now)
         criticality = "Medium"
         if any(keyword in service_name for keyword in ["db", "vault", "auth", "gateway"]):
             criticality = "High"
         
-        # Insert or update in inventory
         try:
             with db_manager.get_db_cursor() as cur:
                 cur.execute("""
@@ -66,12 +59,11 @@ def discover_core_assets():
 def discover_wazuh_agents():
     print("🔍 [Centinela-AI] Starting Wazuh Agent Discovery...")
     try:
-        # We can use the docker exec to the manager to get agent list
-        cmd = ["docker", "exec", "casmarts-core-wazuh-manager", "/var/ossec/bin/agent_control", "-l"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        container = docker_client.containers.get("casmarts-core-wazuh-manager")
+        result = container.exec_run("/var/ossec/bin/agent_control -l")
         
-        if result.returncode == 0:
-            lines = result.stdout.splitlines()
+        if result.exit_code == 0:
+            lines = result.output.decode().splitlines()
             
             with db_manager.get_db_cursor() as cur:
                 for line in lines:
