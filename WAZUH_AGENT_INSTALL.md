@@ -2,43 +2,32 @@
 
 Para permitir que **Centinela-AI** ejecute acciones de remediación automática y monitoreo en tiempo real en activos de tipo `SERVER`, `IP` y `DATABASE`, es obligatorio instalar el agente Wazuh.
 
-## 🐧 Instalación Universal y Agnóstica
+## 🐧 Instalación Recomendada (Vía Repositorio)
 
-El sistema **Centinela-AI** utiliza la detección automática de distribución. Para instalaciones manuales, utiliza el método correspondiente a tu sistema operativo.
+Este método es el preferido para asegurar actualizaciones automáticas y estabilidad en la infraestructura de **Casmarts Core**.
 
-### 🔍 Detección Automática de Distro
-Puedes verificar tu tipo de sistema con el siguiente comando antes de instalar:
+### 1. Configurar Llaves y Repositorio
 ```bash
-cat /etc/os-release | grep -E "^ID="
+curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | sudo gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import
+sudo chmod 644 /usr/share/keyrings/wazuh.gpg
+echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" | sudo tee /etc/apt/sources.list.d/wazuh.list
+sudo apt-get update
 ```
 
-### 📦 Comandos por Familia de Distribución
-
-#### 1. Familia Debian (Ubuntu, Debian, Kali, Mint)
+### 2. Instalación del Agente
 ```bash
-curl -sO https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.x_amd64.deb
-sudo dpkg -i wazuh-agent*.deb
-```
-
-#### 2. Familia RHEL (CentOS, RHEL, Rocky, AlmaLinux, Amazon Linux, Fedora)
-```bash
-curl -sO https://packages.wazuh.com/4.x/yum/wazuh-agent-4.x-1.x86_64.rpm
-sudo yum localinstall wazuh-agent*.rpm
-```
-
-#### 3. Familia Alpine (Contenedores ligeros)
-```bash
-# Nota: Alpine requiere paquetes específicos o instalación vía script
-curl -sO https://packages.wazuh.com/4.x/alpine/v3.12/main/x86_64/wazuh-agent-4.x.apk
-apk add --allow-untrusted wazuh-agent*.apk
+sudo apt-get install wazuh-agent
 ```
 
 ## ⚙️ Configuración del Manager (Paso Crítico)
-Independientemente de la distribución, debes configurar la IP del Manager en `/var/ossec/etc/ossec.conf`:
+Es obligatorio apuntar el agente a la IP del Manager de **IDP Smart**. Edita el archivo de configuración:
+`sudo nano /var/ossec/etc/ossec.conf`
+
+**Modifica la sección `<client>` con los siguientes valores específicos:**
 ```xml
 <client>
   <server>
-    <address>TU_IP_DEL_MANAGER</address>
+    <address>10.4.3.28</address>
     <port>1514</port>
     <protocol>tcp</protocol>
   </server>
@@ -49,8 +38,33 @@ Independientemente de la distribución, debes configurar la IP del Manager en `/
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable wazuh-agent
-sudo systemctl start wazuh-agent
+sudo systemctl restart wazuh-agent
 ```
 
-## 🛡️ Notas sobre Scripts de Remediación
-Los scripts generados por la IA de Centinela están diseñados para detectar automáticamente la distribución. Si un script requiere instalar paquetes, usará el gestor correspondiente (`apt`, `yum` o `dnf`).
+## 🛡️ Pruebas de Verificación de Conectividad
+
+Para asegurar que el agente está reportando correctamente a **Centinela-AI**, ejecuta las siguientes pruebas de diagnóstico:
+
+### A. Verificación de Logs (Estado de Conexión)
+Busca la confirmación de enlace en los registros locales del sistema:
+```bash
+sudo grep -i "connected" /var/ossec/logs/ossec.log
+```
+> **Resultado esperado:** Si la respuesta contiene `Wazuh Agent connected to '10.4.3.28'`, la comunicación es exitosa.
+
+### B. Prueba de Comunicación de Red
+Verifica que el puerto de comunicación no esté bloqueado por firewalls intermedios:
+```bash
+nc -zv 10.4.3.28 1514
+```
+
+### C. Consulta de Versión y Estado del Binario
+Confirma que el agente está operativo y verifica su versión actual:
+```bash
+/var/ossec/bin/wazuh-control info
+sudo systemctl status wazuh-agent --no-pager
+```
+
+---
+**Notas Adicionales:** * Los scripts de **Centinela-AI** detectan automáticamente la distribución y utilizarán el gestor correspondiente (`apt`, `yum` o `dnf`) para tareas de remediación.
+* Si realizas cambios en el archivo `ossec.conf`, siempre debes reiniciar el servicio para aplicar la nueva configuración.
