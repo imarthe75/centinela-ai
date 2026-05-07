@@ -2,7 +2,11 @@ import os
 import psycopg2
 from psycopg2 import pool
 from contextlib import contextmanager
-import hvac
+try:
+    import hvac
+except ImportError:
+    hvac = None
+
 
 def get_vault_secrets():
     """Fetch secrets from Vault if configured"""
