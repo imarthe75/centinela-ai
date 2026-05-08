@@ -40,7 +40,8 @@ import {
   Container,
   Cloud,
   Layers,
-  Link
+  Link,
+  KeyRound
 } from 'lucide-react'
 import { 
   BarChart, 
@@ -96,6 +97,14 @@ export default function Dashboard() {
 
   // Report Modal
   const [showReportModal, setShowReportModal] = useState(false)
+
+  // Vault Credential Modal
+  const [showVaultModal, setShowVaultModal] = useState(false)
+  const [vaultTarget, setVaultTarget] = useState('')        // asset_name del activo
+  const [vaultPassword, setVaultPassword] = useState('')
+  const [vaultUser, setVaultUser] = useState('')
+  const [vaultSaving, setVaultSaving] = useState(false)
+  const [vaultResult, setVaultResult] = useState(null)     // { ok: bool, msg: string }
 
   useEffect(() => {
     fetchData()
@@ -195,6 +204,34 @@ export default function Dashboard() {
     } catch (error) {
         console.error("Error executing remediation:", error)
         alert("❌ Error crítico: No se pudo contactar con el Agente de Remediación.")
+    }
+  }
+
+  const handleOpenVaultModal = (assetName) => {
+    setVaultTarget(assetName)
+    setVaultPassword('')
+    setVaultUser('')
+    setVaultResult(null)
+    setShowVaultModal(true)
+  }
+
+  const handleSaveVaultSecret = async (e) => {
+    e.preventDefault()
+    if (!vaultPassword) return
+    setVaultSaving(true)
+    setVaultResult(null)
+    try {
+      await axios.post(`${API_BASE}/inventory/${encodeURIComponent(vaultTarget)}/vault-secret`, {
+        sudo_password: vaultPassword,
+        ansible_user: vaultUser || undefined
+      })
+      setVaultResult({ ok: true, msg: `Credencial de '${vaultTarget}' almacenada en Vault. Aura-Sentinel la usará automáticamente.` })
+      setVaultPassword('')
+    } catch (err) {
+      const detail = err?.response?.data?.detail || 'Error desconocido al conectar con Vault.'
+      setVaultResult({ ok: false, msg: detail })
+    } finally {
+      setVaultSaving(false)
     }
   }
 
@@ -934,10 +971,18 @@ export default function Dashboard() {
 
                                 <button 
                                     onClick={() => { setAssetFilter(group.name); setCurrentView('soar'); }}
-                                    className="w-full py-3 bg-slate-800 hover:bg-[#06B6D4] text-slate-400 hover:text-[#0F172A] font-black uppercase text-[9px] tracking-[0.2em] rounded-xl transition-all flex items-center justify-center gap-2"
+                                    className="flex-1 py-3 bg-slate-800 hover:bg-[#06B6D4] text-slate-400 hover:text-[#0F172A] font-black uppercase text-[9px] tracking-[0.2em] rounded-xl transition-all flex items-center justify-center gap-2"
                                 >
                                     Ver Análisis Completo
                                     <ExternalLink size={12} />
+                                </button>
+                                <button
+                                    onClick={() => handleOpenVaultModal(group.name)}
+                                    title="Configurar credencial sudo en Vault"
+                                    className="py-3 px-4 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-2"
+                                >
+                                    <KeyRound size={13} />
+                                    Vault
                                 </button>
                             </div>
                         </div>

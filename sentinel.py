@@ -5,20 +5,73 @@ import subprocess
 import os
 from datetime import datetime
 import db_manager
+import hvac
 
 # Configuration for Ansible-based remediation
 ANSIBLE_INVENTORY = "/app/inventory.ini"
 ANSIBLE_PLAYBOOK = "/app/remediate_wildfly.yml"
 
-def ansible_remediate(ip, cve_id):
-    """Executes an Ansible playbook for remediation"""
+def get_sudo_password(asset_name: str) -> str:
+    """
+    Reads the sudo password for an asset from HashiCorp Vault (KV v1).
+    Path: secret/casmarts/ansible/{asset_name}
+    Falls back to ANSIBLE_BECOME_PASS env var if Vault is unavailable.
+    """
+    vault_addr = os.getenv("VAULT_ADDR", "http://casmarts-core-vault:8200")
+    vault_token = os.getenv("VAULT_TOKEN", "root")
+    try:
+        client = hvac.Client(url=vault_addr, token=vault_token)
+        if not client.is_authenticated():
+            print(f"⚠️ [Aura-Sentinel] Vault not authenticated. Using env fallback for {asset_name}.")
+            return os.getenv("ANSIBLE_BECOME_PASS", "")
+        # KV v1 path: secret/casmarts/ansible/{asset_name}
+        result = client.secrets.kv.v1.read_secret(
+            path=f"casmarts/ansible/{asset_name}",
+            mount_point="secret"
+        )
+        password = result["data"].get("sudo_password", "")
+        if password:
+            print(f"🔒 [Aura-Sentinel] Sudo credential for '{asset_name}' loaded from Vault.")
+        else:
+            print(f"⚠️ [Aura-Sentinel] No sudo_password found in Vault for '{asset_name}'. Using env fallback.")
+        return password or os.getenv("ANSIBLE_BECOME_PASS", "")
+    except Exception as e:
+        print(f"⚠️ [Aura-Sentinel] Vault error for '{asset_name}': {e}. Using env fallback.")
+        return os.getenv("ANSIBLE_BECOME_PASS", "")
+
+
+def get_ansible_user(asset_name: str) -> str:
+    """
+    Reads the ansible_user for an asset from Vault, or falls back to ANSIBLE_REMOTE_USER env var.
+    """
+    vault_addr = os.getenv("VAULT_ADDR", "http://casmarts-core-vault:8200")
+    vault_token = os.getenv("VAULT_TOKEN", "root")
+    try:
+        client = hvac.Client(url=vault_addr, token=vault_token)
+        if client.is_authenticated():
+            result = client.secrets.kv.v1.read_secret(
+                path=f"casmarts/ansible/{asset_name}",
+                mount_point="secret"
+            )
+            user = result["data"].get("ansible_user", "")
+            if user:
+                return user
+    except Exception:
+        pass
+    return os.getenv("ANSIBLE_REMOTE_USER", "pmcp")
+
+def ansible_remediate(ip, cve_id, asset_name=""):
+    """Executes an Ansible playbook for remediation using Vault credentials."""
     print(f"🛠️ [Aura-Sentinel] Triggering Ansible Remediation for {ip} ({cve_id})...")
+    sudo_pass = get_sudo_password(asset_name or ip)
+    ansible_user = get_ansible_user(asset_name or ip)
     try:
         cmd = [
             "ansible-playbook", 
             "-i", ANSIBLE_INVENTORY, 
             ANSIBLE_PLAYBOOK,
-            "-e", "ansible_become_pass=password"
+            "-e", f"ansible_user={ansible_user}",
+            "-e", f"ansible_become_pass={sudo_pass}"
         ]
         # We allow exit code 0 or 2 (partial success in Ansible)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -125,13 +178,15 @@ def process_remediations():
                         else:
                             # Caso general para SERVERS y otros via Ansible Genérico
                             print(f"🛠️ [Aura-Sentinel] Triggering Generic Ansible for {asset_ip}...")
+                            sudo_pass = get_sudo_password(asset_name)
+                            ansible_user = get_ansible_user(asset_name)
                             escaped_content = script_content.replace("'", "'\\''")
                             cmd = [
-                                "ansible-playbook", "-i", f"{asset_ip},", 
+                                "ansible-playbook", "-i", f"{asset_ip},",
                                 "/app/remediate_generic.yml",
                                 "-e", f"script_content='{escaped_content}'",
-                                "-e", "ansible_user=admin", # Ajustar según entorno
-                                "-e", "ansible_become_pass=password"
+                                "-e", f"ansible_user={ansible_user}",
+                                "-e", f"ansible_become_pass={sudo_pass}"
                             ]
                             try:
                                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)

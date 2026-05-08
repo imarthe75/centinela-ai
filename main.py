@@ -11,6 +11,44 @@ from pydantic import BaseModel
 from typing import Optional
 import requests
 import re
+import hvac
+
+
+def get_vault_client():
+    """Returns an authenticated hvac Vault client or None."""
+    vault_addr = os.getenv("VAULT_ADDR", "http://casmarts-core-vault:8200")
+    vault_token = os.getenv("VAULT_TOKEN", "root")
+    try:
+        client = hvac.Client(url=vault_addr, token=vault_token)
+        if client.is_authenticated():
+            return client
+    except Exception as e:
+        print(f"⚠️ [Centinela-Backend] Vault connection error: {e}")
+    return None
+
+def store_vault_secret(asset_name: str, sudo_password: str, ansible_user: str = "") -> bool:
+    """
+    Stores sudo credentials for an asset in Vault KV v1.
+    Path: secret/casmarts/ansible/{asset_name}
+    """
+    client = get_vault_client()
+    if not client:
+        print(f"⚠️ [Centinela-Backend] Vault unavailable. Cannot store secret for {asset_name}.")
+        return False
+    try:
+        payload = {"sudo_password": sudo_password}
+        if ansible_user:
+            payload["ansible_user"] = ansible_user
+        client.secrets.kv.v1.create_or_update_secret(
+            path=f"casmarts/ansible/{asset_name}",
+            secret=payload,
+            mount_point="secret"
+        )
+        print(f"🔒 [Centinela-Backend] Secret stored in Vault for asset '{asset_name}'.")
+        return True
+    except Exception as e:
+        print(f"❌ [Centinela-Backend] Failed to store Vault secret for {asset_name}: {e}")
+        return False
 
 def is_private_ip(ip):
     # Regex simple para detectar rangos RFC 1918 (10.x, 172.16-31.x, 192.168.x) y localhost
@@ -35,6 +73,7 @@ def get_geoip_location(ip):
     except Exception as e:
         print(f"GeoIP Error for {ip}: {e}")
     return None, None
+
 class AssetModel(BaseModel):
     asset_name: str
     asset_type: str
@@ -42,6 +81,12 @@ class AssetModel(BaseModel):
     criticality: Optional[str] = "MEDIUM"
     location_lat: Optional[float] = None
     location_lon: Optional[float] = None
+    vault_sudo_token: Optional[str] = None  # Sudo password → stored in Vault, never persisted in DB
+    vault_ansible_user: Optional[str] = None  # Optional ansible_user override
+
+class VaultSecretModel(BaseModel):
+    sudo_password: str
+    ansible_user: Optional[str] = None
 
 app = FastAPI(title="Centinela-AI Security API")
 
@@ -81,9 +126,43 @@ async def add_inventory_item(item: AssetModel):
                         location_lat = EXCLUDED.location_lat,
                         location_lon = EXCLUDED.location_lon
                 """, (item.asset_name, item.asset_type, item.endpoint, item.criticality, item.location_lat, item.location_lon))
-        return {"status": "success", "message": f"Asset {item.asset_name} registered."}
+
+        # Si viene la clave sudo, guardarla en Vault (nunca en la BD)
+        vault_stored = False
+        if item.vault_sudo_token:
+            vault_stored = store_vault_secret(
+                asset_name=item.asset_name,
+                sudo_password=item.vault_sudo_token,
+                ansible_user=item.vault_ansible_user or ""
+            )
+
+        return {
+            "status": "success",
+            "message": f"Asset {item.asset_name} registered.",
+            "vault_secret_stored": vault_stored
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/inventory/{asset_name}/vault-secret")
+async def save_asset_vault_secret(asset_name: str, body: VaultSecretModel):
+    """
+    Saves or updates the sudo credentials for an existing asset in HashiCorp Vault.
+    The password is NEVER stored in the database.
+    """
+    success = store_vault_secret(
+        asset_name=asset_name,
+        sudo_password=body.sudo_password,
+        ansible_user=body.ansible_user or ""
+    )
+    if not success:
+        raise HTTPException(
+            status_code=503,
+            detail="Vault is unavailable or the secret could not be stored. Check VAULT_ADDR and VAULT_TOKEN."
+        )
+    return {"status": "stored", "asset": asset_name, "message": "Credentials securely stored in HashiCorp Vault."}
+
+
 
 # CORS para el nuevo frontend React
 app.add_middleware(
