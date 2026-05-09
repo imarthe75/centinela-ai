@@ -41,7 +41,9 @@ import {
   Cloud,
   Layers,
   Link,
-  KeyRound
+  KeyRound,
+  ClipboardCheck,
+  ClipboardList
 } from 'lucide-react'
 import { 
   BarChart, 
@@ -105,6 +107,12 @@ export default function Dashboard() {
   const [vaultUser, setVaultUser] = useState('')
   const [vaultSaving, setVaultSaving] = useState(false)
   const [vaultResult, setVaultResult] = useState(null)     // { ok: bool, msg: string }
+  
+  // Manual Remediation Modal
+  const [showManualModal, setShowManualModal] = useState(false)
+  const [manualSolution, setManualSolution] = useState('')
+  const [manualReason, setManualReason] = useState('')
+  const [manualSaving, setManualSaving] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -204,6 +212,33 @@ export default function Dashboard() {
     } catch (error) {
         console.error("Error executing remediation:", error)
         alert("❌ Error crítico: No se pudo contactar con el Agente de Remediación.")
+    }
+  }
+
+  const handleManualRemediation = async (e) => {
+    e.preventDefault()
+    if (!manualSolution || !manualReason) {
+        alert("Por favor complete todos los campos.")
+        return
+    }
+    
+    setManualSaving(true)
+    try {
+        await axios.post(`${API_BASE}/remediation/manual/${selectedRemediation.id}`, {
+            solution: manualSolution,
+            reason: manualReason
+        })
+        setShowManualModal(false)
+        setManualSolution('')
+        setManualReason('')
+        setSelectedRemediation(null)
+        fetchData()
+        alert("✅ Vulnerabilidad marcada como remediada manualmente.")
+    } catch (error) {
+        console.error("Error in manual remediation:", error)
+        alert("❌ Error al procesar la remediación manual.")
+    } finally {
+        setManualSaving(false)
     }
   }
 
@@ -348,10 +383,10 @@ export default function Dashboard() {
           </button>
           <div className="hidden lg:block mb-4 px-3">
             <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Sincronización</p>
-            <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-tighter flex items-center gap-2">
+            <div className="text-[10px] text-emerald-500 font-bold uppercase tracking-tighter flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {lastSync.toLocaleTimeString()}
-            </p>
+            </div>
           </div>
           <button 
             onClick={handleLogout}
@@ -627,12 +662,16 @@ export default function Dashboard() {
                                             >
                                                 <td className="p-6">
                                                     <div className="flex items-center gap-3">
-                                                        <div className={`p-2 rounded-lg ${log.executed_bool ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-800 text-[#06B6D4]'}`}>
-                                                            {log.executed_bool ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
+                                                        <div className={`p-2 rounded-lg ${
+                                                            log.cve_id === 'SCAN-AUDIT' ? 'bg-blue-500/10 text-blue-400' :
+                                                            log.executed_bool ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-800 text-[#06B6D4]'
+                                                        }`}>
+                                                            {log.cve_id === 'SCAN-AUDIT' ? <ClipboardCheck size={16} /> :
+                                                             log.executed_bool ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
                                                         </div>
                                                         <div>
-                                                            <p className="text-white font-bold text-sm">{log.cve_id}</p>
-                                                            <p className="text-[9px] text-slate-500 font-bold truncate max-w-[150px]">{log.script_path}</p>
+                                                            <p className="text-white font-bold text-sm">{log.cve_id === 'SCAN-AUDIT' ? 'Auditoría de Activo' : log.cve_id}</p>
+                                                            <p className="text-[9px] text-slate-500 font-bold truncate max-w-[150px]">{log.cve_id === 'SCAN-AUDIT' ? 'Resultado de escaneo pasivo' : log.script_path}</p>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -640,14 +679,18 @@ export default function Dashboard() {
                                                 <td className="p-6">
                                                     <span className={`px-2 py-1 rounded text-[9px] font-black ${
                                                         log.severity === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 
-                                                        log.severity === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
+                                                        log.severity === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 
+                                                        log.severity === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' : 
+                                                        log.severity === 'Info' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-500/20 text-slate-400'
                                                     }`}>
                                                         {log.severity}
                                                     </span>
                                                 </td>
                                                 <td className="p-6">
                                                     <div className="flex items-center gap-2">
-                                                        {log.executed_bool ? (
+                                                        {log.cve_id === 'SCAN-AUDIT' ? (
+                                                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-tighter">FINALIZADO (SIN HALLAZGOS)</span>
+                                                        ) : log.executed_bool ? (
                                                             <span className="text-[9px] font-black text-emerald-500 uppercase">REMEDIADO</span>
                                                         ) : (
                                                             <span className={`text-[9px] font-black uppercase ${
@@ -701,10 +744,11 @@ export default function Dashboard() {
                                     <section>
                                         <h4 className="text-white font-bold text-xs uppercase tracking-widest mb-3 flex items-center gap-2">
                                             <Info size={14} className="text-[#06B6D4]" />
-                                            ¿Qué encontramos?
+                                            {selectedRemediation.cve_id === 'SCAN-AUDIT' ? 'Resumen de Verificación' : '¿Qué encontramos?'}
                                         </h4>
-                                        <div className="p-4 bg-slate-800/50 rounded-2xl text-xs text-slate-400 leading-relaxed italic">
-                                            {selectedRemediation.executive_summary || "Análisis de IA pendiente de generación detallada..."}
+                                        <div className="p-4 bg-slate-800/50 rounded-2xl text-xs text-slate-400 leading-relaxed italic whitespace-pre-wrap">
+                                            {selectedRemediation.cve_id === 'SCAN-AUDIT' ? selectedRemediation.description : 
+                                             (selectedRemediation.executive_summary || "Análisis de IA pendiente de generación detallada...")}
                                         </div>
                                     </section>
 
@@ -754,19 +798,37 @@ export default function Dashboard() {
                                             <CheckCircle2 size={16} />
                                             Activo Remediado
                                         </div>
-                                    ) : selectedRemediation.approval_token === 'APPROVED' || selectedRemediation.approval_token === 'EXECUTING' ? (
-                                        <div className="flex-grow py-4 bg-orange-500/10 text-orange-500 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-orange-500/20 flex items-center justify-center gap-2 cursor-default animate-pulse">
-                                            <Activity size={16} className="animate-spin" />
-                                            Procesando IA...
+                                    ) : selectedRemediation.cve_id === 'SCAN-AUDIT' ? (
+                                        <div className="flex-grow py-4 bg-blue-500/10 text-blue-400 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-blue-500/20 flex items-center justify-center gap-2">
+                                            <ShieldCheck size={16} />
+                                            Activo Verificado
                                         </div>
                                     ) : (
-                                        <button 
-                                            onClick={() => handleExecuteRemediation(selectedRemediation.id)}
-                                            className="flex-grow py-4 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-[#06B6D4]/10"
-                                        >
-                                            <Zap size={16} />
-                                            Ejecutar Remedio AI
-                                        </button>
+                                        <>
+                                            {selectedRemediation.status === 'NEW' || selectedRemediation.status === 'PENDING' ? (
+                                                <div className="flex-grow py-4 bg-orange-500/10 text-orange-500 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-orange-500/20 flex items-center justify-center gap-2 cursor-default animate-pulse">
+                                                    <Activity size={16} className="animate-spin" />
+                                                    Procesando IA...
+                                                </div>
+                                            ) : (
+                                                <button 
+                                                    onClick={() => handleExecuteRemediation(selectedRemediation.id)}
+                                                    className="flex-grow py-4 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-[#06B6D4]/10"
+                                                >
+                                                    <Zap size={16} />
+                                                    Ejecutar Remedio AI
+                                                </button>
+                                            )}
+                                            {!(selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool) && (
+                                                <button 
+                                                    onClick={() => setShowManualModal(true)}
+                                                    className="flex-grow py-4 bg-slate-800 text-slate-300 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-slate-700 hover:bg-slate-700 transition-all active:scale-95 flex items-center justify-center gap-2"
+                                                >
+                                                    <CheckCircle size={16} />
+                                                    Remediar Manual
+                                                </button>
+                                            )}
+                                        </>
                                     )}
                                     {(selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool) && (
                                         <button 
@@ -969,21 +1031,23 @@ export default function Dashboard() {
                                     ))}
                                 </div>
 
-                                <button 
-                                    onClick={() => { setAssetFilter(group.name); setCurrentView('soar'); }}
-                                    className="flex-1 py-3 bg-slate-800 hover:bg-[#06B6D4] text-slate-400 hover:text-[#0F172A] font-black uppercase text-[9px] tracking-[0.2em] rounded-xl transition-all flex items-center justify-center gap-2"
-                                >
-                                    Ver Análisis Completo
-                                    <ExternalLink size={12} />
-                                </button>
-                                <button
-                                    onClick={() => handleOpenVaultModal(group.name)}
-                                    title="Configurar credencial sudo en Vault"
-                                    className="py-3 px-4 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-2"
-                                >
-                                    <KeyRound size={13} />
-                                    Vault
-                                </button>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={() => { setAssetFilter(group.name); setCurrentView('soar'); }}
+                                        className="flex-1 py-3 bg-slate-800 hover:bg-[#06B6D4] text-slate-400 hover:text-[#0F172A] font-black uppercase text-[9px] tracking-[0.2em] rounded-xl transition-all flex items-center justify-center gap-2"
+                                    >
+                                        Ver Análisis Completo
+                                        <ExternalLink size={12} />
+                                    </button>
+                                    <button
+                                        onClick={() => handleOpenVaultModal(group.name)}
+                                        title="Configurar credencial sudo en Vault"
+                                        className="py-3 px-4 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-2 shrink-0"
+                                    >
+                                        <KeyRound size={13} />
+                                        Vault
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     ))}
@@ -1339,6 +1403,168 @@ export default function Dashboard() {
                             Entendido, cerrar informe
                         </button>
                     </div>
+                </div>
+            </div>
+        )}
+
+        {/* Vault Credential Modal */}
+        {showVaultModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-lg rounded-[48px] border border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
+                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-amber-400/10 to-transparent flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-amber-400/10 border border-amber-400/20 flex items-center justify-center text-amber-400">
+                                <Lock size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-bold text-xl tracking-tighter">Credencial Sudo — Vault</h3>
+                                <p className="text-[10px] text-amber-400/70 font-black uppercase tracking-widest mt-0.5">
+                                    {vaultTarget}
+                                </p>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowVaultModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+
+                    <form onSubmit={handleSaveVaultSecret} className="p-8 space-y-5">
+                        <div>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                Usuario SSH / Ansible
+                            </label>
+                            <input
+                                type="text"
+                                className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-amber-400 outline-none placeholder-slate-600"
+                                placeholder="ej. ia, root, ansible_user"
+                                value={vaultUser}
+                                onChange={(e) => setVaultUser(e.target.value)}
+                            />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                Contraseña Sudo *
+                            </label>
+                            <div className="relative">
+                                <input
+                                    type="password"
+                                    required
+                                    className="w-full bg-[#0F172A] border border-amber-400/30 rounded-2xl p-4 text-amber-300 font-bold text-sm focus:ring-2 focus:ring-amber-400 outline-none pr-12 placeholder-slate-700"
+                                    placeholder="••••••••••••"
+                                    value={vaultPassword}
+                                    onChange={(e) => setVaultPassword(e.target.value)}
+                                    autoFocus
+                                />
+                                <div className="absolute right-4 top-1/2 -translate-y-1/2 text-amber-400/40">
+                                    <Shield size={16} />
+                                </div>
+                            </div>
+                            <p className="text-[9px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
+                                <CheckCircle2 size={10} />
+                                Cifrado AES-256 en HashiCorp Vault. No se almacena en la BD ni en el frontend.
+                            </p>
+                        </div>
+
+                        {vaultResult && (
+                            <div className={`p-4 rounded-2xl text-xs font-bold flex items-center gap-2 ${vaultResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                                {vaultResult.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                                {vaultResult.msg}
+                            </div>
+                        )}
+
+                        <div className="pt-2 flex gap-3">
+                            <button
+                                type="submit"
+                                disabled={vaultSaving || !vaultPassword}
+                                className="flex-1 py-4 bg-amber-500 text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-amber-400 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {vaultSaving ? (
+                                    <><Activity size={14} className="animate-spin" /> Guardando...</>
+                                ) : (
+                                    <><KeyRound size={14} /> Guardar en Vault</>
+                                )}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowVaultModal(false)}
+                                className="px-6 py-4 bg-slate-800 text-white font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-slate-700 transition-all"
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        )}
+
+        {showManualModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-xl rounded-[48px] border border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
+                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-[#06B6D4]/10 to-transparent flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-[#06B6D4]/10 border border-[#06B6D4]/20 flex items-center justify-center text-[#06B6D4]">
+                                <CheckCircle size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-bold text-xl tracking-tighter">Remediación Manual</h3>
+                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mt-0.5">
+                                    {selectedRemediation?.cve_id} — {selectedRemediation?.asset_name}
+                                </p>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowManualModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+
+                    <form onSubmit={handleManualRemediation} className="p-8 space-y-6">
+                        <div>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                Descripción de la Solución
+                            </label>
+                            <textarea
+                                required
+                                className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-white font-medium text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 h-32 resize-none"
+                                placeholder="Explique qué acciones se realizaron para mitigar este hallazgo..."
+                                value={manualSolution}
+                                onChange={(e) => setManualSolution(e.target.value)}
+                            />
+                        </div>
+                        
+                        <div>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                Motivo de la Intervención Manual
+                            </label>
+                            <textarea
+                                required
+                                className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-white font-medium text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 h-24 resize-none"
+                                placeholder="¿Por qué no se usó la remediación automática? (ej. Configuración personalizada, política interna, etc.)"
+                                value={manualReason}
+                                onChange={(e) => setManualReason(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="pt-2 flex gap-3">
+                            <button
+                                type="submit"
+                                disabled={manualSaving || !manualSolution || !manualReason}
+                                className="flex-1 py-4 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-white transition-all shadow-lg shadow-[#06B6D4]/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {manualSaving ? (
+                                    <><Activity size={14} className="animate-spin" /> Procesando...</>
+                                ) : (
+                                    <><ShieldCheck size={16} /> Confirmar Remediación</>
+                                )}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowManualModal(false)}
+                                className="px-6 py-4 bg-slate-800 text-white font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-slate-700 transition-all"
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
         )}

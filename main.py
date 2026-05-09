@@ -28,7 +28,7 @@ def get_vault_client():
 
 def store_vault_secret(asset_name: str, sudo_password: str, ansible_user: str = "") -> bool:
     """
-    Stores sudo credentials for an asset in Vault KV v1.
+    Stores sudo credentials for an asset in Vault KV v2.
     Path: secret/casmarts/ansible/{asset_name}
     """
     client = get_vault_client()
@@ -39,12 +39,12 @@ def store_vault_secret(asset_name: str, sudo_password: str, ansible_user: str = 
         payload = {"sudo_password": sudo_password}
         if ansible_user:
             payload["ansible_user"] = ansible_user
-        client.secrets.kv.v1.create_or_update_secret(
+        client.secrets.kv.v2.create_or_update_secret(
             path=f"casmarts/ansible/{asset_name}",
             secret=payload,
             mount_point="secret"
         )
-        print(f"🔒 [Centinela-Backend] Secret stored in Vault for asset '{asset_name}'.")
+        print(f"🔒 [Centinela-Backend] Secret stored in Vault (KV v2) for asset '{asset_name}'.")
         return True
     except Exception as e:
         print(f"❌ [Centinela-Backend] Failed to store Vault secret for {asset_name}: {e}")
@@ -87,6 +87,10 @@ class AssetModel(BaseModel):
 class VaultSecretModel(BaseModel):
     sudo_password: str
     ansible_user: Optional[str] = None
+
+class ManualRemediationModel(BaseModel):
+    solution: str
+    reason: str
 
 app = FastAPI(title="Centinela-AI Security API")
 
@@ -355,6 +359,45 @@ async def approve_remediation(vuln_id: int):
             cur.execute("UPDATE public.remediation_history SET approval_token = 'APPROVED' WHERE vuln_id = %s", (vuln_id,))
             return {"status": "success", "message": "Remediation approved and queued for execution."}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/remediation/manual/{vuln_id}")
+async def manual_remediation(vuln_id: int, body: ManualRemediationModel):
+    try:
+        with db_manager.get_db_cursor() as cur:
+            # 1. Update vulnerability_log status and summary
+            manual_note = f"\n\n**[REMEDIACIÓN MANUAL - {datetime.now().strftime('%Y-%m-%d %H:%M')}]**\n**Solución:** {body.solution}\n**Motivo:** {body.reason}"
+            cur.execute("""
+                UPDATE public.vulnerability_log 
+                SET status = 'RESOLVED',
+                    executive_summary = COALESCE(executive_summary, '') || %s
+                WHERE id = %s
+            """, (manual_note, vuln_id))
+            
+            # 2. Check if remediation_history exists
+            cur.execute("SELECT id FROM public.remediation_history WHERE vuln_id = %s", (vuln_id,))
+            exists = cur.fetchone()
+            
+            log_content = f"Manual Solution: {body.solution}\nReason: {body.reason}"
+            
+            if exists:
+                cur.execute("""
+                    UPDATE public.remediation_history SET
+                        executed_bool = TRUE,
+                        approval_token = 'MANUAL',
+                        executed_at = NOW(),
+                        log_output = %s
+                    WHERE vuln_id = %s
+                """, (log_content, vuln_id))
+            else:
+                cur.execute("""
+                    INSERT INTO public.remediation_history (vuln_id, executed_bool, approval_token, executed_at, log_output, can_automate)
+                    VALUES (%s, TRUE, 'MANUAL', NOW(), %s, FALSE)
+                """, (vuln_id, log_content))
+            
+            return {"status": "success", "message": "Vulnerability marked as manually remediated."}
+    except Exception as e:
+        print(f"❌ Error in manual remediation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/investigate/runtime")
