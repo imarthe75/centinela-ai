@@ -1,135 +1,160 @@
 version: '3.8'
-
 services:
   centinela-ai:
     build: .
     container_name: centinela-ai
     restart: always
     networks:
-      - aura-network
+    - aura-network
     volumes:
-      - .:/app
-      - ../core-casmarts:/app/core-casmarts:ro
-      - ../consulta-smart/backend/app/core/credentials/google-v-credentials.json:/app/credentials.json:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+    - .:/app
+    - ../core-casmarts:/app/core-casmarts:ro
+    - ../consulta-smart/backend/app/core/credentials/google-v-credentials.json:/app/credentials.json:ro
+    - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - VAULT_ADDR=http://casmarts-core-vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN}
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
-      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - AI_PROVIDER=${AI_PROVIDER}
-      - AI_MODEL=${AI_MODEL}
-      - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
-      - GCP_LOCATION=${GCP_LOCATION}
-      - DB_HOST=casmarts-core-db-primary
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - VALKEY_HOST=casmarts-core-cache
+    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_TOKEN=${VAULT_TOKEN}
+    - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+    - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+    - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    - GROQ_API_KEY=${GROQ_API_KEY}
+    - AI_PROVIDER=${AI_PROVIDER}
+    - AI_MODEL=${AI_MODEL}
+    - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
+    - GCP_LOCATION=${GCP_LOCATION}
+    - DB_HOST=casmarts-core-db-primary
+    - DB_NAME=${DB_NAME}
+    - DB_USER=${DB_USER}
+    - DB_PASSWORD=${DB_PASSWORD}
+    - VALKEY_HOST=casmarts-core-cache
     working_dir: /app
     command: python sentinela.py
-
+    deploy:
+      resources:
+        limits:
+          memory: 2G
   centinela-backend:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.backend
     container_name: centinela-backend
     restart: always
     networks:
-      - aura-network
+    - aura-network
     volumes:
-      - .:/app
+    - .:/app
     environment:
-      - DB_HOST=casmarts-core-db-primary
-      - DB_NAME=casmarts_security
-      - DB_USER=admin
-      - DB_PASSWORD=casmarts_secure_db_pwd_2026
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - VAULT_ADDR=http://casmarts-core-vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN:-root}
-
+    - DB_HOST=casmarts-core-db-primary
+    - DB_NAME=casmarts_security
+    - DB_USER=admin
+    - DB_PASSWORD=casmarts_secure_db_pwd_2026
+    - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    - GROQ_API_KEY=${GROQ_API_KEY}
+    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_TOKEN=${VAULT_TOKEN:-root}
     ports:
-      - "8302:8000"
-
+    - 8302:8000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
   centinela-frontend:
     build:
       context: ./frontend
     container_name: centinela-frontend
     restart: always
     networks:
-      - aura-network
+    - aura-network
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    - ./frontend:/app
+    - /app/node_modules
     ports:
-      - "8301:5173"
+    - 8301:5173
     depends_on:
-      - centinela-backend
-
+    - centinela-backend
+    deploy:
+      resources:
+        limits:
+          memory: 512M
   centinela-sentinel:
     build: .
     container_name: centinela-sentinel
     restart: always
     networks:
-      - aura-network
+    - aura-network
     volumes:
-      - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+    - .:/app
+    - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - DB_HOST=casmarts-core-db-primary
-      - DB_NAME=casmarts_security
-      - DB_USER=admin
-      - DB_PASSWORD=casmarts_secure_db_pwd_2026
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - VAULT_ADDR=http://casmarts-core-vault:8200
-      - VAULT_TOKEN=${VAULT_TOKEN:-root}
-      - ANSIBLE_REMOTE_USER=${ANSIBLE_REMOTE_USER:-pmcp}
-      - ANSIBLE_BECOME_PASS=${ANSIBLE_BECOME_PASS:-}
+    - DB_HOST=casmarts-core-db-primary
+    - DB_NAME=casmarts_security
+    - DB_USER=admin
+    - DB_PASSWORD=casmarts_secure_db_pwd_2026
+    - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    - GROQ_API_KEY=${GROQ_API_KEY}
+    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_TOKEN=${VAULT_TOKEN:-root}
+    - ANSIBLE_REMOTE_USER=${ANSIBLE_REMOTE_USER:-pmcp}
+    - ANSIBLE_BECOME_PASS=${ANSIBLE_BECOME_PASS:-}
     command: python sentinel.py
     depends_on:
-      - centinela-ai
-
-
+    - centinela-ai
+    deploy:
+      resources:
+        limits:
+          memory: 1G
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     networks:
-      - aura-network
+    - aura-network
     volumes:
-      - ./data/ollama:/root/.ollama
-
+    - ./data/ollama:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 4G
   falco:
     image: falcosecurity/falco-no-driver:latest
     container_name: falco
     privileged: true
     user: root
     volumes:
-      - /var/run/docker.sock:/host/var/run/docker.sock
-      - /dev:/host/dev
-      - /proc:/host/proc:ro
-      - /boot:/host/boot:ro
-      - /lib/modules:/host/lib/modules:ro
-      - /usr:/host/usr:ro
-      - /etc:/host/etc:ro
+    - /var/run/docker.sock:/host/var/run/docker.sock
+    - /dev:/host/dev
+    - /proc:/host/proc:ro
+    - /boot:/host/boot:ro
+    - /lib/modules:/host/lib/modules:ro
+    - /usr:/host/usr:ro
+    - /etc:/host/etc:ro
     environment:
-      - FALCO_OUTPUT_PROGRAM_OUTPUT=json
-    command: ["/usr/bin/falco", "-o", "json_output=true", "-o", "http_output.enabled=true", "-o", "http_output.url=http://falcosidekick:2801/"]
+    - FALCO_OUTPUT_PROGRAM_OUTPUT=json
+    command:
+    - /usr/bin/falco
+    - -o
+    - json_output=true
+    - -o
+    - http_output.enabled=true
+    - -o
+    - http_output.url=http://falcosidekick:2801/
     networks:
-      - aura-network
-
+    - aura-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
   falcosidekick:
     image: falcosecurity/falcosidekick:latest
     container_name: falcosidekick
     environment:
-      - REDIS_ADDRESS=casmarts-core-cache:6379
-      - REDIS_STORAGEKEY=centinela:falco
+    - REDIS_ADDRESS=casmarts-core-cache:6379
+    - REDIS_STORAGEKEY=centinela:falco
     networks:
-      - aura-network
-
+    - aura-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 networks:
   aura-network:
     external: true
