@@ -46,7 +46,7 @@ const MapChart = ({ markers = [] }) => {
                       criticality === "MEDIUM" || criticality === "Medium" ? "#EAB308" : "#22C55E";
         
         return (
-          <Marker key={asset_name} coordinates={[location_lon, location_lat]}>
+          <Marker key={asset_name} coordinates={[parseFloat(location_lon), parseFloat(location_lat)]}>
             <circle r={6} fill={color} stroke="#fff" strokeWidth={1.5} className="animate-pulse" />
             <text
               textAnchor="middle"
