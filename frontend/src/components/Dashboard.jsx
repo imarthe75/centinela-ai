@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { useAuth } from 'react-oidc-context'
 import axios from 'axios'
 import ReactMarkdown from 'react-markdown'
+import { useAuth } from 'react-oidc-context'
 import { 
   ShieldAlert, 
   LayoutDashboard, 
@@ -60,7 +60,7 @@ import {
 import MapChart from './MapChart'
 
 // Using relative path to utilize the Nginx proxy at /centinela/api/
-const API_BASE = "/centinela/api"
+const API_BASE = "/api"
 
 export default function Dashboard() {
   const auth = useAuth()
@@ -72,7 +72,7 @@ export default function Dashboard() {
   const [inventory, setInventory] = useState([])
   const [riskData, setRiskData] = useState([])
   const [remediationLog, setRemediationLog] = useState([])
-  const [healthStatus, setHealthStatus] = useState(null)
+  const [healthStatus, setHealthStatus] = useState({ services: [] })
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState(new Date())
   const [selectedRemediation, setSelectedRemediation] = useState(null)
@@ -115,10 +115,66 @@ export default function Dashboard() {
   const [manualSaving, setManualSaving] = useState(false)
 
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 15000)
-    return () => clearInterval(interval)
-  }, [assetFilter])
+    if (auth.isAuthenticated) {
+      fetchData()
+      const interval = setInterval(fetchData, 15000)
+      return () => clearInterval(interval)
+    }
+  }, [auth.isAuthenticated, assetFilter])
+
+  if (auth.isLoading) {
+    return (
+      <div className="h-screen bg-[#0F172A] flex flex-col items-center justify-center text-[#06B6D4]">
+        <Activity size={48} className="animate-spin mb-4" />
+        <p className="font-bold tracking-[0.2em] animate-pulse uppercase text-xs">Cargando Sesión...</p>
+      </div>
+    )
+  }
+
+  if (auth.error) {
+    return (
+      <div className="h-screen bg-[#0F172A] flex flex-col items-center justify-center text-red-400 p-8 text-center">
+        <ShieldAlert size={64} className="mb-6" />
+        <h2 className="text-2xl font-black mb-2 uppercase tracking-tighter">Error de Autenticación</h2>
+        <p className="max-w-md text-slate-500 font-bold text-sm mb-8">{auth.error.message}</p>
+        <button 
+          onClick={() => auth.signinRedirect()}
+          className="px-8 py-4 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-xs tracking-widest rounded-2xl hover:bg-white transition-all shadow-lg shadow-[#06B6D4]/20"
+        >
+          Reintentar Acceso
+        </button>
+      </div>
+    )
+  }
+
+  if (!auth.isAuthenticated) {
+    return (
+      <div className="h-screen bg-[#0F172A] flex flex-col items-center justify-center p-8 text-center overflow-hidden relative">
+        <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_50%_50%,#06B6D410,transparent_50%)]" />
+        <div className="z-10 animate-in fade-in zoom-in duration-700">
+            <div className="w-24 h-24 bg-[#06B6D4]/10 rounded-3xl border border-[#06B6D4]/20 flex items-center justify-center text-[#06B6D4] mb-8 mx-auto shadow-2xl shadow-[#06B6D4]/10">
+                <ShieldCheck size={48} />
+            </div>
+            <h1 className="text-white text-5xl font-black tracking-tighter mb-4">Centinela <span className="text-[#06B6D4]">AI</span></h1>
+            <p className="text-slate-500 font-bold uppercase tracking-[0.3em] text-[10px] mb-12">Mando de Seguridad Regional</p>
+            <button 
+                onClick={() => auth.signinRedirect()}
+                className="group relative px-12 py-5 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-xs tracking-[0.2em] rounded-[24px] hover:bg-white transition-all shadow-[0_20px_50px_rgba(6,182,212,0.3)] hover:shadow-[0_20px_50px_rgba(255,255,255,0.2)] active:scale-95"
+            >
+                <div className="flex items-center gap-3">
+                    Iniciar Sesión con Authentik
+                    <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                </div>
+            </button>
+            <div className="mt-16 flex items-center justify-center gap-8 text-[9px] font-black text-slate-700 uppercase tracking-widest">
+                <div className="flex items-center gap-2"><Globe size={12} /> Casmarts Global</div>
+                <div className="w-1 h-1 rounded-full bg-slate-800" />
+                <div className="flex items-center gap-2"><Activity size={12} /> Nodo Centralizado</div>
+            </div>
+        </div>
+      </div>
+    )
+  }
 
   const fetchData = async () => {
     try {
@@ -133,18 +189,20 @@ export default function Dashboard() {
         axios.get(`${API_BASE}/health`)
       ])
       
-      setStats(resStats.data)
-      setVulnStats(resVulns.data)
-      setMapData(resMap.data)
-      setAlerts(resAlerts.data)
-      setRiskData(resRisk.data)
-      setInventory(resInv.data)
-      setRemediationLog(resRem.data)
-      setHealthStatus(resHealth.data)
+      setStats(resStats.data || { alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
+      setVulnStats(resVulns.data || { total: 0, critical: 0, high: 0, pending_ia: 0, pending_approval: 0 })
+      setMapData(Array.isArray(resMap.data) ? resMap.data.filter(m => m.location_lat && m.location_lon) : [])
+      setAlerts(Array.isArray(resAlerts.data) ? resAlerts.data : [])
+      setRiskData(Array.isArray(resRisk.data) ? resRisk.data : [])
+      setInventory(Array.isArray(resInv.data) ? resInv.data : [])
+      setRemediationLog(Array.isArray(resRem.data) ? resRem.data : [])
+      setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
       setLastSync(new Date())
       setLoading(false)
     } catch (error) {
       console.error("Error fetching dashboard data:", error)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -279,16 +337,16 @@ export default function Dashboard() {
     )
   }
 
-  const filteredAlerts = alerts.filter(a => {
+  const filteredAlerts = Array.isArray(alerts) ? alerts.filter(a => {
     const matchSeverity = severityFilter ? a.priority === severityFilter : true;
     const matchAsset = assetFilter ? a.asset_name === assetFilter : true;
     return matchSeverity && matchAsset;
-  });
+  }) : [];
 
-  const filteredRemediations = remediationLog.filter(r => {
+  const filteredRemediations = Array.isArray(remediationLog) ? remediationLog.filter(r => {
     const matchAsset = assetFilter ? r.asset_name?.toLowerCase().trim() === assetFilter.toLowerCase().trim() : true;
     return matchAsset;
-  });
+  }) : [];
 
   // Grouping logic for inventory
   const groupedInventory = inventory.reduce((acc, item) => {
@@ -306,7 +364,7 @@ export default function Dashboard() {
     return acc
   }, {})
 
-  const processedInventory = Object.values(groupedInventory)
+  const processedInventory = Array.isArray(Object.values(groupedInventory)) ? Object.values(groupedInventory)
     .filter(group => {
         const matchSearch = inventorySearch ? 
             group.name.toLowerCase().includes(inventorySearch.toLowerCase()) || 
@@ -324,7 +382,7 @@ export default function Dashboard() {
         const scoreA = (a.runtime_alerts_count * 10) + a.vulnerability_count
         const scoreB = (b.runtime_alerts_count * 10) + b.vulnerability_count
         return scoreB - scoreA || a.name.localeCompare(b.name)
-    });
+    }) : [];
 
   return (
     <div className="flex h-screen bg-[#0F172A] text-slate-300 font-sans overflow-hidden">
@@ -434,36 +492,36 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
                 <MetricCard 
                     label="Usuarios Activos" 
-                    value={stats.users} 
+                    value={stats?.users || 0} 
                     icon={<Users size={20} />} 
                     color="text-[#06B6D4]" 
                     sub="Sincronizado CDMX"
                 />
                 <MetricCard 
                     label="Endpoints" 
-                    value={stats.endpoints} 
+                    value={stats?.endpoints || 0} 
                     icon={<Server size={20} />} 
                     color="text-emerald-400" 
                     sub="Infraestructura Local"
                 />
                 <MetricCard 
                     label="Alertas Runtime" 
-                    value={stats.alerts} 
+                    value={stats?.alerts || 0} 
                     icon={<AlertTriangle size={20} />} 
                     color="text-red-400" 
-                    sub={`${vulnStats.critical} Críticas activas`}
+                    sub={`${vulnStats?.critical || 0} Críticas activas`}
                     highlight
                 />
                 <MetricCard 
                     label="Vulnerabilidades" 
-                    value={vulnStats.total} 
+                    value={vulnStats?.total || 0} 
                     icon={<ShieldAlert size={20} />} 
                     color="text-orange-400" 
                     sub="Pendientes de Remediar"
                 />
                 <MetricCard 
                     label="IA Remediation" 
-                    value={vulnStats.pending_ia} 
+                    value={vulnStats?.pending_ia || 0} 
                     icon={<Zap size={20} />} 
                     color="text-[#06B6D4]" 
                     sub="En cola de análisis"
@@ -557,7 +615,7 @@ export default function Dashboard() {
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
-                            data={riskData}
+                            data={Array.isArray(riskData) ? riskData : []}
                             cx="50%"
                             cy="50%"
                             innerRadius={60}
@@ -565,12 +623,14 @@ export default function Dashboard() {
                             paddingAngle={5}
                             dataKey="value"
                             onClick={(data) => {
-                                setSeverityFilter(data.severity);
-                                window.scrollTo({ top: 1000, behavior: 'smooth' });
+                                if (data && data.severity) {
+                                    setSeverityFilter(data.severity);
+                                    window.scrollTo({ top: 1000, behavior: 'smooth' });
+                                }
                             }}
                             className="cursor-pointer"
                           >
-                            {riskData.map((entry, index) => (
+                            {(Array.isArray(riskData) ? riskData : []).map((entry, index) => (
                               <Cell 
                                 key={`cell-${index}`} 
                                 fill={
@@ -1068,7 +1128,7 @@ export default function Dashboard() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {healthStatus.services.map((service, idx) => (
+                    {Array.isArray(healthStatus?.services) && healthStatus.services.map((service, idx) => (
                         <div key={idx} className="bg-[#1E293B] p-8 rounded-[32px] border border-slate-800 relative overflow-hidden group">
                             <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-all">
                                 <Cpu size={64} className="text-[#06B6D4]" />

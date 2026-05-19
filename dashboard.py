@@ -275,7 +275,7 @@ if not df_rem.empty:
             # Intentamos extraer el formato estructurado si existe
             summary = row['executive_summary']
             if "**Riesgo:**" in summary and "**Evidencia:**" in summary:
-                # Ya viene formateado desde sentinela.py
+                # Ya viene formateado desde centinela.py
                 st.info(summary)
             else:
                 st.info(f"**Riesgo Detectado:** {summary}")

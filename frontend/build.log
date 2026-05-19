@@ -1,0 +1,74 @@
+time="2026-05-15T17:08:44-06:00" level=warning msg="/home/ia/ecosistema-casmarts/centinela-ai/docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Image centinela-ai-centinela-backend Building 
+ Image centinela-ai-centinela-frontend Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.14kB done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 206B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/node:26-slim
+#3 DONE 1.5s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [1/5] FROM docker.io/library/node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30
+#5 resolve docker.io/library/node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30 0.0s done
+#5 DONE 0.0s
+
+#6 [2/5] WORKDIR /app
+#6 CACHED
+
+#7 [internal] load build context
+#7 transferring context: 1.24MB 0.6s done
+#7 DONE 0.7s
+
+#8 [3/5] COPY package*.json ./
+#8 DONE 0.2s
+
+#9 [4/5] RUN npm install --legacy-peer-deps
+#9 7.281 
+#9 7.281 added 435 packages, and audited 436 packages in 7s
+#9 7.281 
+#9 7.281 186 packages are looking for funding
+#9 7.281   run `npm fund` for details
+#9 7.285 
+#9 7.285 5 high severity vulnerabilities
+#9 7.285 
+#9 7.285 To address issues that do not require attention, run:
+#9 7.285   npm audit fix
+#9 7.285 
+#9 7.285 To address all issues (including breaking changes), run:
+#9 7.285   npm audit fix --force
+#9 7.285 
+#9 7.285 Run `npm audit` for details.
+#9 7.287 npm notice
+#9 7.287 npm notice New minor version of npm available! 11.13.0 -> 11.14.1
+#9 7.287 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.14.1
+#9 7.287 npm notice To update run: npm install -g npm@11.14.1
+#9 7.287 npm notice
+#9 DONE 9.7s
+
+#10 [5/5] COPY . .
+#10 DONE 7.9s
+
+#11 exporting to image
+#11 exporting layers
+#11 exporting layers 15.0s done
+#11 exporting manifest sha256:e161dda26f67a8bff277991a93e724166d97d969e13cfb365ea393c3ba2f8ee7 0.0s done
+#11 exporting config sha256:d19562186df6d3536427479ac1f1f3409b3bda7e3b85eab32621845554b9e412 0.0s done
+#11 exporting attestation manifest sha256:b5684500641d383b3b01fec1b36450d8b40ee71373ffcb8ccfa9071abd0dabe0 0.0s done
+#11 exporting manifest list sha256:cc3429dde0a475f14e6b21379617453bb77bcec65e024ab07a74a55b926cf7f6
+#11 exporting manifest list sha256:cc3429dde0a475f14e6b21379617453bb77bcec65e024ab07a74a55b926cf7f6 0.0s done
+#11 naming to docker.io/library/centinela-ai-centinela-frontend:latest done
+#11 unpacking to docker.io/library/centinela-ai-centinela-frontend:latest
+#11 unpacking to docker.io/library/centinela-ai-centinela-frontend:latest 9.6s done
+#11 DONE 24.7s
+
+#12 resolving provenance for metadata file
+#12 DONE 0.1s
+ Image centinela-ai-centinela-frontend Built 
