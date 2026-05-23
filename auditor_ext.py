@@ -4,6 +4,56 @@ import subprocess
 import json
 import os
 import time
+import auditor_medusa
+import queue
+import threading
+
+class EventDispatcher:
+    def __init__(self):
+        self.handlers = {}
+        self.queue = queue.Queue()
+        self.worker_thread = None
+        self.running = False
+
+    def register(self, event_type, handler):
+        if event_type not in self.handlers:
+            self.handlers[event_type] = []
+        self.handlers[event_type].append(handler)
+
+    def trigger(self, event_type, data):
+        print(f"📣 [Event-Dispatcher] Triggering event '{event_type}' with data: {data}")
+        self.queue.put((event_type, data))
+
+    def start(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
+        self.running = True
+        self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
+        self.worker_thread.start()
+
+    def stop(self):
+        self.running = False
+        self.queue.put((None, None))
+
+    def _process_queue(self):
+        while self.running:
+            try:
+                event_type, data = self.queue.get(timeout=1.0)
+                if event_type is None:
+                    break
+                
+                handlers = self.handlers.get(event_type, [])
+                for handler in handlers:
+                    try:
+                        handler(data)
+                    except Exception as e:
+                        print(f"❌ [Event-Dispatcher] Error running handler for '{event_type}': {e}")
+                self.queue.task_done()
+            except queue.Empty:
+                continue
+
+# Instantiate global dispatcher
+dispatcher = EventDispatcher()
 
 # DB_CONFIG moved to db_manager.py
 
@@ -72,6 +122,12 @@ def scan_repo(asset_id, repo):
             log_audit(asset_id, f"Escaneo de repositorio {repo} completado. No se encontraron fallos de seguridad en el código o IaC.")
     else:
         log_audit(asset_id, f"Escaneo de repositorio {repo} completado. No se encontraron fallos de seguridad en el código o IaC.")
+    
+    # AI-First SAST Scan via Medusa
+    try:
+        auditor_medusa.run_medusa_scan(repo, asset_id)
+    except Exception as e:
+        print(f"❌ Error invoking Medusa scan: {e}")
 
 def scan_database(asset_id, endpoint):
     print(f"🗄️ [Auditor-Ext] Scanning SQL Database: {endpoint}")
@@ -205,7 +261,48 @@ def scan_appserver(asset_id, endpoint):
         
         log_audit(asset_id, audit_msg)
 
+def handle_asset_discovered(data):
+    asset_id = data["id"]
+    a_type = data["type"]
+    endpoint = data["endpoint"]
+    
+    if a_type == 'IP':
+        scan_ip(asset_id, endpoint)
+    elif a_type == 'URL':
+        scan_url(asset_id, endpoint)
+    elif a_type == 'Repository':
+        scan_repo(asset_id, endpoint)
+    elif a_type == 'Database (SQL)':
+        scan_database(asset_id, endpoint)
+    elif a_type == 'NoSQL':
+        scan_nosql(asset_id, endpoint)
+    elif a_type == 'Cache/Memory':
+        scan_cache(asset_id, endpoint)
+    elif a_type == 'Container':
+        scan_container(asset_id, endpoint)
+    elif a_type == 'AppServer':
+        if endpoint == 'remote-agent':
+            log_audit(asset_id, "Wazuh Agent detectado pero no reporta IP aún. Escaneo externo omitido hasta que el agente sincronice su red.")
+        else:
+            scan_appserver(asset_id, endpoint)
+
+def handle_osint_enrichment(data):
+    a_type = data["type"]
+    if a_type in ["IP", "URL", "AppServer"]:
+        try:
+            import discovery_osint
+            discovery_osint.run_osint_discovery()
+        except Exception as e:
+            print(f"❌ [Event-Dispatcher] OSINT Enrichment failed: {e}")
+
+# Register handlers to pub-sub event dispatcher
+dispatcher.register("ASSET_DISCOVERED", handle_asset_discovered)
+dispatcher.register("ASSET_DISCOVERED", handle_osint_enrichment)
+
 def main():
+    # Start background dispatcher worker thread
+    dispatcher.start()
+    
     while True:
         try:
             with db_manager.get_db_cursor() as cur:
@@ -215,26 +312,18 @@ def main():
             # Connection is returned to pool after context manager ends
 
             for asset_id, a_type, endpoint in assets:
-                if a_type == 'IP':
-                    scan_ip(asset_id, endpoint)
-                elif a_type == 'URL':
-                    scan_url(asset_id, endpoint)
-                elif a_type == 'Repository':
-                    scan_repo(asset_id, endpoint)
-                elif a_type == 'Database (SQL)':
-                    scan_database(asset_id, endpoint)
-                elif a_type == 'NoSQL':
-                    scan_nosql(asset_id, endpoint)
-                elif a_type == 'Cache/Memory':
-                    scan_cache(asset_id, endpoint)
-                elif a_type == 'Container':
-                    scan_container(asset_id, endpoint)
-                elif a_type == 'AppServer':
-                    if endpoint == 'remote-agent':
-                        log_audit(asset_id, "Wazuh Agent detectado pero no reporta IP aún. Escaneo externo omitido hasta que el agente sincronice su red.")
-                    else:
-                        scan_appserver(asset_id, endpoint)
+                dispatcher.trigger("ASSET_DISCOVERED", {"id": asset_id, "type": a_type, "endpoint": endpoint})
             
+            # Wait for all asynchronous event-driven tasks in this cycle to complete
+            dispatcher.queue.join()
+            
+            # Run temporal heuristics engine correlation
+            try:
+                import heuristics_engine
+                heuristics_engine.run_heuristics_correlation()
+            except Exception as e:
+                print(f"❌ Error invoking Heuristics Engine: {e}")
+
             print("😴 [Auditor-Ext] Scan cycle complete. Sleeping for 10 minutes...")
             time.sleep(600)
         except Exception as e:
