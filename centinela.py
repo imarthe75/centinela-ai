@@ -303,12 +303,26 @@ def process_falco_alerts():
         
         time.sleep(1)
 
+def run_heuristics_loop():
+    """Runs the temporal correlation engine every 60 seconds."""
+    import heuristics_engine
+    while True:
+        try:
+            heuristics_engine.run_heuristics_correlation()
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error running heuristics correlation: {e}")
+        time.sleep(60)
+
 def main_loop():
     print("🚀 [Centinela-AI] Aura-Guard v2026.4.2 active.")
     
     import threading
     falco_thread = threading.Thread(target=process_falco_alerts, daemon=True)
     falco_thread.start()
+    
+    # Start real-time Heuristics Engine thread
+    heuristics_thread = threading.Thread(target=run_heuristics_loop, daemon=True)
+    heuristics_thread.start()
     
     # External Auditor Thread
     import auditor_ext
