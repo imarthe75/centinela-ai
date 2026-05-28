@@ -1,0 +1,194 @@
+/* ==========================================================================
+   CÍVIKA DESIGN SYSTEM — CSS DESIGN TOKENS
+   Versión 1.1 | Ecosistema CASMARTS
+   Soporte nativo para modo claro, oscuro y sincronización multidominio.
+   ========================================================================== */
+
+:root {
+  /* ==========================================================================
+     CAPA 1: TOKENS PRIMITIVOS (Escala de grises Slate y estados fijos)
+     ========================================================================== */
+  --primitive-gray-50:  #f8fafc;
+  --primitive-gray-100: #f1f5f9;
+  --primitive-gray-200: #e2e8f0;
+  --primitive-gray-300: #cbd5e1;
+  --primitive-gray-400: #94a3b8;
+  --primitive-gray-500: #64748b;
+  --primitive-gray-600: #475569;
+  --primitive-gray-700: #334155;
+  --primitive-gray-800: #1e293b;
+  --primitive-gray-900: #0f172a;
+
+  /* Estados semánticos invariables (Valores base) */
+  --primitive-green-600: #16a34a;  --primitive-green-50:  #f0fdf4;  --primitive-green-100: #dcfce7;
+  --primitive-red-600:   #dc2626;  --primitive-red-50:    #fef2f2;  --primitive-red-100:   #fee2e2;
+  --primitive-amber-600: #d97706;  --primitive-amber-50:  #fffbeb;  --primitive-amber-100: #fef3c7;
+  --primitive-blue-700:  #1d4ed8;  --primitive-blue-50:   #eff6ff;  --primitive-blue-100:  #dbeafe;
+
+  /* Tipografía base */
+  --primitive-font-sans: 'DM Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --primitive-font-mono: 'DM Mono', 'Cascadia Code', 'Consolas', monospace;
+
+  /* Escala de texto */
+  --primitive-text-xs:   0.75rem;
+  --primitive-text-sm:   0.875rem;
+  --primitive-text-base: 1rem;
+  --primitive-text-lg:   1.125rem;
+  --primitive-text-xl:   1.25rem;
+  --primitive-text-2xl:  1.5rem;
+  --primitive-text-3xl:  1.875rem;
+
+  /* Radios de Borde */
+  --primitive-radius-none: 0px;
+  --primitive-radius-sm:   4px;
+  --primitive-radius-md:   8px;   /* Estándar Átomos: botones, inputs */
+  --primitive-radius-lg:   14px;  /* Estándar Organismos: cards, modales */
+  --primitive-radius-xl:   20px;
+  --primitive-radius-full: 9999px;
+
+  /* Dimensiones interactivas (Cumplimiento WCAG 2.5.5: mínimo 44px para touch target) */
+  --primitive-touch-sm:   32px;  /* Excepción para tablas súper compactas */
+  --primitive-touch-base: 44px;  /* Estándar obligatorio */
+  --primitive-touch-lg:   48px;  /* Botones de acción principal / Login */
+
+  /* ==========================================================================
+     CAPA 2: MAPEO DE TOKENS SEMÁNTICOS (Estructuras de Componentes)
+     ========================================================================== */
+  --font-body:      var(--primitive-font-sans);
+  --font-code:      var(--primitive-font-mono);
+  --text-size-xs:   var(--primitive-text-xs);
+  --text-size-sm:   var(--primitive-text-sm);
+  --text-size-base: var(--primitive-text-base);
+  --text-size-lg:   var(--primitive-text-lg);
+  --text-size-xl:   var(--primitive-text-xl);
+  --text-size-2xl:  var(--primitive-text-2xl);
+  --text-size-3xl:  var(--primitive-text-3xl);
+
+  --radius-atom:      var(--primitive-radius-md);
+  --radius-organism:  var(--primitive-radius-lg);
+  --radius-container: var(--primitive-radius-xl);
+  --radius-pill:      var(--primitive-radius-full);
+
+  --height-btn-sm:   var(--primitive-touch-sm);
+  --height-btn-base: var(--primitive-touch-base);
+  --height-btn-lg:   var(--primitive-touch-lg);
+  --height-input:    var(--primitive-touch-base);
+  --height-header:   64px;
+
+  --transition-fast:    all 0.12s ease;
+  --transition-default: all 0.15s ease;
+}
+
+/* ==========================================================================
+   CAPA 3: CONFIGURACIONES ESPECÍFICAS DE TEMA (Luz / Contraste)
+   ========================================================================== */
+
+/* --- TEMA CLARO (Default) --- */
+:root, [data-theme="light"] {
+  /* Marca Corporativa Casmarts / Civika */
+  --brand:       #1a3a5c;
+  --brand-hover: #142e4a;
+  --brand-light: rgba(26, 58, 92, 0.08);
+  --brand-glow:  rgba(26, 58, 92, 0.16);
+  --brand-on:    #ffffff;
+  --brand-link:  #1a3a5c;
+
+  /* Superficies */
+  --bg-page:           var(--primitive-gray-50);
+  --bg-surface:        #ffffff;
+  --bg-input:          #ffffff;
+  --bg-input-disabled: var(--primitive-gray-100);
+  --bg-table-header:   var(--primitive-gray-50);
+
+  /* Texto */
+  --text-primary:   var(--primitive-gray-800);
+  --text-secondary: var(--primitive-gray-600);
+  --text-tertiary:  var(--primitive-gray-500);
+  --text-disabled:  var(--primitive-gray-400);
+  --text-inverse:   #ffffff;
+  --text-h1:        var(--primitive-gray-900);
+  --text-h2:        var(--primitive-gray-800);
+  --text-h3:        var(--primitive-gray-700);
+
+  /* Bordes */
+  --border-subtle:  var(--primitive-gray-100);
+  --border-default: var(--primitive-gray-300);
+  --border-strong:  var(--primitive-gray-400);
+
+  /* Mapeos de Estado */
+  --color-success-text:   var(--primitive-green-600);
+  --color-success-bg:     var(--primitive-green-50);
+  --color-success-border: var(--primitive-green-100);
+  
+  --color-error-text:     var(--primitive-red-600);
+  --color-error-bg:       var(--primitive-red-50);
+  --color-error-border:   var(--primitive-red-100);
+  
+  --color-warning-text:   var(--primitive-amber-600);
+  --color-warning-bg:     var(--primitive-amber-50);
+  --color-warning-border: var(--primitive-amber-100);
+  
+  --color-info-text:      var(--primitive-blue-700);
+  --color-info-bg:        var(--primitive-blue-50);
+  --color-info-border:    var(--primitive-blue-100);
+
+  /* Sombras y Luces */
+  --shadow-card:  0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.10), 0 4px 8px rgba(0, 0, 0, 0.06);
+  --shadow-focus: 0 0 0 3px var(--brand-glow);
+}
+
+/* --- TEMA OSCURO (Contraste Asegurado WCAG AA) --- */
+[data-theme="dark"] {
+  /* Marca Adaptada para fondo oscuro */
+  --brand:       #3b82f6; 
+  --brand-hover: #60a5fa;
+  --brand-light: rgba(59, 130, 246, 0.15);
+  --brand-glow:  rgba(59, 130, 246, 0.25);
+  --brand-on:    #0f172a;
+  --brand-link:  #60a5fa;
+
+  /* Superficies Oscuras */
+  --bg-page:           #090d16; 
+  --bg-surface:        #0f172a; 
+  --bg-input:          #1e293b; 
+  --bg-input-disabled: #0f172a;
+  --bg-table-header:   #1e293b;
+
+  /* Texto (Alto contraste) */
+  --text-primary:   #f8fafc; 
+  --text-secondary: #cbd5e1; 
+  --text-tertiary:  #94a3b8; 
+  --text-disabled:  #64748b; 
+  --text-inverse:   #0f172a;
+  --text-h1:        #ffffff;
+  --text-h2:        #f8fafc;
+  --text-h3:        #cbd5e1;
+
+  /* Bordes */
+  --border-subtle:  #1e293b;
+  --border-default: #334155; 
+  --border-strong:  #475569;
+
+  /* Mapeos de Estado (Luminosidad adaptada) */
+  --color-success-text:   #4ade80; 
+  --color-success-bg:     rgba(22, 163, 74, 0.15);
+  --color-success-border: rgba(22, 163, 74, 0.3);
+  
+  --color-error-text:     #f87171;
+  --color-error-bg:       rgba(220, 38, 38, 0.15);
+  --color-error-border:   rgba(220, 38, 38, 0.3);
+  
+  --color-warning-text:   #fbbf24;
+  --color-warning-bg:     rgba(217, 119, 6, 0.15);
+  --color-warning-border: rgba(217, 119, 6, 0.3);
+  
+  --color-info-text:      #60a5fa;
+  --color-info-bg:        rgba(29, 78, 216, 0.15);
+  --color-info-border:    rgba(29, 78, 216, 0.3);
+
+  /* Sombras y Luces */
+  --shadow-card:  0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px var(--brand-glow);
+}

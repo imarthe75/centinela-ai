@@ -9,7 +9,7 @@ Bienvenido a **Centinela-AI**, la plataforma de detección y respuesta extendida
 
 ## 2. Inicio de Sesión
 Acceda con sus credenciales institucionales a través de la URL:
-`https://arquitectura.casmart.internal/centinela/`
+`https://centinela.casmart.internal/`
 
 ## 2. El Dashboard Principal
 Al entrar, verá un resumen de la postura de seguridad nacional:
@@ -43,7 +43,7 @@ Para habilitar la remediación automática (SOAR) en servidores virtuales o fís
 1. **Descargar e Instalar el Agente:**
    ```bash
    curl -sO https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.x_amd64.deb
-   sudo WAZUH_MANAGER="arquitectura.casmart.internal" dpkg -i wazuh-agent*.deb
+   sudo WAZUH_MANAGER="wazuh.casmart.internal" dpkg -i wazuh-agent*.deb
    ```
 
 2. **Iniciar el Servicio:**

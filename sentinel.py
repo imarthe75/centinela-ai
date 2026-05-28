@@ -13,7 +13,7 @@ ANSIBLE_PLAYBOOK = "/app/remediate_wildfly.yml"
 
 def get_sudo_password(asset_name: str) -> str:
     """
-    Reads the sudo password for an asset from HashiCorp Vault (KV v1).
+    Reads the sudo password for an asset from HashiCorp Vault (KV v2 with v1 fallback).
     Path: secret/casmarts/ansible/{asset_name}
     Falls back to ANSIBLE_BECOME_PASS env var if Vault is unavailable.
     """
@@ -24,12 +24,24 @@ def get_sudo_password(asset_name: str) -> str:
         if not client.is_authenticated():
             print(f"⚠️ [Aura-Sentinel] Vault not authenticated. Using env fallback for {asset_name}.")
             return os.getenv("ANSIBLE_BECOME_PASS", "")
-        # KV v1 path: secret/casmarts/ansible/{asset_name}
-        result = client.secrets.kv.v1.read_secret(
-            path=f"casmarts/ansible/{asset_name}",
-            mount_point="secret"
-        )
-        password = result["data"].get("sudo_password", "")
+        
+        password = ""
+        try:
+            result = client.secrets.kv.v2.read_secret_version(
+                path=f"casmarts/ansible/{asset_name}",
+                mount_point="secret"
+            )
+            password = result["data"]["data"].get("sudo_password", "")
+        except Exception:
+            try:
+                result = client.secrets.kv.v1.read_secret(
+                    path=f"casmarts/ansible/{asset_name}",
+                    mount_point="secret"
+                )
+                password = result["data"].get("sudo_password", "")
+            except Exception:
+                pass
+                
         if password:
             print(f"🔒 [Aura-Sentinel] Sudo credential for '{asset_name}' loaded from Vault.")
         else:
@@ -49,13 +61,25 @@ def get_ansible_user(asset_name: str) -> str:
     try:
         client = hvac.Client(url=vault_addr, token=vault_token)
         if client.is_authenticated():
-            result = client.secrets.kv.v1.read_secret(
-                path=f"casmarts/ansible/{asset_name}",
-                mount_point="secret"
-            )
-            user = result["data"].get("ansible_user", "")
-            if user:
-                return user
+            try:
+                result = client.secrets.kv.v2.read_secret_version(
+                    path=f"casmarts/ansible/{asset_name}",
+                    mount_point="secret"
+                )
+                user = result["data"]["data"].get("ansible_user", "")
+                if user:
+                    return user
+            except Exception:
+                try:
+                    result = client.secrets.kv.v1.read_secret(
+                        path=f"casmarts/ansible/{asset_name}",
+                        mount_point="secret"
+                    )
+                    user = result["data"].get("ansible_user", "")
+                    if user:
+                        return user
+                except Exception:
+                    pass
     except Exception:
         pass
     return os.getenv("ANSIBLE_REMOTE_USER", "pmcp")
@@ -71,7 +95,10 @@ def ansible_remediate(ip, cve_id, asset_name=""):
             "-i", ANSIBLE_INVENTORY, 
             ANSIBLE_PLAYBOOK,
             "-e", f"ansible_user={ansible_user}",
-            "-e", f"ansible_become_pass={sudo_pass}"
+            "-e", f"ansible_become_pass={sudo_pass}",
+            "-e", f"ansible_ssh_pass={sudo_pass}",
+            "-e", f"ansible_password={sudo_pass}",
+            "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
         ]
         # We allow exit code 0 or 2 (partial success in Ansible)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -186,7 +213,10 @@ def process_remediations():
                                 "/app/remediate_generic.yml",
                                 "-e", f"script_content='{escaped_content}'",
                                 "-e", f"ansible_user={ansible_user}",
-                                "-e", f"ansible_become_pass={sudo_pass}"
+                                "-e", f"ansible_become_pass={sudo_pass}",
+                                "-e", f"ansible_ssh_pass={sudo_pass}",
+                                "-e", f"ansible_password={sudo_pass}",
+                                "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
                             ]
                             try:
                                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)

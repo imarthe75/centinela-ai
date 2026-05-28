@@ -280,7 +280,7 @@ def handle_asset_discovered(data):
         scan_cache(asset_id, endpoint)
     elif a_type == 'Container':
         scan_container(asset_id, endpoint)
-    elif a_type == 'AppServer':
+    elif a_type == 'AppServer' or a_type == 'SERVER':
         if endpoint == 'remote-agent':
             log_audit(asset_id, "Wazuh Agent detectado pero no reporta IP aún. Escaneo externo omitido hasta que el agente sincronice su red.")
         else:
@@ -288,7 +288,7 @@ def handle_asset_discovered(data):
 
 def handle_osint_enrichment(data):
     a_type = data["type"]
-    if a_type in ["IP", "URL", "AppServer"]:
+    if a_type in ["IP", "URL", "AppServer", "SERVER"]:
         try:
             import discovery_osint
             discovery_osint.run_osint_discovery()
@@ -306,7 +306,7 @@ def main():
     while True:
         try:
             with db_manager.get_db_cursor() as cur:
-                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer')")
+                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER')")
                 assets = cur.fetchall()
             
             # Connection is returned to pool after context manager ends

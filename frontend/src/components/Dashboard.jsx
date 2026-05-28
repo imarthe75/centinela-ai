@@ -82,6 +82,9 @@ export default function Dashboard() {
   const [inventoryTypeFilter, setInventoryTypeFilter] = useState('')
   
   const [assetStatusFilter, setAssetStatusFilter] = useState('ALL') // NEW: ALL, VULNERABLE, ATTACKED
+  const [soarSeverityFilter, setSoarSeverityFilter] = useState('ALL')
+  const [soarStatusFilter, setSoarStatusFilter] = useState('ALL')
+  const [soarSearch, setSoarSearch] = useState('')
   
   // Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -345,7 +348,18 @@ export default function Dashboard() {
 
   const filteredRemediations = Array.isArray(remediationLog) ? remediationLog.filter(r => {
     const matchAsset = assetFilter ? r.asset_name?.toLowerCase().trim() === assetFilter.toLowerCase().trim() : true;
-    return matchAsset;
+    const matchSeverity = soarSeverityFilter && soarSeverityFilter !== 'ALL' ? r.severity === soarSeverityFilter : true;
+    const matchStatus = soarStatusFilter && soarStatusFilter !== 'ALL' ? (
+      soarStatusFilter === 'REMEDIADO' ? r.executed_bool === true :
+      soarStatusFilter === 'CORRELATED' ? r.status === 'CORRELATED' && !r.executed_bool :
+      soarStatusFilter === 'PENDIENTE' ? (r.status === 'NEW' || r.status === 'PENDING') && !r.executed_bool :
+      soarStatusFilter === 'AI_FAILED' ? r.status === 'AI_FAILED' && !r.executed_bool : true
+    ) : true;
+    const matchSearch = soarSearch ? (
+      r.cve_id?.toLowerCase().includes(soarSearch.toLowerCase()) || 
+      r.script_path?.toLowerCase().includes(soarSearch.toLowerCase())
+    ) : true;
+    return matchAsset && matchSeverity && matchStatus && matchSearch;
   }) : [];
 
   // Grouping logic for inventory
@@ -354,11 +368,13 @@ export default function Dashboard() {
       acc[item.asset_name] = {
         name: item.asset_name,
         vulnerability_count: 0,
+        resolved_count: 0,
         runtime_alerts_count: 0,
         interfaces: []
       }
     }
     acc[item.asset_name].vulnerability_count += parseInt(item.vulnerability_count || 0)
+    acc[item.asset_name].resolved_count += parseInt(item.resolved_count || 0)
     acc[item.asset_name].runtime_alerts_count += parseInt(item.runtime_alerts_count || 0)
     acc[item.asset_name].interfaces.push(item)
     return acc
@@ -690,6 +706,66 @@ export default function Dashboard() {
                         </div>
                     </div>
                 </div>
+ 
+                {/* FILTERS TOOLBAR */}
+                <div className="flex flex-wrap items-center justify-between gap-4 bg-[#1E293B] p-4 rounded-2xl border border-slate-800">
+                    <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+                        {/* Search Input */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-xl border border-slate-800 focus-within:border-[#06B6D4] transition-all w-full sm:w-64">
+                            <Search size={14} className="text-slate-500" />
+                            <input 
+                                type="text" 
+                                placeholder="Buscar CVE o Script..." 
+                                value={soarSearch}
+                                onChange={(e) => setSoarSearch(e.target.value)}
+                                className="bg-transparent border-none text-[10px] focus:ring-0 text-slate-300 font-bold placeholder:text-slate-600 outline-none w-full" 
+                            />
+                        </div>
+
+                        {/* Severity Select */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-2 rounded-xl border border-slate-800">
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Severidad:</span>
+                            <select 
+                                value={soarSeverityFilter}
+                                onChange={(e) => setSoarSeverityFilter(e.target.value)}
+                                className="bg-transparent border-none text-[10px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0"
+                            >
+                                <option value="ALL">TODAS</option>
+                                <option value="CRITICAL">CRITICAL</option>
+                                <option value="HIGH">HIGH</option>
+                                <option value="MEDIUM">MEDIUM</option>
+                                <option value="LOW">LOW</option>
+                            </select>
+                        </div>
+
+                        {/* Status Select */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-2 rounded-xl border border-slate-800">
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Estado:</span>
+                            <select 
+                                value={soarStatusFilter}
+                                onChange={(e) => setSoarStatusFilter(e.target.value)}
+                                className="bg-transparent border-none text-[10px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0"
+                            >
+                                <option value="ALL">TODOS</option>
+                                <option value="REMEDIADO">REMEDIADOS</option>
+                                <option value="CORRELATED">LISTO PARA APROBAR</option>
+                                <option value="PENDIENTE">PENDIENTE IA</option>
+                                <option value="AI_FAILED">FALLO IA</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                        {(soarSearch || soarSeverityFilter !== 'ALL' || soarStatusFilter !== 'ALL') && (
+                            <button 
+                                onClick={() => { setSoarSearch(''); setSoarSeverityFilter('ALL'); setSoarStatusFilter('ALL'); }}
+                                className="px-4 py-2 rounded-xl bg-slate-850 hover:bg-slate-700 text-slate-400 hover:text-white text-[9px] font-black uppercase tracking-widest transition-all"
+                            >
+                                Limpiar Filtros
+                            </button>
+                        )}
+                    </div>
+                </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     <div className={`${selectedRemediation ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-6 transition-all duration-500`}>
@@ -748,7 +824,11 @@ export default function Dashboard() {
                                                 </td>
                                                 <td className="p-6">
                                                     <div className="flex items-center gap-2">
-                                                        {log.cve_id === 'SCAN-AUDIT' ? (
+                                                        {['db-primary', 'db-replica-1', 'db-replica-2', 'cache', 'vault', 'gateway', 'storage', 'netdata', 'dozzle', 'opensign-mongo'].some(h => log.asset_name?.toLowerCase().includes(h)) ? (
+                                                            <span className="text-[9px] font-black text-cyan-400 uppercase bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20" title="Mitigado nativamente mediante Hardening">SEGURO (HARDENING)</span>
+                                                        ) : ['plane', 'penpot', 'gitea', 'redmine', 'camunda', 'sonar', 'wiki', 'drawio', 'plantuml', 'opendesign'].some(t => log.asset_name?.toLowerCase().includes(t)) ? (
+                                                            <span className="text-[9px] font-black text-slate-400 uppercase bg-slate-800 px-2 py-0.5 rounded border border-slate-700" title="Soporte y remediaciones a cargo de proveedor">PROVEEDOR (SUITE)</span>
+                                                        ) : log.cve_id === 'SCAN-AUDIT' ? (
                                                             <span className="text-[9px] font-black text-blue-400 uppercase tracking-tighter">FINALIZADO (SIN HALLAZGOS)</span>
                                                         ) : log.executed_bool ? (
                                                             <span className="text-[9px] font-black text-emerald-500 uppercase">REMEDIADO</span>
@@ -789,12 +869,28 @@ export default function Dashboard() {
                                         </button>
                                     </div>
                                     
-                                    <div className="space-y-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div className="flex items-center gap-3 p-4 bg-[#0F172A] rounded-2xl border border-slate-800">
                                             <Server size={18} className="text-slate-500" />
                                             <div>
                                                 <p className="text-[9px] text-slate-500 font-bold uppercase">Asset Afectado</p>
                                                 <p className="text-xs font-bold text-white">{selectedRemediation.asset_name}</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 p-4 bg-[#0F172A] rounded-2xl border border-slate-800">
+                                            <Cpu size={18} className="text-[#06B6D4]" />
+                                            <div>
+                                                <p className="text-[9px] text-slate-500 font-bold uppercase">Motor Detector</p>
+                                                <p className="text-xs font-bold text-white">{selectedRemediation.detection_engine || "Externo / API"}</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 p-4 bg-[#0F172A] rounded-2xl border border-slate-800">
+                                            <Clock size={18} className="text-slate-500" />
+                                            <div>
+                                                <p className="text-[9px] text-slate-500 font-bold uppercase">Detección</p>
+                                                <p className="text-xs font-bold text-white">
+                                                    {selectedRemediation.detected_at ? new Date(selectedRemediation.detected_at).toLocaleString() : "Sin fecha"}
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
@@ -1048,9 +1144,19 @@ export default function Dashboard() {
                                             </div>
                                         ))}
                                     </div>
-                                    <div className="text-right">
+                                    <div className="text-right flex flex-col items-end gap-1">
                                         <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">Sincronizado</p>
-                                        <p className="text-[9px] text-slate-500 font-bold">Health: 100%</p>
+                                        {['db-primary', 'db-replica-1', 'db-replica-2', 'cache', 'vault', 'gateway', 'storage', 'netdata', 'dozzle', 'opensign-mongo'].some(h => group.name.toLowerCase().includes(h)) ? (
+                                            <span className="text-[8px] bg-cyan-500/10 text-cyan-400 font-black px-2 py-0.5 rounded-md border border-cyan-500/20 uppercase tracking-wider scale-95 origin-right" title="Mitigado nativamente mediante Hardening e imágenes mínimas">
+                                                Seguro por Diseño
+                                            </span>
+                                        ) : ['plane', 'penpot', 'gitea', 'redmine', 'camunda', 'sonar', 'wiki', 'drawio', 'plantuml', 'opendesign'].some(t => group.name.toLowerCase().includes(t)) ? (
+                                            <span className="text-[8px] bg-slate-800 text-slate-400 font-black px-2 py-0.5 rounded-md border border-slate-700 uppercase tracking-wider scale-95 origin-right" title="Componente de suite de terceros. Control de ciclo de vida gestionado por proveedor.">
+                                                Suite de Terceros
+                                            </span>
+                                        ) : (
+                                            <p className="text-[9px] text-slate-500 font-bold">Health: 100%</p>
+                                        )}
                                     </div>
                                 </div>
                                 
@@ -1062,8 +1168,13 @@ export default function Dashboard() {
                                         <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-1">Vulnerabilidades</p>
                                         <div className="flex items-center gap-2">
                                             <ShieldAlert size={14} className={group.vulnerability_count > 0 ? 'text-orange-400' : 'text-slate-600'} />
-                                            <span className={`text-lg font-black ${group.vulnerability_count > 0 ? 'text-orange-400' : 'text-slate-400'}`}>
+                                            <span className={`text-lg font-black ${group.vulnerability_count > 0 ? 'text-orange-400' : 'text-slate-400'} flex items-center`}>
                                                 {group.vulnerability_count}
+                                                {group.resolved_count > 0 && (
+                                                    <span className="text-[10px] text-emerald-400 font-black tracking-tighter bg-emerald-500/10 px-2 py-0.5 rounded-md ml-2 border border-emerald-500/20" title={`${group.resolved_count} resueltas`}>
+                                                        ✓ {group.resolved_count}
+                                                    </span>
+                                                )}
                                             </span>
                                         </div>
                                     </div>
