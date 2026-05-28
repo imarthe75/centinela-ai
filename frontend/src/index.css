@@ -1,10 +1,19 @@
 @import "tailwindcss";
 
 @theme {
-  --color-centinela-red: #e53e3e;
-  --color-centinela-dark: #1a202c;
+  --color-centinela-red: #dc2626;
+  --color-centinela-dark: #1a3a5c;
 }
 
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
+
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'DM Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --radius-atom: 8px;
+  --radius-organism: 14px;
+  --height-btn-base: 44px;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
 }

@@ -1,0 +1,39 @@
+---
+- name: Install and configure Wazuh Agent on Casmarts Clones
+  hosts: all
+  become: yes
+  tasks:
+    - name: Import Wazuh GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+        validate_certs: no
+      ignore_errors: yes
+
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        update_cache: yes
+      ignore_errors: yes
+
+    - name: Install Wazuh Agent
+      apt:
+        name: wazuh-agent
+        state: present
+      ignore_errors: yes
+
+    - name: Configure Wazuh Manager IP in ossec.conf
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<address>.*</address>'
+        replace: '<address>10.4.3.28</address>'
+      ignore_errors: yes
+
+    - name: Restart and enable Wazuh Agent
+      systemd:
+        name: wazuh-agent
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+      ignore_errors: yes

@@ -13,8 +13,8 @@ def login():
 
 def logout():
     st.session_state.authenticated = False
-    # Redirección global para cerrar sesión en Authentik también
-    st.markdown(f'<meta http-equiv="refresh" content="0; url=https://arquitectura.casmart.internal/application/o/centinela-ai/end-session/?post_logout_redirect_uri=https://arquitectura.casmart.internal/centinela/">', unsafe_allow_html=True)
+    _authentik = os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal")
+    st.markdown(f'<meta http-equiv="refresh" content="0; url={_authentik}/application/o/centinela-cai/end-session/?post_logout_redirect_uri={_authentik}/centinela/">', unsafe_allow_html=True)
     st.stop()
 
 # Configuración de Base de Datos

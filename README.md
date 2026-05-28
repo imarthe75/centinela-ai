@@ -40,7 +40,7 @@ docker compose up -d --build
 
 ## 🖥️ Arquitectura de Mando Regional
 
-Accede a través del portal central: `https://arquitectura.casmart.internal/centinela/`
+Accede a través del portal central: `https://centinela.casmart.internal`
 
 ## 🧠 ¿Qué es una Plataforma SOAR? (In-Depth)
 
