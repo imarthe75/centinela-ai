@@ -28,7 +28,7 @@ services:
     - DB_PASSWORD=${DB_PASSWORD}
     - VALKEY_HOST=casmarts-core-cache
     - AUTHENTIK_URL=https://auth.casmart.internal
-    - AUTHENTIK_CLIENT_ID=centinela-cai
+    - AUTHENTIK_CLIENT_ID=centinela-ai
     - AUTHENTIK_INTERNAL_URL=http://casmarts-core-authentik-server:9000
     working_dir: /app
     command: python centinela.py
@@ -56,7 +56,7 @@ services:
     - VAULT_ADDR=http://casmarts-core-vault:8200
     - VAULT_TOKEN=${VAULT_TOKEN:-root}
     - AUTHENTIK_URL=https://auth.casmart.internal
-    - AUTHENTIK_CLIENT_ID=centinela-cai
+    - AUTHENTIK_CLIENT_ID=centinela-ai
     - AUTHENTIK_INTERNAL_URL=http://casmarts-core-authentik-server:9000
     ports:
     - 8302:8000
