@@ -297,7 +297,6 @@ def handle_osint_enrichment(data):
 
 # Register handlers to pub-sub event dispatcher
 dispatcher.register("ASSET_DISCOVERED", handle_asset_discovered)
-dispatcher.register("ASSET_DISCOVERED", handle_osint_enrichment)
 
 def main():
     # Start background dispatcher worker thread
@@ -323,6 +322,13 @@ def main():
                 heuristics_engine.run_heuristics_correlation()
             except Exception as e:
                 print(f"❌ Error invoking Heuristics Engine: {e}")
+
+            # Run OSINT enrichment ONCE per cycle rather than for every single asset individually
+            try:
+                import discovery_osint
+                discovery_osint.run_osint_discovery()
+            except Exception as e:
+                print(f"❌ Error running OSINT enrichment: {e}")
 
             print("😴 [Auditor-Ext] Scan cycle complete. Sleeping for 10 minutes...")
             time.sleep(600)
