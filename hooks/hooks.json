@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "id": "pre-compact-check",
+        "description": "Verifica si el contexto requiere compactación antes de ejecutar herramientas largas",
+        "command": "node scripts/hooks/pre-compact.js",
+        "condition": "always"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "id": "post-edit-validation",
+        "description": "Valida la calidad del archivo modificado mediante tests o formateadores locales",
+        "command": "node scripts/hooks/post-edit.js",
+        "condition": "on_edit"
+      }
+    ],
+    "Stop": [
+      {
+        "id": "session-summarization",
+        "description": "Registra el resumen de la sesión en .agent/STATE.md y PostgreSQL",
+        "command": "node scripts/hooks/session-end.js",
+        "condition": "always"
+      }
+    ]
+  }
+}
