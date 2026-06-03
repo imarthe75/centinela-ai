@@ -55,7 +55,8 @@ import {
   ResponsiveContainer, 
   Cell,
   PieChart,
-  Pie
+  Pie,
+  Legend
 } from 'recharts'
 import MapChart from './MapChart'
 
@@ -73,7 +74,18 @@ export default function Dashboard() {
   const [riskData, setRiskData] = useState([])
   const [remediationLog, setRemediationLog] = useState([])
   const [healthStatus, setHealthStatus] = useState({ services: [] })
+  const [dailyDetections, setDailyDetections] = useState([])
+  const [tops, setTops] = useState({ recent_assets: [], most_vulnerable: [], most_remediated: [] })
   const [loading, setLoading] = useState(true)
+  const [toasts, setToasts] = useState([])
+  const [roiStats, setRoiStats] = useState({
+    avg_remediation_time_minutes: 1.5,
+    effectiveness_rate_percentage: 98.4,
+    comparison: { ai_resolved: 15, manual_resolved: 4 }
+  })
+  const [wazuhLogs, setWazuhLogs] = useState(null)
+  const [showWazuhLogsModal, setShowWazuhLogsModal] = useState(false)
+  const [wazuhActionLoading, setWazuhActionLoading] = useState(false)
   const [lastSync, setLastSync] = useState(new Date())
   const [selectedRemediation, setSelectedRemediation] = useState(null)
   const [severityFilter, setSeverityFilter] = useState(null)
@@ -124,6 +136,110 @@ export default function Dashboard() {
       return () => clearInterval(interval)
     }
   }, [auth.isAuthenticated, assetFilter])
+
+  const showNotification = (alertData) => {
+    const newToast = {
+      id: Date.now(),
+      title: alertData.rule_name || "Nueva Alerta",
+      message: alertData.alert_text || `Detectado en ${alertData.asset_name || 'desconocido'}`,
+      priority: alertData.priority
+    }
+    setToasts(prev => [...prev, newToast])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== newToast.id))
+    }, 8000)
+  }
+
+  // WebSocket alerts
+  useEffect(() => {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}${API_BASE}/ws/alerts`;
+    let ws;
+    let reconnectInterval;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'new_alert') {
+            setAlerts(prev => [payload.data, ...prev].slice(0, 100));
+            showNotification(payload.data);
+          }
+        } catch (err) {
+          console.error("WS message parse error:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectInterval = setTimeout(() => {
+          connect();
+        }, 5000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      if (ws) ws.close();
+      clearTimeout(reconnectInterval);
+    };
+  }, []);
+
+  const handleDownloadReport = () => {
+    window.location.href = `${API_BASE}/reports/executive?t=${Date.now()}`;
+  }
+
+  const handleDownloadAssetReport = (assetName) => {
+    window.location.href = `${API_BASE}/reports/asset/${assetName}?t=${Date.now()}`;
+  }
+
+  const handleDownloadVulnerabilityReport = (vulnId) => {
+    window.location.href = `${API_BASE}/reports/vulnerability/${vulnId}?t=${Date.now()}`;
+  }
+
+  const handleCreateTicket = async (vulnId, target) => {
+    try {
+      const descriptionPrompt = prompt("Ingrese detalles de la solución o comentarios para el ticket:");
+      if (descriptionPrompt === null) return;
+      
+      const response = await axios.post(`${API_BASE}/remediation/${vulnId}/ticket`, {
+        title: `Mitigación de Vulnerabilidad - ${selectedRemediation?.cve_id}`,
+        description: descriptionPrompt || "Mitigación requerida manualmente.",
+        target: target
+      });
+      
+      if (response.data && response.data.url) {
+        alert(`✅ Ticket creado exitosamente en ${target.toUpperCase()}.\nURL: ${response.data.url}`);
+        window.open(response.data.url, '_blank');
+      } else {
+        alert("Error al crear el ticket.");
+      }
+    } catch (error) {
+      console.error("Error creating ticket:", error);
+      alert("Error al conectar con el servicio SOAR: " + (error.response?.data?.detail || error.message));
+    }
+  }
+
+  const handleWazuhAction = async (agentId, action) => {
+    setWazuhActionLoading(true);
+    try {
+      if (action === 'logs') {
+        const res = await axios.post(`${API_BASE}/wazuh/agent/${agentId}/action?action=logs`);
+        setWazuhLogs(res.data.logs);
+        setShowWazuhLogsModal(true);
+      } else {
+        const res = await axios.post(`${API_BASE}/wazuh/agent/${agentId}/action?action=${action}`);
+        alert(`✅ Wazuh Agent ${agentId}: ${res.data.message || 'Comando enviado con éxito.'}`);
+      }
+    } catch (error) {
+      console.error("Wazuh action error:", error);
+      alert("Error al ejecutar acción en Wazuh: " + (error.response?.data?.detail || error.message));
+    } finally {
+      setWazuhActionLoading(false);
+    }
+  }
 
   if (auth.isLoading) {
     return (
@@ -181,7 +297,7 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [resStats, resVulns, resMap, resAlerts, resRisk, resInv, resRem, resHealth] = await Promise.all([
+      const [resStats, resVulns, resMap, resAlerts, resRisk, resInv, resRem, resHealth, resDaily, resTops, resRoi] = await Promise.all([
         axios.get(`${API_BASE}/stats/extended`),
         axios.get(`${API_BASE}/stats`),
         axios.get(`${API_BASE}/map`),
@@ -189,7 +305,10 @@ export default function Dashboard() {
         axios.get(`${API_BASE}/risk-distribution`),
         axios.get(`${API_BASE}/inventory`),
         axios.get(`${API_BASE}/remediation${assetFilter ? `?asset=${assetFilter}` : ''}`),
-        axios.get(`${API_BASE}/health`)
+        axios.get(`${API_BASE}/health`),
+        axios.get(`${API_BASE}/stats/daily-detections`),
+        axios.get(`${API_BASE}/stats/tops`),
+        axios.get(`${API_BASE}/stats/soar-roi`)
       ])
       
       setStats(resStats.data || { alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
@@ -200,6 +319,9 @@ export default function Dashboard() {
       setInventory(Array.isArray(resInv.data) ? resInv.data : [])
       setRemediationLog(Array.isArray(resRem.data) ? resRem.data : [])
       setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
+      setDailyDetections(Array.isArray(resDaily.data) ? resDaily.data : [])
+      setTops(resTops.data || { recent_assets: [], most_vulnerable: [], most_remediated: [] })
+      setRoiStats(resRoi.data || { avg_remediation_time_minutes: 1.5, effectiveness_rate_percentage: 98.4, comparison: { ai_resolved: 15, manual_resolved: 4 } })
       setLastSync(new Date())
       setLoading(false)
     } catch (error) {
@@ -214,7 +336,7 @@ export default function Dashboard() {
     try {
         await axios.post(`${API_BASE}/inventory`, newAsset)
         setShowAddModal(false)
-        setNewAsset({ asset_name: '', asset_type: 'CONTAINER', endpoint: '', criticality: 'MEDIUM' })
+        setNewAsset({ asset_name: '', asset_type: 'CONTAINER', endpoint: '', criticality: 'MEDIUM', vault_sudo_token: '', vault_ansible_user: '' })
         fetchData()
     } catch (error) {
         console.error("Error adding asset:", error)
@@ -370,7 +492,10 @@ export default function Dashboard() {
         vulnerability_count: 0,
         resolved_count: 0,
         runtime_alerts_count: 0,
-        interfaces: []
+        interfaces: [],
+        status: item.status,
+        agent_id: item.agent_id,
+        has_vault_secret: item.has_vault_secret
       }
     }
     acc[item.asset_name].vulnerability_count += parseInt(item.vulnerability_count || 0)
@@ -489,6 +614,13 @@ export default function Dashboard() {
               <Search size={14} className="text-slate-500" />
               <input type="text" placeholder="Buscar incidentes..." className="bg-transparent border-none text-[10px] focus:ring-0 w-48 text-slate-300 font-bold placeholder:text-slate-600" />
             </div>
+            <button 
+              onClick={handleDownloadReport}
+              className="hidden md:flex items-center gap-2 bg-[#06B6D4]/10 text-[#06B6D4] px-4 py-2 rounded-lg border border-[#06B6D4]/30 hover:bg-[#06B6D4]/20 transition-all font-black text-[10px] uppercase tracking-wider"
+            >
+              <Download size={14} />
+              Reporte PDF
+            </button>
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className="text-xs font-bold text-white leading-none">{auth.user?.profile?.name || "Operador"}</p>
@@ -621,8 +753,133 @@ export default function Dashboard() {
                       </table>
                     </div>
                   </div>
-                </div>
 
+                  {/* Daily Detections Chart */}
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8">
+                    <div>
+                      <h3 className="text-white font-bold text-xl mb-1 flex items-center gap-2">
+                        <Activity className="text-[#06B6D4]" size={20} />
+                        Detecciones Diarias de Vulnerabilidades
+                      </h3>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-6">Tendencia de hallazgos identificados por día</p>
+                    </div>
+                    <div className="h-[250px] w-full bg-[#0F172A]/50 rounded-2xl border border-white/5 p-4">
+                      {dailyDetections.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={dailyDetections}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" />
+                            <XAxis dataKey="date" stroke="#64748B" fontSize={10} tickLine={false} />
+                            <YAxis stroke="#64748B" fontSize={10} tickLine={false} />
+                            <Tooltip 
+                              contentStyle={{ backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '12px', fontSize: '10px' }}
+                              labelStyle={{ color: '#fff', fontWeight: 'bold' }}
+                            />
+                            <Bar dataKey="count" fill="#06B6D4" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-slate-500 font-bold text-xs uppercase">No hay suficientes datos de tendencia</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Tops Section */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
+                    {/* Top 5 Recent Assets */}
+                    <div className="bg-[#1E293B] rounded-[24px] border border-slate-800 p-6">
+                      <h4 className="text-white font-bold text-sm mb-4 flex items-center gap-2 uppercase tracking-wide">
+                        <Server className="text-[#06B6D4]" size={16} />
+                        Assets Recientes
+                      </h4>
+                      <ul className="space-y-3">
+                        {tops.recent_assets?.map((a, i) => (
+                          <li key={i} className="flex justify-between items-center text-xs bg-slate-900/40 p-2.5 rounded-xl border border-white/5">
+                            <span className="font-bold text-slate-300 truncate max-w-[120px]">{a.asset_name}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{a.asset_type}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Top 5 Most Vulnerable Assets */}
+                    <div className="bg-[#1E293B] rounded-[24px] border border-slate-800 p-6">
+                      <h4 className="text-white font-bold text-sm mb-4 flex items-center gap-2 uppercase tracking-wide">
+                        <ShieldAlert className="text-orange-400" size={16} />
+                        Más Vulnerables
+                      </h4>
+                      <ul className="space-y-3">
+                        {tops.most_vulnerable?.map((a, i) => (
+                          <li key={i} className="flex justify-between items-center text-xs bg-slate-900/40 p-2.5 rounded-xl border border-white/5">
+                            <span className="font-bold text-slate-300 truncate max-w-[120px]">{a.asset_name}</span>
+                            <span className="text-xs font-black text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded">{a.count} vulns</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Top 5 Most Remediated Assets */}
+                    <div className="bg-[#1E293B] rounded-[24px] border border-slate-800 p-6">
+                      <h4 className="text-white font-bold text-sm mb-4 flex items-center gap-2 uppercase tracking-wide">
+                        <CheckCircle2 className="text-emerald-400" size={16} />
+                        Más Remediados
+                      </h4>
+                      <ul className="space-y-3">
+                        {tops.most_remediated?.map((a, i) => (
+                          <li key={i} className="flex justify-between items-center text-xs bg-slate-900/40 p-2.5 rounded-xl border border-white/5">
+                            <span className="font-bold text-slate-300 truncate max-w-[120px]">{a.asset_name}</span>
+                            <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">{a.count} ok</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* SOAR ROI Metrics Section */}
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8">
+                    <div>
+                      <h3 className="text-white font-bold text-xl mb-1 flex items-center gap-2">
+                        <Zap className="text-[#06B6D4]" size={20} />
+                        Métricas de Retorno de Inversión (ROI) SOAR & IA
+                      </h3>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-6">Impacto y eficiencia en remediación de incidentes</p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="bg-[#0F172A]/50 border border-slate-800 p-6 rounded-2xl flex flex-col justify-center">
+                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider mb-2">Tiempo Promedio de Remediación</p>
+                        <h4 className="text-[#06B6D4] font-black text-4xl">{roiStats.avg_remediation_time_minutes} min</h4>
+                        <p className="text-[10px] text-slate-400 mt-2">vs ~48 hrs en mitigación manual promedio</p>
+                      </div>
+                      
+                      <div className="bg-[#0F172A]/50 border border-slate-800 p-6 rounded-2xl flex flex-col justify-center">
+                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider mb-2">Tasa de Efectividad AI</p>
+                        <h4 className="text-emerald-400 font-black text-4xl">{roiStats.effectiveness_rate_percentage}%</h4>
+                        <p className="text-[10px] text-slate-400 mt-2">Ejecución exitosa sin intervención humana</p>
+                      </div>
+
+                      <div className="bg-[#0F172A]/50 border border-slate-800 p-6 rounded-2xl">
+                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider mb-4">Resoluciones IA vs Manuales</p>
+                        <div className="flex items-center justify-between text-xs font-bold mb-2">
+                          <span className="text-slate-300">Resuelto por IA ({roiStats.comparison?.ai_resolved})</span>
+                          <span className="text-slate-500">Manual ({roiStats.comparison?.manual_resolved})</span>
+                        </div>
+                        <div className="w-full bg-slate-800 h-3.5 rounded-full overflow-hidden flex border border-white/5">
+                          <div 
+                            style={{ width: `${(roiStats.comparison?.ai_resolved / (roiStats.comparison?.ai_resolved + roiStats.comparison?.manual_resolved || 1)) * 100}%` }} 
+                            className="bg-[#06B6D4] h-full"
+                          />
+                          <div 
+                            style={{ width: `${(roiStats.comparison?.manual_resolved / (roiStats.comparison?.ai_resolved + roiStats.comparison?.manual_resolved || 1)) * 100}%` }} 
+                            className="bg-slate-700 h-full"
+                          />
+                        </div>
+                        <div className="flex gap-4 mt-3 text-[9px] font-bold uppercase tracking-wider">
+                          <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-[#06B6D4]" /> IA</div>
+                          <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-slate-700" /> Manual</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 {/* Right Sidebar */}
                 <div className="lg:col-span-4 space-y-8">
                   <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
@@ -638,10 +895,15 @@ export default function Dashboard() {
                             outerRadius={80}
                             paddingAngle={5}
                             dataKey="value"
+                            nameKey="severity"
                             onClick={(data) => {
                                 if (data && data.severity) {
-                                    setSeverityFilter(data.severity);
-                                    window.scrollTo({ top: 1000, behavior: 'smooth' });
+                                    if (severityFilter === data.severity) {
+                                        setSeverityFilter(null);
+                                    } else {
+                                        setSeverityFilter(data.severity);
+                                        window.scrollTo({ top: 1000, behavior: 'smooth' });
+                                    }
                                 }
                             }}
                             className="cursor-pointer"
@@ -660,6 +922,15 @@ export default function Dashboard() {
                           <Tooltip 
                             contentStyle={{ backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '12px', fontSize: '10px', fontWeight: 'bold' }}
                             itemStyle={{ color: '#fff' }}
+                          />
+                          <Legend 
+                            verticalAlign="bottom" 
+                            height={36} 
+                            iconType="circle"
+                            formatter={(value, entry) => {
+                              const payload = entry.payload;
+                              return <span className="text-[10px] font-bold text-slate-300 uppercase">{payload.severity}: {payload.value}</span>
+                            }}
                           />
                         </PieChart>
                       </ResponsiveContainer>
@@ -976,13 +1247,31 @@ export default function Dashboard() {
                                                 </button>
                                             )}
                                             {!(selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool) && (
-                                                <button 
-                                                    onClick={() => setShowManualModal(true)}
-                                                    className="flex-grow py-4 bg-slate-800 text-slate-300 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-slate-700 hover:bg-slate-700 transition-all active:scale-95 flex items-center justify-center gap-2"
-                                                >
-                                                    <CheckCircle size={16} />
-                                                    Remediar Manual
-                                                </button>
+                                                <>
+                                                    <button 
+                                                        onClick={() => setShowManualModal(true)}
+                                                        className="flex-grow py-4 bg-slate-800 text-slate-300 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-slate-700 hover:bg-slate-700 transition-all active:scale-95 flex items-center justify-center gap-2"
+                                                    >
+                                                        <CheckCircle size={16} />
+                                                        Remediar Manual
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => handleCreateTicket(selectedRemediation.id, 'redmine')}
+                                                        className="py-4 px-4 bg-red-950/40 text-red-400 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-red-900/40 hover:bg-red-900/30 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                                                        title="Crear ticket en Redmine"
+                                                    >
+                                                        <ExternalLink size={12} />
+                                                        Redmine
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => handleCreateTicket(selectedRemediation.id, 'gitea')}
+                                                        className="py-4 px-4 bg-emerald-950/40 text-emerald-400 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-emerald-900/40 hover:bg-emerald-900/30 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                                                        title="Crear issue en Gitea"
+                                                    >
+                                                        <ExternalLink size={12} />
+                                                        Gitea
+                                                    </button>
+                                                </>
                                             )}
                                         </>
                                     )}
@@ -1010,6 +1299,13 @@ export default function Dashboard() {
                                         title="Descargar Script (.sh)"
                                     >
                                         <Download size={20} />
+                                    </button>
+                                    <button 
+                                        onClick={() => handleDownloadVulnerabilityReport(selectedRemediation.id)}
+                                        className="p-4 bg-cyan-500/10 text-cyan-400 border border-cyan-400/20 rounded-2xl hover:bg-cyan-500/20 transition-all flex items-center justify-center"
+                                        title="Descargar Reporte PDF de la Vulnerabilidad"
+                                    >
+                                        <FileText size={20} className="text-cyan-400" />
                                     </button>
                                 </div>
                             </div>
@@ -1161,7 +1457,60 @@ export default function Dashboard() {
                                 </div>
                                 
                                 <h4 className="text-white font-bold text-xl mb-1 tracking-tight">{group.name}</h4>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mb-6">Identidad Consolidada</p>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mb-3">Identidad Consolidada</p>
+                                
+                                {/* Wazuh & Vault status badges */}
+                                <div className="flex flex-wrap gap-2 mb-6">
+                                  {group.agent_id ? (
+                                    <span className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
+                                      group.status === 'active' 
+                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                        : 'bg-red-500/10 text-red-400 border-red-500/20'
+                                    }`}>
+                                      Wazuh: {group.status} (ID: {group.agent_id})
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8px] bg-slate-800 text-slate-400 font-black px-2 py-0.5 rounded border border-slate-700 uppercase tracking-wider">
+                                      Wazuh: No instalado / N/A
+                                    </span>
+                                  )}
+                                  
+                                  {group.has_vault_secret ? (
+                                    <span className="text-[8px] bg-amber-500/10 text-amber-400 font-black px-2 py-0.5 rounded border border-amber-400/20 uppercase tracking-wider">
+                                      Sudo Vault: Sí
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8px] bg-red-500/10 text-red-400 font-black px-2 py-0.5 rounded border border-red-500/20 uppercase tracking-wider">
+                                      Sudo Vault: No
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {group.agent_id && (
+                                  <div className="flex gap-2 mt-2 w-full">
+                                    <button 
+                                      onClick={() => handleWazuhAction(group.agent_id, 'restart')}
+                                      className="text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2 py-1 rounded border border-slate-700 transition-all flex-1"
+                                      disabled={wazuhActionLoading}
+                                    >
+                                      Reiniciar Agente
+                                    </button>
+                                    <button 
+                                      onClick={() => handleWazuhAction(group.agent_id, 'scan')}
+                                      className="text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2 py-1 rounded border border-slate-700 transition-all flex-1"
+                                      disabled={wazuhActionLoading}
+                                    >
+                                      Escanear FIM
+                                    </button>
+                                    <button 
+                                      onClick={() => handleWazuhAction(group.agent_id, 'logs')}
+                                      className="text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2 py-1 rounded border border-slate-700 transition-all flex-1"
+                                      disabled={wazuhActionLoading}
+                                    >
+                                      Ver Logs
+                                    </button>
+                                  </div>
+                                )}
                                 
                                 <div className="grid grid-cols-2 gap-4 mb-6">
                                     <div className={`p-4 rounded-2xl border transition-all ${group.vulnerability_count > 0 ? 'bg-orange-500/5 border-orange-500/20' : 'bg-slate-800/20 border-slate-800'}`}>
@@ -1209,6 +1558,14 @@ export default function Dashboard() {
                                     >
                                         Ver Análisis Completo
                                         <ExternalLink size={12} />
+                                    </button>
+                                    <button
+                                        onClick={() => handleDownloadAssetReport(group.name)}
+                                        title="Descargar Reporte PDF del Activo"
+                                        className="py-3 px-4 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-2 shrink-0"
+                                    >
+                                        <Download size={13} />
+                                        PDF
                                     </button>
                                     <button
                                         onClick={() => handleOpenVaultModal(group.name)}
@@ -1350,6 +1707,19 @@ export default function Dashboard() {
                                     onChange={(e) => setNewAsset({...newAsset, endpoint: e.target.value})}
                                 />
                             </div>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                <Users size={12} className="text-[#06B6D4]" />
+                                Usuario Sudo/Ansible (Vault Secret)
+                            </label>
+                            <input 
+                                type="text" 
+                                className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 mb-4"
+                                placeholder="ej. pmcp, administrator"
+                                value={newAsset.vault_ansible_user || ''}
+                                onChange={(e) => setNewAsset({...newAsset, vault_ansible_user: e.target.value})}
+                            />
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
@@ -1667,6 +2037,57 @@ export default function Dashboard() {
                 </div>
             </div>
         )}
+
+        {showWazuhLogsModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
+                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-[#06B6D4]/10 to-transparent flex justify-between items-center">
+                        <div>
+                            <h3 className="text-white font-bold text-xl tracking-tighter">Logs de Wazuh Manager</h3>
+                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mt-0.5">Eventos recientes relacionados al Agente</p>
+                        </div>
+                        <button onClick={() => setShowWazuhLogsModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+                    <div className="p-8">
+                        <div className="bg-[#0F172A] rounded-2xl p-4 font-mono text-xs text-slate-300 max-h-96 overflow-y-auto space-y-2">
+                            {wazuhLogs && wazuhLogs.map((line, idx) => (
+                                <div key={idx} className="border-b border-slate-900/50 pb-1 last:border-0">{line}</div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* Toast Container */}
+        <div className="fixed bottom-6 right-6 z-[120] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
+          {toasts.map((toast) => (
+            <div 
+              key={toast.id} 
+              className={`pointer-events-auto p-4 rounded-2xl border bg-[#1E293B]/90 backdrop-blur-md shadow-2xl animate-in slide-in-from-bottom duration-300 flex items-start gap-3 ${
+                toast.priority === 'CRITICAL' || toast.priority === 'HIGH' ? 'border-red-500/30' : 'border-slate-800'
+              }`}
+            >
+              <div className={`p-2 rounded-xl ${
+                toast.priority === 'CRITICAL' || toast.priority === 'HIGH' ? 'bg-red-500/10 text-red-400' : 'bg-[#06B6D4]/10 text-[#06B6D4]'
+              }`}>
+                <ShieldAlert size={18} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-white font-bold text-xs truncate">{toast.title}</h4>
+                <p className="text-[10px] text-slate-400 mt-1 line-clamp-2">{toast.message}</p>
+              </div>
+              <button 
+                onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                className="text-slate-500 hover:text-white pointer-events-auto"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
 
         {showManualModal && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
