@@ -1,11 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
 @import "tailwindcss";
 
 @theme {
   --color-centinela-red: #dc2626;
   --color-centinela-dark: #1a3a5c;
 }
-
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
 
 :root {
   font-family: 'DM Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
