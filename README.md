@@ -18,6 +18,11 @@ Centinela-AI ha evolucionado de un orquestador básico a una plataforma **XDR (E
 - **Métricas SOAR ROI:** Gráficos y widgets financieros en el dashboard que contrastan el tiempo de resolución automatizado (SOAR) vs. mitigación manual, reportando el porcentaje de efectividad de la IA.
 - **Identidad Unificada (OIDC):** Integración total con el ecosistema de identidad CASMARTS (Authentik) para un control de acceso centralizado y seguro.
 
+## 📊 Estándar de Clasificación de Vulnerabilidades
+Toda la evaluación y clasificación de vulnerabilidades en Centinela-AI se rige por el estándar **CVSS v3 (Common Vulnerability Scoring System)**. 
+- Los escáneres nativos (ZAP, Trivy, Nuclei) reportan inherentemente basándose en las métricas de CVSS v3.
+- El motor de Inteligencia Artificial (Aura-Sentinel) ha sido instruido (System Prompt) para auditar, clasificar y confirmar la severidad (Bajo, Medio, Alto, Crítico) estrictamente bajo los vectores y consideraciones de impacto de CVSS v3, garantizando uniformidad en todos los reportes y tableros operativos.
+
 ## 📊 Arquitectura y Flujo de Información
 
 ```mermaid
@@ -60,11 +65,15 @@ flowchart TB
 | :--- | :--- | :--- |
 | **Inteligencia Artificial** | Google Gemini 1.5 Flash | Correlación de amenazas, generación de reportes y scripts. |
 | **Runtime Security** | Falco, Wazuh | Monitoreo de comportamiento de procesos y logs en tiempo real. |
-| **Escaneo de Activos** | Nuclei, Nmap | Detección proactiva de vulnerabilidades y mapeo de red. |
-| **Seguridad de Código** | Trivy, Checkov | Auditoría de imágenes Docker e Infraestructura como Código (IaC). |
+| **Escaneo de Activos (Red)** | Nuclei, Nmap | Detección proactiva de vulnerabilidades y mapeo de red. |
+| **Escaneo de Aplicaciones (DAST)** | OWASP ZAP | Pruebas dinámicas (inyección, fuzzing) contra aplicaciones web y APIs activas. |
+| **Análisis de Código Inteligente (SAST)** | Medusa Engine | Auditoría profunda impulsada por IA para detectar fallos lógicos en código fuente. |
+| **Gestión de Postura Nube/IaC** | Trivy, Checkov | Auditoría de imágenes Docker e Infraestructura como Código (IaC). |
+| **Auditoría de Secretos** | TruffleHog / Custom | Búsqueda exhaustiva de credenciales filtradas y llaves expuestas. |
+| **Enriquecimiento (OSINT)** | SpiderFoot | Extracción de inteligencia de fuentes abiertas (Subdominios, WHOIS, fugas). |
 | **Orquestación & Despliegue** | Ansible (Playbooks) | Automatización de instalación de agentes y parches de configuración. |
 | **Ticketing SOAR** | Gitea, Redmine API | Seguimiento y escalamiento de vulnerabilidades e incidentes. |
-| **Motor de PDF** | WeasyPrint | Conversión de HTML+CSS → PDF para reportes ejecutivos estilizados (2026-06-02 ✅). |
+| **Motor de PDF** | WeasyPrint | Conversión de HTML+CSS → PDF para reportes ejecutivos estilizados. |
 | **Frontend de Alto Rendimiento** | React, Vite, Tailwind CSS | Dashboard dinámico con visualización geográfica y SOAR en tiempo real. |
 | **Backend & API** | FastAPI, Python 3.12, WebSockets | Microservicios de alto rendimiento y streaming de alertas en caliente. |
 | **Base de Datos** | PostgreSQL (Vector Store) | Persistencia de hallazgos y almacenamiento de embeddings para RAG. |

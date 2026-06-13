@@ -8,6 +8,52 @@ import auditor_medusa
 import queue
 import threading
 
+# ZAP DAST - only triggered for URL and AppServer assets
+try:
+    import auditor_zap
+    ZAP_AVAILABLE = True
+except ImportError:
+    ZAP_AVAILABLE = False
+
+# Secrets scanner - triggered for Repository assets
+try:
+    import auditor_secrets
+    SECRETS_AVAILABLE = True
+except ImportError:
+    SECRETS_AVAILABLE = False
+
+# SpiderFoot OSINT - triggered for URL/AppServer/IP assets
+try:
+    import auditor_spiderfoot
+    SPIDERFOOT_AVAILABLE = True
+except ImportError:
+    SPIDERFOOT_AVAILABLE = False
+
+# New Centinela-AI v3 modules
+try:
+    import auditor_semgrep
+    SEMGREP_AVAILABLE = True
+except ImportError:
+    SEMGREP_AVAILABLE = False
+
+try:
+    import auditor_sbom
+    SBOM_AVAILABLE = True
+except ImportError:
+    SBOM_AVAILABLE = False
+
+try:
+    import auditor_api
+    API_AVAILABLE = True
+except ImportError:
+    API_AVAILABLE = False
+
+try:
+    import auditor_cloud
+    CLOUD_AVAILABLE = True
+except ImportError:
+    CLOUD_AVAILABLE = False
+
 class EventDispatcher:
     def __init__(self):
         self.handlers = {}
@@ -60,7 +106,7 @@ dispatcher = EventDispatcher()
 def scan_ip(asset_id, ip):
     print(f"🔍 [Auditor-Ext] Scanning IP: {ip}")
     # Basic Nmap scan for open ports
-    result = subprocess.run(['nmap', '-F', ip], capture_output=True, text=True)
+    result = subprocess.run(['nmap', '-F', ip], capture_output=True, text=True, errors='replace')
     if result.returncode == 0:
         open_ports = []
         for line in result.stdout.splitlines():
@@ -82,8 +128,8 @@ def scan_ip(asset_id, ip):
 def scan_url(asset_id, url):
     print(f"🌐 [Auditor-Ext] Scanning URL: {url}")
     found_vulns = False
-    
-    # Discovery: Detect technologies (Nginx, React, Angular, Vue, PHP, etc)
+
+    # 1. Technology detection (Nuclei)
     tech_result = subprocess.run(['nuclei', '-u', url, '-tags', 'tech-detect', '-silent', '-jsonl'], capture_output=True, text=True)
     if tech_result.stdout:
         for line in tech_result.stdout.splitlines():
@@ -92,7 +138,7 @@ def scan_url(asset_id, url):
                 log_vulnerability(asset_id, f"TECH-{tech.get('info', {}).get('name')}", "Info", f"Tecnología detectada: {tech.get('info', {}).get('name')}")
             except: continue
 
-    # Nuclei scan for web vulnerabilities (Comprehensive tags)
+    # 2. Nuclei SAST - template-based (fast baseline)
     tags = "wildfly,tomcat,jboss,middleware,java,angular,react,vue,nextjs,php,wordpress,apache,nginx,lfi,rce,sqli,xss"
     result = subprocess.run(['nuclei', '-u', url, '-tags', tags, '-severity', 'medium,high,critical', '-silent', '-jsonl'], capture_output=True, text=True)
     if result.stdout:
@@ -103,31 +149,97 @@ def scan_url(asset_id, url):
                 found_vulns = True
                 log_vulnerability(asset_id, vuln.get('template-id'), vuln.get('info', {}).get('severity'), vuln.get('info', {}).get('description'))
             except: continue
-    
+
+    # 3. ZAP DAST - dynamic testing (catches CSRF, session flaws, logic bugs)
+    if ZAP_AVAILABLE:
+        try:
+            print(f"🎯 [Auditor-Ext] Starting ZAP DAST scan on {url}...")
+            auditor_zap.run_zap_scan(
+                target_url=url,
+                asset_id=asset_id,
+                scan_profile="balanced",
+                db_cache_path="/tmp/zap-cache"
+            )
+            found_vulns = True
+        except auditor_zap.ZAPTimeoutError:
+            print(f"⚠️ [Auditor-Ext] ZAP timeout on {url}; Nuclei results are sufficient")
+        except auditor_zap.ZAPNotAvailableError:
+            print(f"ℹ️ [Auditor-Ext] ZAP not available; skipping DAST for {url}")
+        except Exception as e:
+            print(f"❌ [Auditor-Ext] ZAP error on {url}: {e}")
+    else:
+        print(f"ℹ️ [Auditor-Ext] ZAP module not loaded; running Nuclei-only mode")
+
+    # 4. API Fuzzing (ffuf + Kiterunner)
+    if API_AVAILABLE:
+        try:
+            print(f"📡 [Auditor-Ext] Starting API Fuzzing on {url}...")
+            auditor_api.run(asset_id, "API Scanner", url)
+            found_vulns = True
+        except Exception as e:
+            print(f"❌ [Auditor-Ext] API Fuzzing error on {url}: {e}")
+
     if not found_vulns:
-        log_audit(asset_id, f"Escaneo web exhaustivo completado para {url}.\nTecnologías verificadas: React, Angular, Vue, Wildfly, Tomcat, PHP, Nginx.\nResultado: No se encontraron vulnerabilidades críticas activas.")
+        log_audit(asset_id, f"Escaneo web exhaustivo completado para {url}.\nNuclei (templates) + ZAP (DAST dinámico): No se encontraron vulnerabilidades críticas activas.")
 
 def scan_repo(asset_id, repo):
     print(f"📦 [Auditor-Ext] Scanning Repo: {repo}")
-    # Trivy scan for code/dependencies
-    subprocess.run(['trivy', 'repo', '--format', 'json', repo], capture_output=True, text=True)
-    # Checkov scan for IaC security
+
+    # 1. Trivy - dependency vulnerabilities
+    trivy_result = subprocess.run(['trivy', 'repo', '--format', 'json', '--severity', 'HIGH,CRITICAL', repo], capture_output=True, text=True)
+    if trivy_result.stdout:
+        try:
+            data = json.loads(trivy_result.stdout)
+            for res in data.get('Results', []):
+                for vuln in res.get('Vulnerabilities', []):
+                    log_vulnerability(asset_id, vuln.get('VulnerabilityID', 'TRIVY-REPO'), vuln.get('Severity', 'Medium'), vuln.get('Description', 'Dependency vulnerability'))
+        except: pass
+
+    # 2. Checkov - IaC misconfiguration
     result_checkov = subprocess.run(['checkov', '-d', repo, '--quiet', '--soft-fail', '--output', 'json'], capture_output=True, text=True)
     if result_checkov.stdout:
         try:
             data = json.loads(result_checkov.stdout)
-            # Process checkov results...
-            log_vulnerability(asset_id, "CHECKOV-SCAN", "Medium", "Checkov identified potential IaC misconfigurations.")
-        except: 
-            log_audit(asset_id, f"Escaneo de repositorio {repo} completado. No se encontraron fallos de seguridad en el código o IaC.")
+            failed = data.get('results', {}).get('failed_checks', [])
+            for check in failed[:20]:  # cap at 20 to avoid spam
+                log_vulnerability(asset_id, f"CHECKOV-{check.get('check_id','GENERIC')}", "Medium",
+                    f"IaC misconfiguration: {check.get('check_id')}\nFile: {check.get('file_path')}\nResource: {check.get('resource')}")
+        except:
+            log_audit(asset_id, f"Escaneo IaC completado. No se encontraron fallos de configuración.")
     else:
-        log_audit(asset_id, f"Escaneo de repositorio {repo} completado. No se encontraron fallos de seguridad en el código o IaC.")
-    
-    # AI-First SAST Scan via Medusa
+        log_audit(asset_id, f"Escaneo IaC completado. No se encontraron fallos de configuración.")
+
+    # 3. Medusa - AI-First SAST
     try:
         auditor_medusa.run_medusa_scan(repo, asset_id)
     except Exception as e:
         print(f"❌ Error invoking Medusa scan: {e}")
+
+    # 4. Secrets scanning - PHASE 1 (fast, every cycle)
+    if SECRETS_AVAILABLE:
+        try:
+            print(f"🔍 [Auditor-Ext] Running secrets scan (PHASE 1) on {repo}...")
+            auditor_secrets.scan_repo_secrets_fast(repo_path=repo, asset_id=asset_id)
+        except Exception as e:
+            print(f"❌ [Auditor-Ext] Secrets scan error: {e}")
+    else:
+        print(f"ℹ️ [Auditor-Ext] Secrets module not loaded; skipping")
+
+    # 5. Semgrep SAST
+    if SEMGREP_AVAILABLE:
+        try:
+            print(f"🔍 [Auditor-Ext] Running Semgrep SAST scan on {repo}...")
+            auditor_semgrep.run(asset_id, "Repository", repo)
+        except Exception as e:
+            print(f"❌ [Auditor-Ext] Semgrep SAST scan error: {e}")
+
+    # 6. SBOM (Syft + Grype) dependency scan
+    if SBOM_AVAILABLE:
+        try:
+            print(f"📦 [Auditor-Ext] Running SBOM scanning on {repo}...")
+            auditor_sbom.run(asset_id, "Repository", repo)
+        except Exception as e:
+            print(f"❌ [Auditor-Ext] SBOM scan error: {e}")
 
 def scan_database(asset_id, endpoint):
     print(f"🗄️ [Auditor-Ext] Scanning SQL Database: {endpoint}")
@@ -217,7 +329,7 @@ def scan_appserver(asset_id, endpoint):
     ports_str = ",".join(map(str, common_ports)) + ",30000-32767"
     
     print(f"📡 [Auditor-Ext] Discovery scan on {endpoint} (Standard + K8s NodePorts)")
-    nm_result = subprocess.run(['nmap', '-p', ports_str, '--open', endpoint, '--min-rate', '1000'], capture_output=True, text=True)
+    nm_result = subprocess.run(['nmap', '-p', ports_str, '--open', endpoint, '--min-rate', '1000'], capture_output=True, text=True, errors='replace')
     
     open_ports = []
     if nm_result.returncode == 0:
@@ -226,18 +338,19 @@ def scan_appserver(asset_id, endpoint):
                 port = line.split("/")[0].strip()
                 open_ports.append(port)
     
-    # 2. Nuclei for specific appserver templates on open ports
+    # 2. Nuclei + ZAP DAST for each open web port
+    web_urls_scanned = []
     for port in open_ports:
         scheme = "https" if port in ["443", "8443"] else "http"
         url = f"{scheme}://{endpoint}:{port}"
         checked_ports.append(port)
-        
-        # Tech detect
-        subprocess.run(['nuclei', '-u', url, '-tags', 'tech-detect', '-silent', '-jsonl'], capture_output=True, text=True)
-        
-        # Vuln scan (Comprehensive tags)
+ 
+        # Tech detect (Nuclei)
+        subprocess.run(['nuclei', '-u', url, '-tags', 'tech-detect', '-silent', '-jsonl'], capture_output=True, text=True, errors='replace')
+ 
+        # Nuclei vuln scan
         tags = "wildfly,tomcat,jboss,middleware,java,angular,react,vue,nextjs,php,wordpress,apache,nginx"
-        result = subprocess.run(['nuclei', '-u', url, '-tags', tags, '-severity', 'medium,high,critical', '-jsonl'], capture_output=True, text=True)
+        result = subprocess.run(['nuclei', '-u', url, '-tags', tags, '-severity', 'medium,high,critical', '-jsonl'], capture_output=True, text=True, errors='replace')
         if result.stdout:
             found_vulns = True
             for line in result.stdout.splitlines():
@@ -246,19 +359,38 @@ def scan_appserver(asset_id, endpoint):
                     log_vulnerability(asset_id, vuln.get('template-id'), vuln.get('info', {}).get('severity'), vuln.get('info', {}).get('description'))
                 except: pass
 
+        # ZAP DAST - dynamic testing for each discovered web service
+        if ZAP_AVAILABLE and port in ["80", "443", "8080", "8443", "8000", "3000", "4200", "5000", "9990"]:
+            try:
+                print(f"🎯 [Auditor-Ext] ZAP DAST on AppServer port {port}: {url}")
+                auditor_zap.run_zap_scan(
+                    target_url=url,
+                    asset_id=asset_id,
+                    scan_profile="balanced",
+                    db_cache_path="/tmp/zap-cache"
+                )
+                web_urls_scanned.append(url)
+                found_vulns = True
+            except auditor_zap.ZAPTimeoutError:
+                print(f"⚠️ [Auditor-Ext] ZAP timeout on {url}")
+            except auditor_zap.ZAPNotAvailableError:
+                print(f"ℹ️ [Auditor-Ext] ZAP not available; Nuclei-only for {url}")
+            except Exception as e:
+                print(f"❌ [Auditor-Ext] ZAP error on {url}: {e}")
+
     # 3. Final Audit Logging
     if not found_vulns:
         audit_msg = f"Auditoría exhaustiva completada para AppServer ({endpoint}).\n"
         if open_ports:
             audit_msg += f"Servicios detectados en puertos: {', '.join(open_ports)}.\n"
-            audit_msg += "Se realizaron pruebas de inyección (SQLi), Path Traversal (LFI), XSS y detección de tecnología.\n"
+            audit_msg += "Se realizaron pruebas Nuclei (templates) y ZAP DAST (inyección dinámica).\n"
             audit_msg += "Resultado: Servicios activos y seguros (sin vulnerabilidades críticas detectadas).\n"
         else:
             audit_msg += "No se encontraron servicios web en puertos estándar o rango K8s NodePort (30000-32767).\n"
-        
+
         audit_msg += "Verificación de Docker: Sin contenedores expuestos.\n"
         audit_msg += "Verificación de Bases de Datos: No se detectaron instancias SQL/NoSQL abiertas."
-        
+
         log_audit(asset_id, audit_msg)
 
 def handle_asset_discovered(data):
@@ -285,15 +417,43 @@ def handle_asset_discovered(data):
             log_audit(asset_id, "Wazuh Agent detectado pero no reporta IP aún. Escaneo externo omitido hasta que el agente sincronice su red.")
         else:
             scan_appserver(asset_id, endpoint)
+            # Trigger cloud scan if it's a SERVER
+            if CLOUD_AVAILABLE:
+                try:
+                    auditor_cloud.run(asset_id, "Cloud Scanner", "gcp")
+                except Exception as e:
+                    print(f"❌ Error running Prowler on SERVER: {e}")
+    elif a_type in ['KUBERNETES', 'Datacenter']:
+        if CLOUD_AVAILABLE:
+            try:
+                auditor_cloud.run(asset_id, "Cloud Scanner", "gcp")
+            except Exception as e:
+                print(f"❌ Error running Prowler: {e}")
+        else:
+            log_audit(asset_id, "Prowler CSPM no disponible para escaneo de nube.")
 
 def handle_osint_enrichment(data):
     a_type = data["type"]
+    asset_id = data.get("id")
+    endpoint = data.get("endpoint", "")
+
     if a_type in ["IP", "URL", "AppServer", "SERVER"]:
+        # Legacy passive OSINT (DNS + Shodan)
         try:
             import discovery_osint
             discovery_osint.run_osint_discovery()
         except Exception as e:
             print(f"❌ [Event-Dispatcher] OSINT Enrichment failed: {e}")
+
+        # SpiderFoot enhanced OSINT (subdomain enum, CT logs, WHOIS)
+        if SPIDERFOOT_AVAILABLE and asset_id and endpoint and a_type == "URL":
+            try:
+                auditor_spiderfoot.run_spiderfoot_osint(
+                    target=endpoint,
+                    asset_id=asset_id
+                )
+            except Exception as e:
+                print(f"❌ [Event-Dispatcher] SpiderFoot OSINT failed: {e}")
 
 # Register handlers to pub-sub event dispatcher
 dispatcher.register("ASSET_DISCOVERED", handle_asset_discovered)
@@ -305,7 +465,7 @@ def main():
     while True:
         try:
             with db_manager.get_db_cursor() as cur:
-                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER')")
+                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter')")
                 assets = cur.fetchall()
             
             # Connection is returned to pool after context manager ends
@@ -330,8 +490,24 @@ def main():
             except Exception as e:
                 print(f"❌ Error running OSINT enrichment: {e}")
 
-            print("😴 [Auditor-Ext] Scan cycle complete. Sleeping for 10 minutes...")
-            time.sleep(600)
+            print("😴 [Auditor-Ext] Scan cycle complete. Watching for new assets...")
+            # Sleep in steps of 10s to detect new assets in real-time
+            for _ in range(60):
+                time.sleep(10)
+                try:
+                    with db_manager.get_db_cursor() as cur:
+                        cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter')")
+                        current_assets = cur.fetchall()
+                    
+                    previous_ids = {a[0] for a in assets}
+                    new_assets = [a for a in current_assets if a[0] not in previous_ids]
+                    if new_assets:
+                        print(f"✨ [Auditor-Ext] Detected {len(new_assets)} new assets! Scanning immediately.")
+                        for asset_id, a_type, endpoint in new_assets:
+                            dispatcher.trigger("ASSET_DISCOVERED", {"id": asset_id, "type": a_type, "endpoint": endpoint})
+                        assets.extend(new_assets)
+                except Exception as check_e:
+                    print(f"⚠️ Error checking for new assets: {check_e}")
         except Exception as e:
             print(f"❌ Error in Auditor-Ext loop: {e}")
             time.sleep(60)

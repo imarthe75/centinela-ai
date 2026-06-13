@@ -20,6 +20,20 @@ RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/
 RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_amd64.zip -o nuclei.zip \
     && unzip nuclei.zip && mv nuclei /usr/local/bin/ && rm nuclei.zip
 
+# Install Syft
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+# Install Grype
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+# Install ffuf
+RUN curl -sfL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz -o ffuf.tar.gz \
+    && tar -xzf ffuf.tar.gz -C /usr/local/bin ffuf && rm ffuf.tar.gz
+
+# Install Kiterunner
+RUN curl -sfL https://github.com/assetnote/kiterunner/releases/download/v1.0.2/kiterunner_1.0.2_linux_amd64.tar.gz -o kr.tar.gz \
+    && tar -xzf kr.tar.gz -C /usr/local/bin kr && rm kr.tar.gz
+
 # Set working directory
 WORKDIR /app
 
@@ -43,7 +57,10 @@ RUN pip install --no-cache-dir \
     checkov \
     docker \
     ansible \
-    passlib
+    passlib \
+    semgrep \
+    prowler \
+    neo4j
 
 # Copy agent structure
 COPY . /app/

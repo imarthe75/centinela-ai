@@ -18,3 +18,7 @@ requests
 pandas
 typing-extensions
 WeasyPrint
+docker
+semgrep
+prowler
+neo4j

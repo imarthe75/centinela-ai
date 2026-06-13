@@ -25,7 +25,7 @@ def install_wazuh_agent_background(endpoint: str, user: str, password: str):
         cmd = [
             "ansible", "all", "-i", f"{endpoint},",
             "-m", "shell",
-            "-a", "apt-get update && apt-get install -y curl && curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import && chmod 644 /usr/share/keyrings/wazuh.gpg && echo 'deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main' | tee /etc/apt/sources.list.d/wazuh.list && apt-get update && apt-get install -y wazuh-agent && sed -i 's/<address>MANAGER_IP<\/address>/<address>10.4.3.28<\/address>/g' /var/ossec/etc/ossec.conf && systemctl daemon-reload && systemctl enable wazuh-agent && systemctl restart wazuh-agent",
+            "-a", "export WAZUH_MANAGER='10.4.3.28' && (apt-get update && apt-get install -y curl gnupg && curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import && chmod 644 /usr/share/keyrings/wazuh.gpg && echo 'deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main' | tee /etc/apt/sources.list.d/wazuh.list && apt-get update && apt-get install -y wazuh-agent) || (curl -sL -o /tmp/wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.7.2-1_amd64.deb && dpkg -i /tmp/wazuh-agent.deb) && (sed -i 's/<address>MANAGER_IP<\/address>/<address>10.4.3.28<\/address>/g' /var/ossec/etc/ossec.conf || true) && systemctl daemon-reload && systemctl enable wazuh-agent && systemctl restart wazuh-agent",
             "-e", f"ansible_user={user}",
             "-e", f"ansible_ssh_pass={password}",
             "-e", f"ansible_become_pass={password}",
@@ -39,8 +39,11 @@ def install_wazuh_agent_background(endpoint: str, user: str, password: str):
                 try:
                     with db_manager.get_db_cursor() as cur:
                         cur.execute("UPDATE public.infra_inventory SET status = 'active' WHERE endpoint = %s", (endpoint,))
+                    print(f"🔄 [Centinela-Backend] Database status set to active. Triggering Wazuh Agent discovery...")
+                    subprocess.run(["python", "/app/discovery.py"], capture_output=True)
+                    print(f"✅ [Centinela-Backend] Wazuh Agent Discovery completed successfully for {endpoint}.")
                 except Exception as db_e:
-                    print(f"⚠️ [Centinela-Backend] Failed to update status in DB for {endpoint}: {db_e}")
+                    print(f"⚠️ [Centinela-Backend] Failed to update status or trigger discovery for {endpoint}: {db_e}")
             else:
                 print(f"❌ [Centinela-Backend] Wazuh Agent installation failed on {endpoint}. Code {res.returncode}. Stderr: {res.stderr}")
         except Exception as e:
@@ -355,24 +358,6 @@ async def get_inventory():
                     COALESCE(COUNT(DISTINCT CASE 
                         WHEN v.status = 'RESOLVED' 
                         OR rh.executed_bool = TRUE 
-                        OR i.asset_name ILIKE '%%db-%%'
-                        OR i.asset_name ILIKE '%%cache%%'
-                        OR i.asset_name ILIKE '%%vault%%'
-                        OR i.asset_name ILIKE '%%gateway%%'
-                        OR i.asset_name ILIKE '%%storage%%'
-                        OR i.asset_name ILIKE '%%netdata%%'
-                        OR i.asset_name ILIKE '%%dozzle%%'
-                        OR i.asset_name ILIKE '%%mongo%%'
-                        OR i.asset_name ILIKE '%%plane%%'
-                        OR i.asset_name ILIKE '%%penpot%%'
-                        OR i.asset_name ILIKE '%%gitea%%'
-                        OR i.asset_name ILIKE '%%redmine%%'
-                        OR i.asset_name ILIKE '%%camunda%%'
-                        OR i.asset_name ILIKE '%%sonar%%'
-                        OR i.asset_name ILIKE '%%wiki%%'
-                        OR i.asset_name ILIKE '%%drawio%%'
-                        OR i.asset_name ILIKE '%%plantuml%%'
-                        OR i.asset_name ILIKE '%%opendesign%%'
                         THEN v.id END), 0) as resolved_count,
                     COALESCE(COUNT(DISTINCT r.id), 0) as runtime_alerts_count
                 FROM public.infra_inventory i
@@ -654,6 +639,18 @@ async def get_system_health():
     try:
         with db_manager.get_db_connection() as conn:
             pass
+        import subprocess, shutil
+
+        def check_tool(name):
+            return "Active" if shutil.which(name) else "Not Found"
+
+        def check_module(name):
+            try:
+                __import__(name)
+                return "Loaded"
+            except ImportError:
+                return "Not Installed"
+
         return {
             "status": "Healthy",
             "services": [
@@ -661,8 +658,23 @@ async def get_system_health():
                 {"name": "Centinela Backend", "status": "Online", "latency": "5ms"},
                 {"name": "Database Maestro", "status": "Online", "latency": "2ms"},
                 {"name": "AI Engine (Gemini)", "status": "Online", "latency": "450ms"},
-                {"name": "Scanning Engine (Nuclei)", "status": "Active", "latency": "N/A"}
+                {"name": "Scanning Engine (Nuclei)", "status": check_tool("nuclei"), "latency": "N/A"},
+                {"name": "DAST Engine (ZAP)", "status": check_module("auditor_zap"), "latency": "N/A"},
+                {"name": "SAST Engine (Medusa)", "status": check_tool("medusa"), "latency": "N/A"},
+                {"name": "Secrets Scanner", "status": check_module("auditor_secrets"), "latency": "N/A"},
+                {"name": "OSINT Engine (SpiderFoot)", "status": check_module("auditor_spiderfoot"), "latency": "N/A"},
+                {"name": "Container Scanner (Trivy)", "status": check_tool("trivy"), "latency": "N/A"},
             ],
+            "scan_modules": {
+                "nuclei": check_tool("nuclei"),
+                "zap_dast": check_module("auditor_zap"),
+                "secrets": check_module("auditor_secrets"),
+                "spiderfoot_osint": check_module("auditor_spiderfoot"),
+                "medusa_sast": check_module("auditor_medusa"),
+                "trivy": check_tool("trivy"),
+                "nmap": check_tool("nmap"),
+                "sqlmap": check_tool("sqlmap"),
+            },
             "last_check": datetime.now().isoformat()
         }
     except Exception as e:
@@ -853,12 +865,134 @@ def json_serializable(data):
         return data.strftime("%Y-%m-%d %H:%M")
     return data
 
+# ============================================================
+# CIVIKA-COMPLIANT PDF SHARED STYLES
+# Brand: #1a3a5c | Font: DM Sans (Google Fonts)
+# Base size: 10px | Ejecutivo + Técnico en cada reporte
+# ============================================================
+
+CIVIKA_PDF_STYLES = """
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 18mm 16mm;
+  @top-left   { content: element(header-logo); }
+  @bottom-center { content: counter(page) " / " counter(pages); font-family: 'DM Sans', sans-serif; font-size: 8px; color: #64748b; }
+}
+
+body {
+  font-family: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #1e293b;
+  background: #ffffff;
+}
+
+/* ---------- HEADER STRIP ---------- */
+.pdf-header {
+  background: #1a3a5c;
+  color: #ffffff;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  border-radius: 6px;
+}
+.pdf-header .brand { font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+.pdf-header .meta  { font-size: 9px; color: rgba(255,255,255,0.75); text-align: right; }
+
+/* ---------- SECTION LABELS ---------- */
+.section-label {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-bottom: 6px;
+}
+.label-exec  { background: #1a3a5c; color: #fff; }
+.label-tech  { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+
+/* ---------- HEADINGS ---------- */
+h1 { font-size: 16px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+h2 { font-size: 12px; font-weight: 600; color: #1a3a5c; margin: 16px 0 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+h3 { font-size: 10px; font-weight: 600; color: #334155; margin-bottom: 4px; }
+
+/* ---------- CARDS ---------- */
+.card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.card-exec { border-left: 3px solid #1a3a5c; }
+.card-tech { border-left: 3px solid #64748b; }
+.card-ok   { border-left: 3px solid #16a34a; background: #f0fdf4; border-color: #dcfce7; }
+.card-warn { border-left: 3px solid #d97706; background: #fffbeb; border-color: #fef3c7; }
+.card-crit { border-left: 3px solid #dc2626; background: #fef2f2; border-color: #fee2e2; }
+
+/* ---------- KPI GRID ---------- */
+.kpi-grid  { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.kpi-card  { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 8px; text-align: center; }
+.kpi-num   { font-size: 20px; font-weight: 700; color: #1a3a5c; }
+.kpi-label { font-size: 8px; color: #64748b; margin-top: 2px; }
+.kpi-crit  .kpi-num { color: #dc2626; }
+.kpi-high  .kpi-num { color: #d97706; }
+.kpi-ok    .kpi-num { color: #16a34a; }
+
+/* ---------- TABLE ---------- */
+table  { width: 100%; border-collapse: collapse; font-size: 9px; margin-bottom: 12px; }
+th     { background: #f1f5f9; color: #334155; font-weight: 600; text-align: left; padding: 6px 8px; border: 1px solid #e2e8f0; }
+td     { padding: 5px 8px; border: 1px solid #e2e8f0; vertical-align: top; color: #1e293b; }
+tr:nth-child(even) td { background: #f8fafc; }
+
+/* ---------- BADGES ---------- */
+.badge { display: inline-block; font-size: 8px; font-weight: 700; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; }
+.badge-CRITICAL, .badge-critical { background: #fee2e2; color: #991b1b; }
+.badge-HIGH,     .badge-high     { background: #ffedd5; color: #9a3412; }
+.badge-MEDIUM,   .badge-medium   { background: #fef3c7; color: #92400e; }
+.badge-LOW,      .badge-low      { background: #dcfce7; color: #166534; }
+.badge-INFO,     .badge-info     { background: #dbeafe; color: #1e40af; }
+
+/* ---------- CODE BLOCK ---------- */
+pre, code { font-family: 'DM Mono', 'Consolas', monospace; font-size: 8.5px; background: #0f172a; color: #e2e8f0; padding: 10px 12px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; margin-top: 6px; }
+
+/* ---------- DIVIDER ---------- */
+.divider { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
+
+/* ---------- FOOTER BAR ---------- */
+.pdf-footer-bar { background: #f1f5f9; border-top: 2px solid #1a3a5c; padding: 8px 14px; font-size: 8px; color: #64748b; margin-top: 20px; border-radius: 0 0 6px 6px; }
+"""
+
+def build_pdf_header(title: str, subtitle: str = "", date: str = "") -> str:
+    return f"""
+    <div class="pdf-header">
+      <div>
+        <div class="brand">CASMARTS • CENTINELA-AI</div>
+        <div style="font-size:10px; margin-top:2px;">{title}</div>
+        {'<div style="font-size:9px; color:rgba(255,255,255,0.65); margin-top:1px;">' + subtitle + '</div>' if subtitle else ''}
+      </div>
+      <div class="meta">
+        <div>Confidencial — Uso Interno</div>
+        {'<div>' + date + '</div>' if date else ''}
+        <div>CVSS v3 • Centinela-AI v2026</div>
+      </div>
+    </div>
+    """
+
 def render_pdf_with_weasyprint(html_content: str) -> bytes:
-    from weasyprint import HTML, CSS
+    from weasyprint import HTML
     from io import BytesIO
     try:
         pdf_file = BytesIO()
-        HTML(string=html_content).write_pdf(pdf_file)
+        HTML(string=html_content, base_url=None).write_pdf(pdf_file)
         return pdf_file.getvalue()
     except Exception as e:
         raise Exception(f"WeasyPrint PDF generation failed: {str(e)}")
@@ -869,232 +1003,298 @@ async def download_executive_report():
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT COUNT(*) as total FROM public.vulnerability_log")
             total = cur.fetchone()["total"]
-            
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE severity = 'CRITICAL'")
-            critical = cur.fetchone()["count"]
-            
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE severity = 'HIGH'")
-            high = cur.fetchone()["count"]
-            
-            cur.execute("SELECT COUNT(*) as count FROM public.runtime_alerts")
-            alerts = cur.fetchone()["count"]
-            
-            cur.execute("SELECT asset_name, asset_type, endpoint, status FROM public.infra_inventory")
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE severity='CRITICAL'")
+            critical = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE severity='HIGH'")
+            high = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE status='RESOLVED'")
+            resolved = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) as c FROM public.runtime_alerts")
+            alerts = cur.fetchone()["c"]
+            cur.execute("SELECT asset_name, asset_type, endpoint, status, criticality FROM public.infra_inventory ORDER BY asset_name LIMIT 100")
             assets = cur.fetchall()
+            cur.execute("""
+                SELECT i.asset_name, v.severity, COUNT(v.id) as cnt
+                FROM public.vulnerability_log v
+                JOIN public.infra_inventory i ON v.asset_id = i.id
+                WHERE v.status != 'RESOLVED'
+                GROUP BY i.asset_name, v.severity
+                ORDER BY cnt DESC LIMIT 20
+            """)
+            top_vulns = cur.fetchall()
 
-        report_data = {
-            "generationDate": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "totalVulnerabilities": total,
-            "criticalVulnerabilities": critical,
-            "highVulnerabilities": high,
-            "runtimeAlerts": alerts,
-            "assets": assets
-        }
-        
-        html_content = f"""
-        <html>
-        <head>
-            <title>Reporte Ejecutivo Centinela AI</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #1E293B; }}
-                h1 {{ color: #0f172a; border-bottom: 2px solid #06B6D4; padding-bottom: 10px; }}
-                .stat-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }}
-                .stat-card {{ background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center; }}
-                .stat-num {{ font-size: 28px; font-weight: bold; color: #06B6D4; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-                th, td {{ border: 1px solid #e2e8f0; padding: 12px; text-align: left; }}
-                th {{ background-color: #f1f5f9; }}
-            </style>
-        </head>
-        <body>
-            <h1>Reporte Ejecutivo de Seguridad - Centinela AI</h1>
-            <p><strong>Fecha de Generación:</strong> {report_data['generationDate']}</p>
-            <div class="stat-grid">
-                <div class="stat-card"><div class="stat-num">{report_data['totalVulnerabilities']}</div><div>Vulnerabilidades Totales</div></div>
-                <div class="stat-card"><div class="stat-num">{report_data['criticalVulnerabilities']}</div><div style="color:red">Críticas</div></div>
-                <div class="stat-card"><div class="stat-num">{report_data['highVulnerabilities']}</div><div style="color:orange">Altas</div></div>
-                <div class="stat-card"><div class="stat-num">{report_data['runtimeAlerts']}</div><div>Alertas Runtime</div></div>
-            </div>
-            <h2>Inventario de Activos y Estado</h2>
-            <table>
-                <tr><th>Nombre</th><th>Tipo</th><th>Endpoint</th><th>Wazuh Status</th></tr>
-                {"".join([f"<tr><td>{a['asset_name']}</td><td>{a['asset_type']}</td><td>{a['endpoint']}</td><td>{a['status']}</td></tr>" for a in assets])}
-            </table>
-        </body>
-        </html>
-        """
-        
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        resolved_pct = round((resolved / total * 100) if total else 0)
+        risk_score = "ALTO" if critical > 0 else ("MEDIO" if high > 0 else "BAJO")
+        risk_color = "#dc2626" if critical > 0 else ("#d97706" if high > 0 else "#16a34a")
+
+        assets_rows = "".join([
+            f"<tr><td>{a['asset_name']}</td><td>{a['asset_type']}</td>"
+            f"<td><code>{a['endpoint']}</code></td>"
+            f"<td><span class='badge badge-{(a['criticality'] or 'INFO').upper()}'>{a['criticality'] or '—'}</span></td>"
+            f"<td>{a['status'] or 'N/D'}</td></tr>"
+            for a in assets
+        ])
+        top_rows = "".join([
+            f"<tr><td>{r['asset_name']}</td>"
+            f"<td><span class='badge badge-{r['severity']}'>{r['severity']}</span></td>"
+            f"<td style='text-align:center;font-weight:600'>{r['cnt']}</td></tr>"
+            for r in top_vulns
+        ])
+
+        html_content = f"""<!DOCTYPE html><html lang='es'><head>
+<meta charset='UTF-8'>
+<title>Reporte Ejecutivo — Centinela-AI</title>
+<style>{CIVIKA_PDF_STYLES}</style>
+</head><body>
+{build_pdf_header('Reporte Ejecutivo de Seguridad', 'Resumen de postura de ciberseguridad del ecosistema CASMARTS', gen_date)}
+
+<div class='card card-exec'>
+  <span class='section-label label-exec'>Resumen Ejecutivo</span>
+  <p style='margin-top:6px; font-size:10px; line-height:1.7;'>
+    El presente reporte consolida la postura de ciberseguridad del ecosistema CASMARTS a la fecha <strong>{gen_date}</strong>.
+    Se han identificado <strong>{total}</strong> hallazgos de seguridad distribuidos en <strong>{len(assets)}</strong> activos monitoreados.
+    El nivel de riesgo global es: <strong style='color:{risk_color};'>{risk_score}</strong>.
+    El <strong>{resolved_pct}%</strong> de los hallazgos han sido resueltos o mitigados mediante el motor SOAR.
+  </p>
+</div>
+
+<div class='kpi-grid'>
+  <div class='kpi-card kpi-crit'><div class='kpi-num'>{critical}</div><div class='kpi-label'>Críticos</div></div>
+  <div class='kpi-card kpi-high'><div class='kpi-num'>{high}</div><div class='kpi-label'>Altos</div></div>
+  <div class='kpi-card kpi-ok'><div class='kpi-num'>{resolved}</div><div class='kpi-label'>Resueltos</div></div>
+  <div class='kpi-card'><div class='kpi-num'>{alerts}</div><div class='kpi-label'>Alertas Runtime</div></div>
+</div>
+
+<hr class='divider'>
+
+<div class='card card-tech'>
+  <span class='section-label label-tech'>Detalle Técnico — Activos con Mayor Riesgo</span>
+  <table style='margin-top:8px;'>
+    <tr><th>Activo</th><th>Severidad</th><th style='text-align:center;'>Hallazgos</th></tr>
+    {top_rows if top_rows else "<tr><td colspan='3' style='text-align:center;color:#16a34a;'>Sin hallazgos activos ✓</td></tr>"}
+  </table>
+</div>
+
+<h2>Inventario de Activos ({len(assets)})</h2>
+<table>
+  <tr><th>Activo</th><th>Tipo</th><th>Endpoint</th><th>Criticidad</th><th>Wazuh</th></tr>
+  {assets_rows}
+</table>
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | CASMARTS Ecosistema de Seguridad | Clasificación: CONFIDENCIAL | Estándar CVSS v3
+</div>
+</body></html>"""
+
         try:
             pdf_bytes = render_pdf_with_weasyprint(html_content)
             from fastapi.responses import Response
-            headers = {
-                "Content-Disposition": "attachment; filename=reporte_ejecutivo.pdf",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-            return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=reporte_ejecutivo.pdf",
+                         "Cache-Control": "no-store"})
         except Exception as e:
-            print(f"⚠️ WeasyPrint render failed, falling back to HTML report: {e}")
-            
+            print(f"⚠️ WeasyPrint fallback: {e}")
         from fastapi.responses import HTMLResponse
         return HTMLResponse(content=html_content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/reports/asset/{asset_name}")
 async def download_asset_report(asset_name: str):
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
-            # Info del activo
             cur.execute("SELECT id, asset_name, asset_type, endpoint, status, criticality, last_audit FROM public.infra_inventory WHERE asset_name = %s", (asset_name,))
             asset = cur.fetchone()
             if not asset:
                 raise HTTPException(status_code=404, detail="Asset not found")
-            
-            # Vulnerabilidades del activo
             cur.execute("""
-                SELECT severity, cve_id as title, description, developer_steps as solution, detected_at 
-                FROM public.vulnerability_log 
-                WHERE asset_id = %s 
-                ORDER BY detected_at DESC
+                SELECT v.id, v.severity, v.cve_id, v.description, v.executive_summary,
+                       v.business_impact, v.developer_steps, v.status, v.detected_at, v.scan_engine,
+                       r.executed_bool, r.approval_token
+                FROM public.vulnerability_log v
+                LEFT JOIN public.remediation_history r ON v.id = r.vuln_id
+                WHERE v.asset_id = %s
+                ORDER BY
+                  CASE v.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
+                  v.detected_at DESC
             """, (asset["id"],))
             vulns = cur.fetchall()
 
-        report_data = {
-            "generationDate": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "asset": asset,
-            "vulns": vulns,
-            "totalVulns": len(vulns),
-            "criticalVulns": sum(1 for v in vulns if v["severity"] == "CRITICAL"),
-            "highVulns": sum(1 for v in vulns if v["severity"] == "HIGH")
-        }
-        
-        html_content = f"""
-        <html>
-        <head>
-            <title>Reporte de Activo: {asset_name}</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #1E293B; }}
-                h1 {{ color: #0f172a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }}
-                .meta-table, .vuln-table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-                .meta-table th, .meta-table td, .vuln-table th, .vuln-table td {{ border: 1px solid #e2e8f0; padding: 12px; text-align: left; }}
-                .meta-table th {{ background-color: #f1f5f9; width: 30%; }}
-                .vuln-table th {{ background-color: #f8fafc; }}
-                .badge {{ padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 12px; }}
-                .badge-critical {{ background: #fee2e2; color: #991b1b; }}
-                .badge-high {{ background: #ffedd5; color: #9a3412; }}
-            </style>
-        </head>
-        <body>
-            <h1>Reporte de Seguridad de Activo: {asset_name}</h1>
-            <p><strong>Fecha de Generación:</strong> {report_data['generationDate']}</p>
-            
-            <h2>Detalles del Activo</h2>
-            <table class="meta-table">
-                <tr><th>Tipo de Activo</th><td>{asset['asset_type']}</td></tr>
-                <tr><th>Endpoint</th><td>{asset['endpoint']}</td></tr>
-                <tr><th>Wazuh Status</th><td>{asset['status']}</td></tr>
-                <tr><th>Criticidad de Riesgo</th><td>{asset['criticality']}</td></tr>
-                <tr><th>Último Audit / Escaneo</th><td>{asset['last_audit']}</td></tr>
-            </table>
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        total_v = len(vulns)
+        critical_v = sum(1 for v in vulns if v["severity"] == "CRITICAL")
+        high_v     = sum(1 for v in vulns if v["severity"] == "HIGH")
+        resolved_v = sum(1 for v in vulns if v.get("executed_bool"))
+        risk = "ALTO" if critical_v > 0 else ("MEDIO" if high_v > 0 else "BAJO")
+        risk_color = "#dc2626" if critical_v > 0 else ("#d97706" if high_v > 0 else "#16a34a")
 
-            <h2>Resumen de Vulnerabilidades ({report_data['totalVulns']})</h2>
-            <p>Críticas: <strong>{report_data['criticalVulns']}</strong> | Altas: <strong>{report_data['highVulns']}</strong></p>
+        vuln_cards = ""
+        for v in vulns:
+            sev = (v["severity"] or "INFO").upper()
+            card_cls = "card-crit" if sev == "CRITICAL" else ("card-warn" if sev in ("HIGH","MEDIUM") else "card")
+            exec_sum = v.get("executive_summary") or ""
+            biz_imp  = v.get("business_impact") or "Sin análisis de impacto."
+            steps    = v.get("developer_steps") or "Sin pasos de remediación."
+            det_date = str(v["detected_at"])[:16] if v.get("detected_at") else "—"
+            status_badge = "<span style='color:#16a34a;font-weight:600'>Resuelto ✓</span>" if v.get("executed_bool") else "<span style='color:#d97706;'>Pendiente</span>"
+            vuln_cards += f"""
+            <div class='card {card_cls}' style='margin-bottom:10px;'>
+              <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;'>
+                <div>
+                  <span class='badge badge-{sev}'>{sev}</span>
+                  <strong style='font-size:10px; margin-left:6px;'>{v['cve_id']}</strong>
+                </div>
+                <div style='font-size:8px; color:#64748b; text-align:right;'>{det_date} &bull; Motor: {v.get('scan_engine','N/D')} &bull; {status_badge}</div>
+              </div>
+              <span class='section-label label-exec'>Resumen Ejecutivo</span>
+              <p style='font-size:9.5px; margin:4px 0 8px;'>{exec_sum or 'Análisis de IA pendiente.'}</p>
+              <p style='font-size:9px; color:#475569;'><strong>Impacto al Negocio:</strong> {biz_imp}</p>
+              <hr class='divider'>
+              <span class='section-label label-tech'>Detalle Técnico</span>
+              <p style='font-size:9px; margin:4px 0;'>{v.get('description','Sin descripción técnica.')[:600]}</p>
+              <p style='font-size:9px; color:#334155; margin-top:6px;'><strong>Pasos de Remediación:</strong><br>{steps}</p>
+            </div>"""
 
-            <h2>Historial de Vulnerabilidades</h2>
-            <table class="vuln-table">
-                <tr><th>Severidad</th><th>Título</th><th>Descripción</th><th>Solución Sugerida</th></tr>
-                {"".join([f"<tr><td><span class='badge badge-{v['severity'].lower()}'>{v['severity']}</span></td><td>{v['title']}</td><td>{v['description']}</td><td>{v['solution']}</td></tr>" for v in vulns])}
-            </table>
-        </body>
-        </html>
-        """
-        
+        html_content = f"""<!DOCTYPE html><html lang='es'><head>
+<meta charset='UTF-8'>
+<title>Reporte de Activo: {asset_name}</title>
+<style>{CIVIKA_PDF_STYLES}</style>
+</head><body>
+{build_pdf_header(f'Reporte de Seguridad de Activo', asset_name, gen_date)}
+
+<div class='card card-exec'>
+  <span class='section-label label-exec'>Resumen Ejecutivo del Activo</span>
+  <p style='margin-top:6px; font-size:10px; line-height:1.7;'>
+    El activo <strong>{asset['asset_name']}</strong> ({asset['asset_type']}) con endpoint <code>{asset['endpoint']}</code>
+    presenta un nivel de riesgo: <strong style='color:{risk_color};'>{risk}</strong>.
+    Se encontraron <strong>{total_v}</strong> hallazgos en total, de los cuales
+    <strong style='color:#dc2626;'>{critical_v}</strong> son críticos y <strong style='color:#d97706;'>{high_v}</strong> altos.
+    Un total de <strong style='color:#16a34a;'>{resolved_v}</strong> han sido resueltos por el motor SOAR.
+  </p>
+</div>
+
+<div class='kpi-grid'>
+  <div class='kpi-card kpi-crit'><div class='kpi-num'>{critical_v}</div><div class='kpi-label'>Críticos</div></div>
+  <div class='kpi-card kpi-high'><div class='kpi-num'>{high_v}</div><div class='kpi-label'>Altos</div></div>
+  <div class='kpi-card'><div class='kpi-num'>{total_v}</div><div class='kpi-label'>Total</div></div>
+  <div class='kpi-card kpi-ok'><div class='kpi-num'>{resolved_v}</div><div class='kpi-label'>Resueltos</div></div>
+</div>
+
+<table>
+  <tr><th>Propiedad</th><th>Valor</th></tr>
+  <tr><td>Tipo de Activo</td><td>{asset['asset_type']}</td></tr>
+  <tr><td>Endpoint</td><td><code>{asset['endpoint']}</code></td></tr>
+  <tr><td>Criticidad</td><td><span class='badge badge-{(asset['criticality'] or 'INFO').upper()}'>{asset['criticality']}</span></td></tr>
+  <tr><td>Estado Wazuh</td><td>{asset['status'] or 'N/D'}</td></tr>
+  <tr><td>Última Auditoría</td><td>{str(asset['last_audit'])[:16] if asset.get('last_audit') else '—'}</td></tr>
+</table>
+
+<h2>Hallazgos de Seguridad ({total_v})</h2>
+{vuln_cards if vuln_cards else "<div class='card card-ok' style='text-align:center; padding:20px;'><strong style='color:#16a34a;'>✓ Sin hallazgos activos. Activo en buen estado.</strong></div>"}
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | CASMARTS | Clasificación: CONFIDENCIAL | Estándar CVSS v3 | Generado: {gen_date}
+</div>
+</body></html>"""
+
         try:
             pdf_bytes = render_pdf_with_weasyprint(html_content)
             from fastapi.responses import Response
-            headers = {
-                "Content-Disposition": f"attachment; filename=reporte_{asset_name}.pdf",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-            return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename=reporte_{asset_name}.pdf",
+                         "Cache-Control": "no-store"})
         except Exception as e:
-            print(f"⚠️ WeasyPrint render failed, falling back to HTML: {e}")
-            
+            print(f"⚠️ WeasyPrint fallback: {e}")
         from fastapi.responses import HTMLResponse
         return HTMLResponse(content=html_content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/reports/vulnerability/{vuln_id}")
 async def download_vulnerability_report(vuln_id: int):
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT v.id, i.asset_name, v.severity, v.cve_id as title, v.description, v.developer_steps as solution, v.detected_at, i.endpoint 
-                FROM public.vulnerability_log v 
-                LEFT JOIN public.infra_inventory i ON v.asset_id = i.id 
+                SELECT v.id, i.asset_name, i.endpoint, i.asset_type,
+                       v.severity, v.cve_id, v.description, v.executive_summary,
+                       v.business_impact, v.developer_steps, v.status, v.detected_at, v.scan_engine,
+                       r.script_path, r.executed_bool, r.log_output, r.approval_token
+                FROM public.vulnerability_log v
+                LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
+                LEFT JOIN public.remediation_history r ON v.id = r.vuln_id
                 WHERE v.id = %s
             """, (vuln_id,))
             vuln = cur.fetchone()
             if not vuln:
                 raise HTTPException(status_code=404, detail="Vulnerability not found")
 
-        report_data = {
-            "generationDate": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "vuln": vuln
-        }
-        
-        html_content = f"""
-        <html>
-        <head>
-            <title>Reporte de Vulnerabilidad #{vuln_id}</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #1E293B; line-height: 1.6; }}
-                h1 {{ color: #991b1b; border-bottom: 2px solid #ef4444; padding-bottom: 10px; }}
-                .section {{ margin-top: 25px; padding: 20px; background: #f8fafc; border-left: 5px solid #ef4444; border-radius: 0 8px 8px 0; }}
-                .meta {{ font-size: 14px; color: #64748b; margin-bottom: 20px; }}
-            </style>
-        </head>
-        <body>
-            <h1>Reporte de Vulnerabilidad: {vuln['title']}</h1>
-            <div class="meta">
-                <p><strong>Identificador:</strong> #{vuln_id}</p>
-                <p><strong>Activo Afectado:</strong> {vuln['asset_name']} ({vuln['endpoint']})</p>
-                <p><strong>Severidad:</strong> {vuln['severity']}</p>
-                <p><strong>Fecha de Detección:</strong> {vuln['detected_at']}</p>
-                <p><strong>Fecha de Reporte:</strong> {report_data['generationDate']}</p>
-            </div>
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        sev = (vuln["severity"] or "INFO").upper()
+        card_cls = "card-crit" if sev == "CRITICAL" else ("card-warn" if sev in ("HIGH","MEDIUM") else "card-ok")
+        exec_sum = vuln.get("executive_summary") or "Análisis de IA pendiente de procesamiento."
+        biz_imp  = vuln.get("business_impact") or "Sin análisis de impacto al negocio disponible."
+        steps    = vuln.get("developer_steps") or "Sin pasos de remediación disponibles."
+        script   = vuln.get("log_output") or ""
+        det_date = str(vuln["detected_at"])[:16] if vuln.get("detected_at") else "—"
+        remediated = vuln.get("executed_bool", False)
+        status_str = "✅ Remediado automáticamente por Ansible" if remediated else "⏳ Pendiente de remediación"
+        status_color = "#16a34a" if remediated else "#d97706"
 
-            <div class="section">
-                <h3>Descripción del Hallazgo</h3>
-                <p>{vuln['description']}</p>
-            </div>
+        html_content = f"""<!DOCTYPE html><html lang='es'><head>
+<meta charset='UTF-8'>
+<title>Reporte de Vulnerabilidad #{vuln_id}</title>
+<style>{CIVIKA_PDF_STYLES}</style>
+</head><body>
+{build_pdf_header(f'Reporte de Vulnerabilidad', f'{vuln["cve_id"]} — {vuln["asset_name"]}', gen_date)}
 
-            <div class="section" style="border-left-color: #10b981; background: #f0fdf4;">
-                <h3>Solución Recomendada (Mitigación SOAR)</h3>
-                <p>{vuln['solution']}</p>
-            </div>
-        </body>
-        </html>
-        """
-        
+<div style='display:flex; gap:8px; margin-bottom:10px; align-items:center;'>
+  <span class='badge badge-{sev}' style='font-size:10px; padding:4px 10px;'>{sev}</span>
+  <strong style='font-size:12px;'>{vuln['cve_id']}</strong>
+  <span style='font-size:9px; color:#64748b;'>&bull; Detectado: {det_date} &bull; Motor: {vuln.get('scan_engine','N/D')}</span>
+</div>
+
+<table style='margin-bottom:10px;'>
+  <tr><th style='width:30%'>Propiedad</th><th>Valor</th></tr>
+  <tr><td>Activo Afectado</td><td><strong>{vuln['asset_name']}</strong> ({vuln.get('asset_type','N/D')})</td></tr>
+  <tr><td>Endpoint</td><td><code>{vuln.get('endpoint','N/D')}</code></td></tr>
+  <tr><td>Severidad (CVSS v3)</td><td><span class='badge badge-{sev}'>{sev}</span></td></tr>
+  <tr><td>Estado de Remediación</td><td><strong style='color:{status_color};'>{status_str}</strong></td></tr>
+  <tr><td>Fecha de Detección</td><td>{det_date}</td></tr>
+</table>
+
+<div class='card card-exec'>
+  <span class='section-label label-exec'>Resumen Ejecutivo</span>
+  <p style='margin-top:6px; font-size:10px; line-height:1.7;'>{exec_sum}</p>
+  <hr class='divider'>
+  <h3>Impacto al Negocio</h3>
+  <p style='font-size:9.5px; line-height:1.6; color:#475569;'>{biz_imp}</p>
+</div>
+
+<div class='card card-tech'>
+  <span class='section-label label-tech'>Detalle Técnico</span>
+  <p style='margin-top:6px; font-size:9px; line-height:1.6;'>{vuln.get('description','Sin descripción técnica disponible.')}</p>
+  <hr class='divider'>
+  <h3>Pasos de Remediación para el Equipo Técnico</h3>
+  <p style='font-size:9px; line-height:1.7; margin-top:4px;'>{steps}</p>
+  {f'<hr class="divider"><h3>Log de Ejecución Ansible</h3><pre>{script[:2000]}</pre>' if script else ''}
+</div>
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | CASMARTS | Clasificación: CONFIDENCIAL | Estándar CVSS v3 | ID Vuln: #{vuln_id} | Generado: {gen_date}
+</div>
+</body></html>"""
+
         try:
             pdf_bytes = render_pdf_with_weasyprint(html_content)
             from fastapi.responses import Response
-            headers = {
-                "Content-Disposition": f"attachment; filename=vulnerabilidad_{vuln_id}.pdf",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-            return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename=vulnerabilidad_{vuln_id}.pdf",
+                         "Cache-Control": "no-store"})
         except Exception as e:
-            print(f"⚠️ WeasyPrint render failed, falling back to HTML: {e}")
-            
+            print(f"⚠️ WeasyPrint fallback: {e}")
         from fastapi.responses import HTMLResponse
         return HTMLResponse(content=html_content)
     except Exception as e:
@@ -1145,6 +1345,184 @@ async def get_soar_roi():
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# =====================================================================
+# ADVANCED SCANNING ENDPOINTS (ZAP DAST / Secrets / SpiderFoot OSINT)
+# =====================================================================
+
+class DastScanModel(BaseModel):
+    profile: Optional[str] = "balanced"  # light, balanced, aggressive, api
+
+class SecretsScanModel(BaseModel):
+    phase: Optional[int] = 1  # 1=fast, 2=medium, 3=deep
+    max_commits: Optional[int] = 50
+
+class OsintScanModel(BaseModel):
+    target: Optional[str] = None  # override endpoint if needed
+
+@app.post("/api/scan/dast/{asset_id}")
+async def trigger_dast_scan(asset_id: int, body: DastScanModel = DastScanModel()):
+    """Triggers an on-demand ZAP DAST scan on a registered asset."""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT asset_name, asset_type, endpoint FROM public.infra_inventory WHERE id = %s", (asset_id,))
+            asset = cur.fetchone()
+
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        if asset["asset_type"] not in ["URL", "AppServer", "SERVER"]:
+            raise HTTPException(status_code=400, detail=f"DAST not applicable to asset type '{asset['asset_type']}'. Use URL or AppServer.")
+
+        endpoint = asset["endpoint"]
+        if not endpoint.startswith("http"):
+            endpoint = f"http://{endpoint}"
+
+        try:
+            import auditor_zap
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: auditor_zap.run_zap_scan(
+                target_url=endpoint,
+                asset_id=asset_id,
+                scan_profile=body.profile,
+                db_cache_path="/tmp/zap-cache"
+            ))
+            return {
+                "status": "completed",
+                "asset_id": asset_id,
+                "asset_name": asset["asset_name"],
+                "target": endpoint,
+                "profile": body.profile,
+                "message": "ZAP DAST scan completed. Check /api/remediation for findings."
+            }
+        except auditor_zap.ZAPTimeoutError:
+            return {"status": "timeout", "asset_id": asset_id, "message": "ZAP scan timed out. Try 'light' profile."}
+        except auditor_zap.ZAPNotAvailableError:
+            raise HTTPException(status_code=503, detail="ZAP service not available. Check Docker.")
+        except ImportError:
+            raise HTTPException(status_code=501, detail="ZAP module not installed.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scan/secrets/{asset_id}")
+async def trigger_secrets_scan(asset_id: int, body: SecretsScanModel = SecretsScanModel()):
+    """Triggers on-demand secrets scanning on a registered repository asset."""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT asset_name, asset_type, endpoint FROM public.infra_inventory WHERE id = %s", (asset_id,))
+            asset = cur.fetchone()
+
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        if asset["asset_type"] != "Repository":
+            raise HTTPException(status_code=400, detail=f"Secrets scan only applies to Repository type. Got '{asset['asset_type']}'.")
+
+        repo_path = asset["endpoint"]
+
+        try:
+            import auditor_secrets
+            import asyncio
+            loop = asyncio.get_event_loop()
+
+            if body.phase == 1:
+                await loop.run_in_executor(None, lambda: auditor_secrets.scan_repo_secrets_fast(repo_path, asset_id))
+                phase_name = "Fast (working tree)"
+            elif body.phase == 2:
+                await loop.run_in_executor(None, lambda: auditor_secrets.scan_repo_secrets_deep(repo_path, asset_id, body.max_commits))
+                phase_name = f"Medium (last {body.max_commits} commits)"
+            else:
+                await loop.run_in_executor(None, lambda: auditor_secrets.scan_repo_secrets_historical(repo_path, asset_id))
+                phase_name = "Deep (full history)"
+
+            return {
+                "status": "completed",
+                "asset_id": asset_id,
+                "asset_name": asset["asset_name"],
+                "repo": repo_path,
+                "phase": phase_name,
+                "message": "Secrets scan completed. Check /api/remediation for findings."
+            }
+        except ImportError:
+            raise HTTPException(status_code=501, detail="Secrets module not installed.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scan/osint/{asset_id}")
+async def trigger_osint_scan(asset_id: int, body: OsintScanModel = OsintScanModel()):
+    """Triggers on-demand SpiderFoot OSINT enrichment on a registered asset."""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT asset_name, asset_type, endpoint FROM public.infra_inventory WHERE id = %s", (asset_id,))
+            asset = cur.fetchone()
+
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        target = body.target or asset["endpoint"]
+
+        try:
+            import auditor_spiderfoot
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: auditor_spiderfoot.run_spiderfoot_osint(target, asset_id))
+
+            return {
+                "status": "completed",
+                "asset_id": asset_id,
+                "asset_name": asset["asset_name"],
+                "target": target,
+                "message": "OSINT scan completed. Check /api/remediation for findings."
+            }
+        except ImportError:
+            raise HTTPException(status_code=501, detail="SpiderFoot module not installed.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/scan/coverage")
+async def get_scan_coverage():
+    """Returns vulnerability breakdown by scan engine (nuclei/zap/medusa/secrets/spiderfoot)."""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COALESCE(scan_engine, 'nuclei') as engine,
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN severity IN ('CRITICAL','HIGH') THEN 1 END) as high_critical,
+                    COUNT(CASE WHEN status = 'NEW' THEN 1 END) as new_findings
+                FROM public.vulnerability_log
+                GROUP BY COALESCE(scan_engine, 'nuclei')
+                ORDER BY total DESC
+            """)
+            rows = cur.fetchall()
+
+            cur.execute("""
+                SELECT
+                    COALESCE(scan_engine, 'nuclei') as engine,
+                    COUNT(DISTINCT asset_id) as assets_covered
+                FROM public.vulnerability_log
+                GROUP BY COALESCE(scan_engine, 'nuclei')
+            """)
+            coverage = {r["engine"]: r["assets_covered"] for r in cur.fetchall()}
+
+            return {
+                "scan_engines": [dict(r) for r in rows],
+                "assets_covered_per_engine": coverage,
+                "total_vulnerabilities": sum(r["total"] for r in rows)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
