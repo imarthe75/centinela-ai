@@ -143,7 +143,7 @@ def run_osint_discovery():
             # 4. Save metadata back to DB as an audit log/enrichment
             enrich_summary = (
                 f"ℹ️ **ENRIQUECIMIENTO OSINT PASIVO (SpiderFoot Style)** ℹ️\n\n"
-                f"**IP Resolvida:** `{resolved_ip}`\n"
+                f"**IP Resuelta:** `{resolved_ip}`\n"
                 f"**Geolocalización:** {geo['city']}, {geo['country']} - {geo['org']}\n"
                 f"**Puertos Detectados Pasivamente:** {', '.join(map(str, shodan_info['ports']))}\n"
                 f"**Tecnologías/Servicios:** {', '.join(shodan_info['services'])}\n"

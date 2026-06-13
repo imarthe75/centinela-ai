@@ -6,13 +6,16 @@ services:
     restart: always
     networks:
     - aura-network
+    env_file:
+    - .env
     volumes:
     - .:/app
     - ../core-casmarts:/app/core-casmarts:ro
     - ../consulta-smart/backend/app/core/credentials/google-v-credentials.json:/app/credentials.json:ro
     - /var/run/docker.sock:/var/run/docker.sock
+    - zeek-logs:/app/logs/zeek:ro
     environment:
-    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_ADDR=http://10.4.3.208:8200
     - VAULT_TOKEN=${VAULT_TOKEN}
     - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
     - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
@@ -29,7 +32,10 @@ services:
     - VALKEY_HOST=casmarts-core-cache
     - AUTHENTIK_URL=https://auth.casmart.internal
     - AUTHENTIK_CLIENT_ID=centinela-ai
-    - AUTHENTIK_INTERNAL_URL=http://casmarts-core-authentik-server:9000
+    - AUTHENTIK_INTERNAL_URL=https://auth.casmart.internal
+    - NEO4J_URI=bolt://centinela-neo4j:7687
+    - NEO4J_USER=neo4j
+    - NEO4J_PASSWORD=password
     working_dir: /app
     command: python centinela.py
     deploy:
@@ -44,20 +50,23 @@ services:
     restart: always
     networks:
     - aura-network
+    env_file:
+    - .env
     volumes:
     - .:/app
+    - /var/run/docker.sock:/var/run/docker.sock
     environment:
     - DB_HOST=casmarts-core-db-primary
     - DB_NAME=casmarts_security
     - DB_USER=admin
-    - DB_PASSWORD=casmarts_secure_db_pwd_2026
+    - DB_PASSWORD=casmarts_secure_pwd
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_ADDR=http://10.4.3.208:8200
     - VAULT_TOKEN=${VAULT_TOKEN:-root}
     - AUTHENTIK_URL=https://auth.casmart.internal
     - AUTHENTIK_CLIENT_ID=centinela-ai
-    - AUTHENTIK_INTERNAL_URL=http://casmarts-core-authentik-server:9000
+    - AUTHENTIK_INTERNAL_URL=https://auth.casmart.internal
     ports:
     - 8302:8000
     deploy:
@@ -88,6 +97,8 @@ services:
     restart: always
     networks:
     - aura-network
+    env_file:
+    - .env
     volumes:
     - .:/app
     - /var/run/docker.sock:/var/run/docker.sock
@@ -95,10 +106,10 @@ services:
     - DB_HOST=casmarts-core-db-primary
     - DB_NAME=casmarts_security
     - DB_USER=admin
-    - DB_PASSWORD=casmarts_secure_db_pwd_2026
+    - DB_PASSWORD=casmarts_secure_pwd
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=http://casmarts-core-vault:8200
+    - VAULT_ADDR=http://10.4.3.208:8200
     - VAULT_TOKEN=${VAULT_TOKEN:-root}
     - ANSIBLE_REMOTE_USER=${ANSIBLE_REMOTE_USER:-pmcp}
     - ANSIBLE_BECOME_PASS=${ANSIBLE_BECOME_PASS:-}
@@ -109,6 +120,11 @@ services:
       resources:
         limits:
           memory: 1G
+
+  # ZAP DAST Scanner Cache Volume (for ephemeral container use)
+  # Note: ZAP containers are spawned on-demand by auditor_zap.py
+  # This volume persists the vulnerability DB to avoid re-download (~100MB)
+  # Usage: docker run -v zap-cache:/root/.zap/db owasp/zap2docker-stable
 #   ollama:
 #     image: ollama/ollama:latest
 #     container_name: ollama
@@ -161,6 +177,51 @@ services:
 #       resources:
 #         limits:
 #           memory: 256M
+
+  centinela-neo4j:
+    image: neo4j:5.12.0-community
+    container_name: centinela-neo4j
+    restart: always
+    networks:
+      - aura-network
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    volumes:
+      - neo4j-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  centinela-zeek:
+    image: zeek/zeek:latest
+    container_name: centinela-zeek
+    restart: always
+    networks:
+      - aura-network
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - zeek-logs:/usr/local/zeek/logs
+    command: zeek -i eth0
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  zap-cache:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=150m"
+  neo4j-data:
+  zeek-logs:
+
 networks:
   aura-network:
     external: true

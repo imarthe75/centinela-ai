@@ -1128,8 +1128,8 @@ export default function Dashboard() {
 
                     {selectedRemediation && (
                         <div className="lg:col-span-5 animate-in slide-in-from-right-8 duration-500">
-                            <div className="bg-[#1E293B] rounded-[32px] border border-[#06B6D4]/30 overflow-hidden sticky top-24">
-                                <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-[#06B6D4]/10 to-transparent">
+                            <div className="bg-[#1E293B] rounded-[32px] border border-[#06B6D4]/30 overflow-hidden sticky top-24 flex flex-col max-h-[calc(100vh-120px)]">
+                                <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-[#06B6D4]/10 to-transparent shrink-0">
                                     <div className="flex justify-between items-start mb-6">
                                         <div>
                                             <p className="text-[10px] text-[#06B6D4] font-black uppercase tracking-widest mb-1">Informe Ejecutivo IA</p>
@@ -1167,7 +1167,7 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
-                                <div className="p-8 space-y-8 max-h-[60vh] overflow-y-auto">
+                                <div className="p-8 space-y-8 flex-1 overflow-y-auto">
                                     <section>
                                         <h4 className="text-white font-bold text-xs uppercase tracking-widest mb-3 flex items-center gap-2">
                                             <Info size={14} className="text-[#06B6D4]" />
@@ -1219,7 +1219,7 @@ export default function Dashboard() {
                                     )}
                                 </div>
 
-                                <div className="p-8 bg-[#0F172A] border-t border-slate-800 flex gap-3">
+                                <div className="p-8 bg-[#0F172A] border-t border-slate-800 flex gap-3 shrink-0 flex-wrap">
                                     {selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool ? (
                                         <div className="flex-grow py-4 bg-emerald-500/10 text-emerald-500 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-emerald-500/20 flex items-center justify-center gap-2 cursor-default">
                                             <CheckCircle2 size={16} />

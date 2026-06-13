@@ -79,14 +79,34 @@ def discover_wazuh_agents():
                         
                         print(f"🕵️ Found agent: {agent_name} (IP: {agent_ip})")
                         
-                        cur.execute("""
-                            INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id)
-                            VALUES (%s, %s, %s, %s, NOW(), %s, %s)
-                            ON CONFLICT (asset_name) DO UPDATE 
-                            SET status = EXCLUDED.status, 
-                                last_audit = NOW(),
-                                agent_id = EXCLUDED.agent_id;
-                        """, (agent_name, "AppServer", agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id))
+                        # Check if an asset with this IP or matching name already exists
+                        existing = None
+                        if agent_ip and agent_ip != "any":
+                            cur.execute("SELECT id FROM infra_inventory WHERE endpoint = %s", (agent_ip,))
+                            existing = cur.fetchone()
+                        
+                        if not existing:
+                            # Try to match by asset_name
+                            cur.execute("SELECT id FROM infra_inventory WHERE asset_name = %s OR asset_name = %s", (agent_name, f"{agent_name}-server"))
+                            existing = cur.fetchone()
+                        
+                        if existing:
+                            cur.execute("""
+                                UPDATE infra_inventory 
+                                SET agent_id = %s,
+                                    status = %s,
+                                    last_audit = NOW()
+                                WHERE id = %s
+                            """, (agent_id, status.lower(), existing[0]))
+                        else:
+                            cur.execute("""
+                                INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id)
+                                VALUES (%s, %s, %s, %s, NOW(), %s, %s)
+                                ON CONFLICT (asset_name) DO UPDATE 
+                                SET status = EXCLUDED.status, 
+                                    last_audit = NOW(),
+                                    agent_id = EXCLUDED.agent_id;
+                            """, (agent_name, "AppServer", agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id))
             
             print("✅ Wazuh discovery complete.")
     except Exception as e:

@@ -3,6 +3,8 @@
 ## 1. Alcance Técnico
 Centinela-AI es un motor **XDR (Extended Detection and Response)** enfocado en la defensa profunda. A diferencia de las herramientas de Pentesting, su arquitectura está optimizada para la detección pasiva, correlación de logs y remediación reactiva. El sistema carece de módulos de explotación de vulnerabilidades.
 
+> **Última actualización:** 2026-06-09 — Integración ZAP DAST, Secrets Scanning, SpiderFoot OSINT
+
 ## 2. Arquitectura del Sistema
 Centinela-AI es un sistema de orquestación de seguridad (SOAR) basado en microservicios, diseñado para el ecosistema CASMARTS.
 
@@ -36,17 +38,50 @@ El sistema utiliza una arquitectura de redundancia para garantizar la disponibil
 docker compose up -d --build
 ```
 
-## 5. Endpoints Críticos (API Swagger)
-- `POST /api/investigate/runtime`: Recibe una alerta y devuelve un reporte estructurado de IA.
-- `GET /api/inventory`: Lista de activos monitoreados y su estado.
-- `POST /api/assets/register`: Registro de nuevos tipos de infraestructura.
+## 5. Módulos de Escaneo (Stack Completo 2026)
+
+| Módulo | Archivo | Tipo | Cuándo se ejecuta | Detecta |
+|--------|---------|------|-------------------|---------|
+| **Nuclei** | auditor_ext.py | SAST/Template | Cada ciclo (10 min) | CVEs conocidos, misconfigs |
+| **ZAP DAST** | auditor_zap.py | DAST activo | URLs/AppServers (on-demand o ciclo) | CSRF, auth bypass, logic flaws |
+| **Medusa** | auditor_medusa.py | AI-SAST | Repositorios (cada ciclo) | Patrones de código vulnerables |
+| **Secrets** | auditor_secrets.py | Secrets | Repositorios (cada ciclo, PHASE 1) | API keys, passwords hardcoded |
+| **SpiderFoot** | auditor_spiderfoot.py | OSINT | URLs (cada ciclo extendido) | Subdomains, TLS issues, headers |
+| **Trivy** | auditor_ext.py | SCA/Container | Repos + containers | CVEs en dependencias |
+| **Checkov** | auditor_ext.py | IaC | Repositorios | Misconfigs de infraestructura |
+| **Nmap** | auditor_ext.py | Network | IPs/AppServers | Puertos abiertos |
+| **SQLMap** | auditor_ext.py | DAST-DB | Databases | SQL injection |
+| **Wazuh** | centinela.py | Runtime | Continuo (push) | FIM, privilege escalation |
+
+## 6. Endpoints Críticos (API Swagger)
+
+### Inventario y Descubrimiento
+- `POST /api/inventory`: Registro de activos con auto-geolocalización.
+- `POST /api/inventory/{asset_name}/vault-secret`: Almacenar credenciales en Vault.
+
+### Escaneo On-Demand (NUEVO 2026-06-09)
+- `POST /api/scan/dast/{asset_id}`: Lanza escaneo ZAP DAST (perfil: light/balanced/aggressive/api).
+- `POST /api/scan/secrets/{asset_id}`: Lanza secrets scanner (fase 1/2/3).
+- `POST /api/scan/osint/{asset_id}`: Lanza SpiderFoot OSINT (subdomain, CT, TLS, threat intel).
+- `GET /api/scan/coverage`: Breakdown de vulnerabilidades por motor de escaneo.
+
+### Monitoreo y Alertas
 - `GET /api/ws/alerts` (WebSocket): Canal bidireccional de alertas críticas en tiempo real.
-- `POST /api/wazuh/agent/{agent_id}/action`: Ejecución de comandos en caliente (restart, scan, logs).
-- `POST /api/soar/ticket`: Creación de un ticket de remediación en Gitea o Redmine.
-- `GET /api/reports/executive`: Reporte ejecutivo (WeasyPrint).
-- `GET /api/reports/asset/{asset_name}`: Reporte de seguridad de activo (WeasyPrint).
-- `GET /api/reports/vulnerability/{vuln_id}`: Detalle de vulnerabilidad en PDF (WeasyPrint).
-- `GET /api/stats/soar-roi`: Métricas financieras y comparativas de tiempo de respuesta (SOAR vs Manual).
+- `GET /api/alerts/runtime`: Alertas de runtime (Wazuh/Falco).
+- `POST /api/investigate/runtime`: Análisis IA de una alerta específica.
+- `GET /api/health`: Estado de salud con módulos de escaneo detectados.
+
+### Remediación SOAR
+- `GET /api/remediation`: Historial de vulnerabilidades + remediaciones.
+- `POST /api/remediation/approve/{vuln_id}`: Aprobar ejecución de script.
+- `POST /api/remediation/{vuln_id}/ticket`: Crear ticket en Redmine/Gitea.
+- `POST /api/wazuh/agent/{agent_id}/action`: Control de agente Wazuh en caliente.
+
+### Reportes
+- `GET /api/reports/executive`: Reporte ejecutivo PDF (WeasyPrint).
+- `GET /api/reports/asset/{asset_name}`: Reporte de activo PDF.
+- `GET /api/reports/vulnerability/{vuln_id}`: Detalle de vulnerabilidad PDF.
+- `GET /api/stats/soar-roi`: Métricas SOAR vs Manual.
 
 ## 6. Cambios Recientes
 

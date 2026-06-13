@@ -3,9 +3,9 @@ Este documento es el Manual Maestro de Operaciones. Su objetivo es transformar a
 
 *Nota de Atribución: Este framework incorpora y adapta las mejores prácticas, ideas de diseño de subagentes, estructuras de hooks y arnés de optimización del proyecto de código abierto **affaan-m/ECC** (bajo Licencia MIT).*
 
-🛠️ FASE 1: El Prompt Semilla (Inicialización)
+🛠️ FASE 1: El Prompt Semilla (Inicialización y OS Cognitivo)
 "Actúa como Principal AI Solutions Architect. Tu primera misión es construir tu propio Sistema Cognitivo antes de escribir código. Implementa la estructura bajo `.agent/` siguiendo estos pilares:
-1. Memoria Estática (.agent/): AGENT.md (Reglas), CONTEXT.md (Propósito), MAP.md (Arquitectura técnica) y HEURISTICS.md (Heurísticas Cognitivas y Aplicadas).
+1. Memoria Estática (.agent/): AGENT.md (Reglas), CONTEXT.md (Propósito), MAP.md (Arquitectura técnica), HEURISTICS.md (Heurísticas Cognitivas y Aplicadas), SPECS.md (OpenSpec Layer) y SYSTEM_PROMPT.md (Instrucciones de Agente Residente v3).
 2. Historial de Decisiones: Carpeta DECISIONS/ para ADRs numerados.
 3. Persistencia Local Obligatoria: Todos los servicios (Postgres, Valkey, SeaweedFS, Redpanda) deben configurarse para usar carpetas locales del host.
 4. Memoria Operativa (Valkey/AMS): Integra el Agent Memory Server con Valkey para caché y estados (Semantic Caching).
