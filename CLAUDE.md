@@ -92,13 +92,13 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   `/opt/ecosistema-casmarts/core-casmarts/vault/vault-init-keys.txt` on 10.4.3.208 — reading it
   requires explicit user involvement (it's a raw secrets file). Until unsealed, "Vault Creds"
   will show "No" for every asset regardless of what's configured.
-- **Several inventory assets point at unreachable IPs**, confirmed by both ICMP and TCP probes
-  from 10.4.3.34: `sf_sigeti_superset` (10.4.3.17), `casmart_ia` (10.4.3.28 — this is also the
-  address an old, deleted install doc used for a long-defunct Wazuh manager, so it's likely
-  just stale data), `CLONE-COMPRAMEX-DIGITAL` (10.4.3.200), `CLONE-COMPRAMEX-DIGITAL-BD`
-  (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD` (10.4.3.207). Also
-  `10.4.3.51` (pmcp) in `inventory.ini`. These need correct current addresses from whoever owns
-  that network — don't guess new IPs.
+- ~~Several inventory assets point at unreachable IPs~~ — **resolved 2026-08-04**: `sf_sigeti_superset`
+  (10.4.3.17), `casmart_ia` (10.4.3.28), `CLONE-COMPRAMEX-DIGITAL` (10.4.3.200),
+  `CLONE-COMPRAMEX-DIGITAL-BD` (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD`
+  (10.4.3.207) were confirmed dead by both ICMP and TCP and removed from `infra_inventory`
+  (with their findings/remediation rows) at the user's request — those IPs no longer exist.
+  `10.4.3.51` (pmcp) is still listed in `inventory.ini` for Ansible but is not a dashboard
+  asset; left as-is unless it should also be removed.
 - **`auditor_medusa.py`'s CLI flags** (`--no-ai-safe`, `echo "yes" | medusa scan ...`) were
   written against an assumed interactive-confirmation behavior; the `medusa-security` PyPI
   package's documented flags don't obviously include either. Worth a real test run once medusa

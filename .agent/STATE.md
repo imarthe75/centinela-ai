@@ -34,10 +34,11 @@
 - **Vault (10.4.3.208) sigue sellado** — su auto-unsealer está corriendo pero con una llave que
   ya no coincide con el storage actual. Requiere que alguien recupere/actualice la llave
   correcta manualmente; no es algo resoluble desde este repositorio.
-- **6 activos apuntan a IPs no alcanzables** (confirmado por ping y TCP): `sf_sigeti_superset`,
-  `casmart_ia`, `CLONE-COMPRAMEX-DIGITAL`, `CLONE-COMPRAMEX-DIGITAL-BD`, `CLONE-PMCP-BD`,
-  `CLONE-SICOPA-BD`, más `10.4.3.51` (pmcp) en `inventory.ini`. Necesitan direcciones correctas
-  de quien administre esa red — no se deben adivinar.
+- **6 activos con IPs no alcanzables fueron eliminados del inventario** a petición del usuario
+  (confirmó que 10.4.3.28 ya no existe): `sf_sigeti_superset`, `casmart_ia`,
+  `CLONE-COMPRAMEX-DIGITAL`, `CLONE-COMPRAMEX-DIGITAL-BD`, `CLONE-PMCP-BD`, `CLONE-SICOPA-BD`,
+  junto con sus hallazgos y remediaciones asociadas. Quedan 12 activos en `infra_inventory`.
+  `10.4.3.51` (pmcp) sigue en `inventory.ini` (no es un activo del dashboard) — no se tocó.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
@@ -59,8 +60,8 @@
 
 ## 🚧 Pendientes
 - Recuperar/actualizar la llave de unseal correcta de Vault en `10.4.3.208` (ver Hitos 2026-08-04).
-- Confirmar direcciones IP/hostnames actuales de los 6 activos no alcanzables (ver Hitos 2026-08-04)
-  e instalar el agente Wazuh en `casmart_ia` en cuanto se tenga la IP correcta.
+- Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
+  a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real
   (se instaló hoy pero no se ha probado un scan real; los flags `--no-ai-safe` y el `echo "yes" |`
   pueden no aplicar a la versión actual del CLI).
