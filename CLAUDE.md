@@ -132,23 +132,24 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   `GITLAB_TOKEN` in `.env`. Ran a real `POST /api/gitlab/scan`: 46/63 GitLab projects cloned and
   audited, **74 real vulnerabilities found** (SAST + SCA + standards) and correlated. The other
   17 projects likely failed to clone (empty repos, or need investigation if that's wrong).
-- **`sentinel.py`'s remediation execution is password-only.** `ansible_remediate()`/the inline
-  "generic" Ansible path in `process_remediations()` always pass `ansible_ssh_pass` /
-  `ansible_become_pass` from Vault's `sudo_password` field (or `ANSIBLE_BECOME_PASS` env
-  fallback) — there's no code path that uses an SSH private key file. Assets enrolled with a key
-  only (e.g. `casmartdb`/`casmart_authentik` via `casmart.key`/`casmarts.key` in `inventory.ini`)
-  can be scanned and have Wazuh installed, but **Sentinel cannot auto-remediate them** unless a
-  password is also stored in Vault for that asset name. Verified this whole pipeline end-to-end
-  (approve → Sentinel picks it up → runs Ansible → updates DB) is otherwise working correctly —
-  confirmed via a live test approval on `CLONE-COMPRAMEX-CORE`, which correctly failed for lack
-  of credentials rather than hanging or silently no-op'ing.
-- **When a remediation fails but the asset has a Wazuh `agent_id`, `sentinel.py` marks it
-  `COMPLETED`/`RESOLVED` anyway** (`process_remediations()`, the `if status == "FAILED" and
-  agent_id ...` block) — it appends a log line claiming "remediation triggered via Wazuh Active
-  Response" but never actually calls any Wazuh API. This silently reports remediation success
-  for any failed Ansible run on an asset that merely *has* an agent installed, which is
-  misleading. Not fixed — implementing real Wazuh Active Response (or just removing the fake
-  fallback) is a real design decision, not a one-line fix, and wasn't part of what was asked.
+- ~~`sentinel.py`'s remediation execution was password-only~~ — **resolved 2026-08-04**: added
+  `get_ssh_private_key()` (reads the `ssh_private_key` field `store_vault_secret()` already
+  wrote to `casmarts/ansible/{asset_name}`, which nothing previously read back). The generic
+  Ansible path now writes it to a 0600 temp file and passes `ansible_ssh_private_key_file` when
+  present, falling back to the password vars otherwise. Verified live: stored
+  `casmart_authentik`'s real key in Vault via the actual `/api/inventory/{name}/vault-secret`
+  endpoint, approved a real pending finding, and watched Sentinel authenticate with the key and
+  mark it `COMPLETED`/`RESOLVED` — confirmed Authentik itself (`https://auth.casmart.internal`)
+  stayed healthy (HTTP 302) afterward.
+- ~~Failed remediations on Wazuh-enrolled assets were silently marked `COMPLETED`~~ — **resolved
+  2026-08-04**: removed the `if status == "FAILED" and agent_id ...: status = "COMPLETED"`
+  fallback in `process_remediations()` that faked a Wazuh Active Response call which never
+  actually happened. Failures now stay `FAILED` (`executed_bool=False`,
+  `vulnerability_log.status` stays whatever it was, never force-set to `RESOLVED`). Re-approving
+  via the UI (`approval_token='APPROVED'`) makes Sentinel pick it up and retry — no separate
+  "retry" mechanism was added since that already does the job. Verified live on
+  `CLONE-COMPRAMEX-CORE` (no stored credentials): now correctly reports `FAILED`, not
+  `COMPLETED`.
 - ~~Several inventory assets point at unreachable IPs~~ — **resolved 2026-08-04**: `sf_sigeti_superset`
   (10.4.3.17), `casmart_ia` (10.4.3.28), `CLONE-COMPRAMEX-DIGITAL` (10.4.3.200),
   `CLONE-COMPRAMEX-DIGITAL-BD` (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD`

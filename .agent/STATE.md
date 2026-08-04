@@ -68,13 +68,25 @@
   (`/app/remediate_wildfly.yml` y `/app/remediate_generic.yml` — ambos se movieron a
   `remediation/playbooks/` en la reorganización de hoy y `sentinel.py` nunca se actualizó). Antes
   de este fix, **toda remediación aprobada fallaba silenciosamente** con "playbook could not be
-  found". Ver `CLAUDE.md` para el detalle de una limitación estructural adicional (Sentinel solo
-  soporta auth por password, no por llave SSH) y un problema de integridad no corregido
-  (fallback falso a "COMPLETED" vía Wazuh cuando Ansible falla).
+  found".
+- **Sentinel ahora soporta remediación por llave SSH, no solo password.** Se agregó
+  `get_ssh_private_key()` (lee el campo `ssh_private_key` que `store_vault_secret()` ya
+  guardaba en Vault pero nadie leía de vuelta). Probado en vivo: se guardó la llave real de
+  `casmart_authentik` en Vault vía el endpoint real, se aprobó un hallazgo pendiente, y Sentinel
+  autenticó con la llave y marcó la remediación `COMPLETED`/`RESOLVED`. Se confirmó que
+  Authentik siguió sano (HTTP 302) después.
+- **Se quitó el fallback falso que marcaba remediaciones fallidas como `COMPLETED`** solo por
+  tener un agente Wazuh instalado (nunca llamaba a ninguna API real de Wazuh). Ahora una
+  remediación fallida queda honestamente en `FAILED` (`executed_bool=False`, sin marcar el
+  hallazgo como `RESOLVED`); re-aprobarla desde la UI hace que Sentinel la reintente. Probado en
+  vivo sobre `CLONE-COMPRAMEX-CORE` (sin credenciales): ahora reporta `FAILED` correctamente.
 - **`casmartsuperset`, `prism`, `chat` siguen sin credenciales SSH funcionales.** Se probó
-  `casmarts.key` (que sí funciona para `casmart_authentik`) contra `prism` (10.4.3.30) y `chat`
-  (10.4.3.31) bajo 10 usuarios distintos — todos rechazados. Falta el usuario correcto o
-  confirmar que esa llave no está autorizada ahí.
+  `casmarts.key` y `casmart.key` (que sí funcionan para `casmart_authentik`/`casmartdb`) contra
+  `prism` (10.4.3.30, usuario `wiki`) y `chat` (10.4.3.31, usuario `chatbotpdf`) — ambos
+  rechazados con "Permission denied (publickey,password)" para ambas llaves. La llave SÍ se
+  ofrece correctamente (verificado con `ssh -v`), simplemente no está autorizada en esos hosts
+  con ese usuario. Falta una llave/password distinta, o agregar la pública de `casmarts.key` al
+  `authorized_keys` de esos usuarios en prism/chat.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
@@ -95,16 +107,10 @@
 7. **Reorganización del código raíz**: Los módulos `.py` sueltos se movieron a paquetes (`core/`, `auditors/`, `discovery/`, `remediation/`, `scripts/`, `tests/`, `ui/`). Los entrypoints que invoca Docker (`centinela.py`, `main.py`, `sentinel.py`) se mantuvieron en la raíz.
 
 ## 🚧 Pendientes
-- Conseguir el usuario SSH correcto para `casmartsuperset` (10.4.3.25), `prism` (10.4.3.30) y
-  `chat` (10.4.3.31) — `casmarts.key` no autenticó con ninguno de los 10 usuarios probados en
-  prism/chat; casmartsuperset ni se probó todavía. Sin esto no se les puede instalar Wazuh ni
-  guardar credenciales en Vault para que Sentinel los pueda remediar.
-- Decidir qué hacer con el fallback falso de Sentinel que marca una remediación fallida como
-  "COMPLETED" solo porque el activo tiene un agente Wazuh instalado, sin llamar realmente a
-  ninguna API de Wazuh Active Response (ver `CLAUDE.md`, sección de issues abiertos).
-- Si se quiere que Sentinel pueda remediar activos que solo tienen llave SSH (no password), hay
-  que extender `ansible_remediate()`/el bloque "generic" en `sentinel.py` para soportar
-  `ansible_ssh_private_key_file`, no solo `ansible_ssh_pass`.
+- Conseguir una llave/password que sí funcione para `casmartsuperset` (10.4.3.25), `prism`
+  (10.4.3.30, usuario `wiki`) y `chat` (10.4.3.31, usuario `chatbotpdf`) — ambas llaves
+  conocidas (`casmarts.key`, `casmart.key`) fueron rechazadas en los dos últimos. Sin esto no se
+  les puede instalar Wazuh ni guardar credenciales en Vault para que Sentinel los remedie.
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real
