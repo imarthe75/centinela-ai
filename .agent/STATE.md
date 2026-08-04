@@ -57,6 +57,24 @@
 - **Pendiente real, fuera de este repo** (nota del usuario): la causa de que Authentik entregue
   el mismo `preferred_username` a usuarios distintos está en la configuración de Authentik
   (`auth.casmart.internal`), no en este monorepo — cualquier fix aquí sería solo defensivo.
+- **GitLab: token configurado y escaneo real corrido.** El usuario compartió varios PATs; se
+  probaron contra la API para encontrar uno válido con scope suficiente (`sonar_pat`, usuario
+  `monitor`) — varios de los otros estaban revocados o sin permisos (401/403). Con
+  `POST /api/gitlab/scan` real: 46 de 63 proyectos clonados y auditados, **74 vulnerabilidades
+  reales encontradas** (SAST + SCA + estándares).
+- **Se verificó el pipeline de remediación de punta a punta** (aprobar → Sentinel lo recoge →
+  corre Ansible → actualiza DB) con una aprobación real de prueba sobre `CLONE-COMPRAMEX-CORE`.
+  En el camino se encontraron y corrigieron **2 rutas de playbook rotas** en `sentinel.py`
+  (`/app/remediate_wildfly.yml` y `/app/remediate_generic.yml` — ambos se movieron a
+  `remediation/playbooks/` en la reorganización de hoy y `sentinel.py` nunca se actualizó). Antes
+  de este fix, **toda remediación aprobada fallaba silenciosamente** con "playbook could not be
+  found". Ver `CLAUDE.md` para el detalle de una limitación estructural adicional (Sentinel solo
+  soporta auth por password, no por llave SSH) y un problema de integridad no corregido
+  (fallback falso a "COMPLETED" vía Wazuh cuando Ansible falla).
+- **`casmartsuperset`, `prism`, `chat` siguen sin credenciales SSH funcionales.** Se probó
+  `casmarts.key` (que sí funciona para `casmart_authentik`) contra `prism` (10.4.3.30) y `chat`
+  (10.4.3.31) bajo 10 usuarios distintos — todos rechazados. Falta el usuario correcto o
+  confirmar que esa llave no está autorizada ahí.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
@@ -77,11 +95,16 @@
 7. **Reorganización del código raíz**: Los módulos `.py` sueltos se movieron a paquetes (`core/`, `auditors/`, `discovery/`, `remediation/`, `scripts/`, `tests/`, `ui/`). Los entrypoints que invoca Docker (`centinela.py`, `main.py`, `sentinel.py`) se mantuvieron en la raíz.
 
 ## 🚧 Pendientes
-- Conseguir credenciales SSH (o registrarlas en Vault) para `casmartsuperset` (10.4.3.25),
-  `prism` (10.4.3.30) y `chat` (10.4.3.31) — están vivos (puerto 22 abierto) pero sin credencial
-  conocida, así que no se les puede instalar el agente Wazuh todavía.
-- Configurar `GITLAB_TOKEN` en `.env` para que `POST /api/gitlab/scan` pueda autenticar contra
-  `http://10.4.3.10` y auditar los repositorios reales.
+- Conseguir el usuario SSH correcto para `casmartsuperset` (10.4.3.25), `prism` (10.4.3.30) y
+  `chat` (10.4.3.31) — `casmarts.key` no autenticó con ninguno de los 10 usuarios probados en
+  prism/chat; casmartsuperset ni se probó todavía. Sin esto no se les puede instalar Wazuh ni
+  guardar credenciales en Vault para que Sentinel los pueda remediar.
+- Decidir qué hacer con el fallback falso de Sentinel que marca una remediación fallida como
+  "COMPLETED" solo porque el activo tiene un agente Wazuh instalado, sin llamar realmente a
+  ninguna API de Wazuh Active Response (ver `CLAUDE.md`, sección de issues abiertos).
+- Si se quiere que Sentinel pueda remediar activos que solo tienen llave SSH (no password), hay
+  que extender `ansible_remediate()`/el bloque "generic" en `sentinel.py` para soportar
+  `ansible_ssh_private_key_file`, no solo `ansible_ssh_pass`.
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real

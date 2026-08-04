@@ -98,6 +98,14 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
    `environment:`". This applies here too — any `docker-compose.yml` env change needs
    `docker compose up -d <service>` (recreate), a plain `docker restart` is not enough.
 
+8. **The root-level reorg (`.py`/`.yml` files moved into packages) missed some hardcoded path
+   references outside the moved files themselves.** `sentinel.py` still pointed at
+   `/app/remediate_wildfly.yml` and `/app/remediate_generic.yml` (both moved to
+   `remediation/playbooks/`), so **every single approved remediation failed** with
+   `the playbook: ... could not be found` — silently, since `sentinel.py`'s failure path just
+   logs it and moves on. After a reorg, grep the whole tree for the old paths of anything that
+   moved, not just check the moved file's own new location works.
+
 ## Known open issues (as of 2026-08-04, updated same day)
 
 - ~~Vault is sealed~~ — **resolved same day**: the user recovered/rotated the root token after a
@@ -111,15 +119,36 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   Every ZAP attempt threw `ZAPNotAvailableError` and silently fell back to nuclei-only. Fixed to
   `zaproxy/zap-stable:latest` (OWASP's current official image, same `zap.sh -daemon` + REST API
   invocation pattern) and pre-pulled.
-- **3 `SERVER` assets have no known SSH credentials**: `casmartsuperset` (10.4.3.25), `prism`
-  (10.4.3.30), `chat` (10.4.3.31). All three are reachable (port 22 open) but neither
-  `inventory.ini` nor Vault (`casmarts/ansible/*`) has anything for them, so Wazuh can't be
-  installed there yet. Needs the user to supply credentials (or add them via "Añadir Activo").
-- **GitLab project scanning has no token** — `GITLAB_TOKEN` is empty in `.env`, so
-  `POST /api/gitlab/scan` (`gitlab_integration.py`) will fail GitLab API auth even though the
-  code path itself is fine. `gitlab-casmart-server`'s own inventory row is just a marker, not
-  something `handle_asset_discovered` scans directly — its findings only appear once
-  `scan_all_projects()` is actually run with a valid token.
+- **3 `SERVER` assets still have no known SSH credentials for Wazuh install**: `casmartsuperset`
+  (10.4.3.25), `prism` (10.4.3.30), `chat` (10.4.3.31). All three are reachable (port 22 open).
+  Tried `casmarts.key` (which works for `casmart_authentik`/10.4.3.208) against prism and chat
+  under 10 likely usernames (authentik, root, ubuntu, casmart, prism, chat, admin, centinela,
+  deploy, pmcp) — all rejected with "Permission denied (publickey)". Needs the correct username
+  from the user, or confirmation that this key isn't authorized on those hosts at all.
+- ~~GitLab project scanning has no token~~ — **resolved 2026-08-04**: user supplied several
+  GitLab PATs; tested each against `GET /api/v4/user` and `/api/v4/personal_access_tokens/self`
+  to find one with `api`/`read_repository` scope (`sonar_pat`, user `monitor`, expires
+  2027-07-02 — several of the others were 401/403, revoked or wrong scope). Set as
+  `GITLAB_TOKEN` in `.env`. Ran a real `POST /api/gitlab/scan`: 46/63 GitLab projects cloned and
+  audited, **74 real vulnerabilities found** (SAST + SCA + standards) and correlated. The other
+  17 projects likely failed to clone (empty repos, or need investigation if that's wrong).
+- **`sentinel.py`'s remediation execution is password-only.** `ansible_remediate()`/the inline
+  "generic" Ansible path in `process_remediations()` always pass `ansible_ssh_pass` /
+  `ansible_become_pass` from Vault's `sudo_password` field (or `ANSIBLE_BECOME_PASS` env
+  fallback) — there's no code path that uses an SSH private key file. Assets enrolled with a key
+  only (e.g. `casmartdb`/`casmart_authentik` via `casmart.key`/`casmarts.key` in `inventory.ini`)
+  can be scanned and have Wazuh installed, but **Sentinel cannot auto-remediate them** unless a
+  password is also stored in Vault for that asset name. Verified this whole pipeline end-to-end
+  (approve → Sentinel picks it up → runs Ansible → updates DB) is otherwise working correctly —
+  confirmed via a live test approval on `CLONE-COMPRAMEX-CORE`, which correctly failed for lack
+  of credentials rather than hanging or silently no-op'ing.
+- **When a remediation fails but the asset has a Wazuh `agent_id`, `sentinel.py` marks it
+  `COMPLETED`/`RESOLVED` anyway** (`process_remediations()`, the `if status == "FAILED" and
+  agent_id ...` block) — it appends a log line claiming "remediation triggered via Wazuh Active
+  Response" but never actually calls any Wazuh API. This silently reports remediation success
+  for any failed Ansible run on an asset that merely *has* an agent installed, which is
+  misleading. Not fixed — implementing real Wazuh Active Response (or just removing the fake
+  fallback) is a real design decision, not a one-line fix, and wasn't part of what was asked.
 - ~~Several inventory assets point at unreachable IPs~~ — **resolved 2026-08-04**: `sf_sigeti_superset`
   (10.4.3.17), `casmart_ia` (10.4.3.28), `CLONE-COMPRAMEX-DIGITAL` (10.4.3.200),
   `CLONE-COMPRAMEX-DIGITAL-BD` (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD`

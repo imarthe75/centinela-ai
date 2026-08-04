@@ -9,7 +9,7 @@ import hvac
 
 # Configuration for Ansible-based remediation
 ANSIBLE_INVENTORY = "/app/inventory.ini"
-ANSIBLE_PLAYBOOK = "/app/remediate_wildfly.yml"
+ANSIBLE_PLAYBOOK = "/app/remediation/playbooks/remediate_wildfly.yml"
 
 def get_sudo_password(asset_name: str) -> str:
     """
@@ -210,7 +210,7 @@ def process_remediations():
                             escaped_content = script_content.replace("'", "'\\''")
                             cmd = [
                                 "ansible-playbook", "-i", f"{asset_ip},",
-                                "/app/remediate_generic.yml",
+                                "/app/remediation/playbooks/remediate_generic.yml",
                                 "-e", f"script_content='{escaped_content}'",
                                 "-e", f"ansible_user={ansible_user}",
                                 "-e", f"ansible_become_pass={sudo_pass}",
