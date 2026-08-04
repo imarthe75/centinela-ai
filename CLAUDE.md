@@ -84,14 +84,42 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
    `centinela-ai`, not `centinela-backend`) silently breaks that *other* service even though
    `.env` "has it."
 
-## Known open issues (as of 2026-08-04)
+6. **Never infer "found nothing" from `subprocess.run(...).stdout` being non-empty.** CLI
+   scanners print banners/warnings to stdout unless explicitly silenced. `scan_appserver()`'s
+   nuclei call was missing `-silent` (every other nuclei call in the file has it), so
+   `if result.stdout: found_vulns = True` was true on *every* run (banner text), the code then
+   tried to `json.loads()` each banner line, failed silently, and never wrote a real finding
+   *or* the "clean scan" fallback message — total silent data loss for every SERVER asset, for
+   who knows how long. Fixed by always passing `-silent` and only setting `found_vulns = True`
+   inside the successful-parse branch (matches the already-correct pattern in `scan_url()`).
 
-- **Vault is sealed.** The auto-unsealer on 10.4.3.208 (`casmarts-core-vault-unsealer`) is
-  running but its baked-in `VAULT_UNSEAL_KEY` doesn't match Vault's storage anymore (cipher
-  auth failure). A candidate key file exists at
-  `/opt/ecosistema-casmarts/core-casmarts/vault/vault-init-keys.txt` on 10.4.3.208 — reading it
-  requires explicit user involvement (it's a raw secrets file). Until unsealed, "Vault Creds"
-  will show "No" for every asset regardless of what's configured.
+7. **`docker-compose.yml` env var edits need a container recreate, not a source edit.** Learned
+   from the Vault incident's own postmortem note: "un contenedor ya corriendo NO relee su propio
+   `environment:`". This applies here too — any `docker-compose.yml` env change needs
+   `docker compose up -d <service>` (recreate), a plain `docker restart` is not enough.
+
+## Known open issues (as of 2026-08-04, updated same day)
+
+- ~~Vault is sealed~~ — **resolved same day**: the user recovered/rotated the root token after a
+  Vault re-init (`ROOT_TOKEN` in `core-casmarts/vault/vault-init-keys.txt` on 10.4.3.208) and
+  updated `.env`. `Secrets Backend (Vault)` now reports Online and `client.is_authenticated()`
+  is `True`. No stored secrets exist yet under `casmarts/ansible/*` — that's expected, nobody
+  could write there while it was sealed; `has_vault_secret` will start turning `true` per-asset
+  as credentials get added via "Añadir Activo" / the vault-secret endpoint going forward.
+- **ZAP DAST silently never ran** — `auditor_zap.py` referenced `owasp/zap2docker-stable:latest`,
+  a Docker Hub image that no longer exists ("pull access denied... repository does not exist").
+  Every ZAP attempt threw `ZAPNotAvailableError` and silently fell back to nuclei-only. Fixed to
+  `zaproxy/zap-stable:latest` (OWASP's current official image, same `zap.sh -daemon` + REST API
+  invocation pattern) and pre-pulled.
+- **3 `SERVER` assets have no known SSH credentials**: `casmartsuperset` (10.4.3.25), `prism`
+  (10.4.3.30), `chat` (10.4.3.31). All three are reachable (port 22 open) but neither
+  `inventory.ini` nor Vault (`casmarts/ansible/*`) has anything for them, so Wazuh can't be
+  installed there yet. Needs the user to supply credentials (or add them via "Añadir Activo").
+- **GitLab project scanning has no token** — `GITLAB_TOKEN` is empty in `.env`, so
+  `POST /api/gitlab/scan` (`gitlab_integration.py`) will fail GitLab API auth even though the
+  code path itself is fine. `gitlab-casmart-server`'s own inventory row is just a marker, not
+  something `handle_asset_discovered` scans directly — its findings only appear once
+  `scan_all_projects()` is actually run with a valid token.
 - ~~Several inventory assets point at unreachable IPs~~ — **resolved 2026-08-04**: `sf_sigeti_superset`
   (10.4.3.17), `casmart_ia` (10.4.3.28), `CLONE-COMPRAMEX-DIGITAL` (10.4.3.200),
   `CLONE-COMPRAMEX-DIGITAL-BD` (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD`

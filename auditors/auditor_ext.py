@@ -355,14 +355,15 @@ def scan_appserver(asset_id, endpoint):
  
         # Nuclei vuln scan
         tags = "wildfly,tomcat,jboss,middleware,java,angular,react,vue,nextjs,php,wordpress,apache,nginx"
-        result = subprocess.run(['nuclei', '-u', url, '-tags', tags, '-severity', 'medium,high,critical', '-jsonl'], capture_output=True, text=True, errors='replace')
+        result = subprocess.run(['nuclei', '-u', url, '-tags', tags, '-severity', 'medium,high,critical', '-silent', '-jsonl'], capture_output=True, text=True, errors='replace')
         if result.stdout:
-            found_vulns = True
             for line in result.stdout.splitlines():
+                if not line.strip(): continue
                 try:
                     vuln = json.loads(line)
                     log_vulnerability(asset_id, vuln.get('template-id'), vuln.get('info', {}).get('severity'), vuln.get('info', {}).get('description'))
-                except: pass
+                    found_vulns = True
+                except (json.JSONDecodeError, ValueError): pass
 
         # ZAP DAST - dynamic testing for each discovered web service
         if ZAP_AVAILABLE and port in ["80", "443", "8080", "8443", "8000", "3000", "4200", "5000", "9990"]:
