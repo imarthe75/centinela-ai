@@ -97,8 +97,8 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   `CLONE-COMPRAMEX-DIGITAL-BD` (10.4.3.201), `CLONE-PMCP-BD` (10.4.3.205), `CLONE-SICOPA-BD`
   (10.4.3.207) were confirmed dead by both ICMP and TCP and removed from `infra_inventory`
   (with their findings/remediation rows) at the user's request — those IPs no longer exist.
-  `10.4.3.51` (pmcp) is still listed in `inventory.ini` for Ansible but is not a dashboard
-  asset; left as-is unless it should also be removed.
+  `10.4.3.51` (pmcp) was also removed from `inventory.ini`'s `[casmarts_nodes]` group for the
+  same reason.
 - **`auditor_medusa.py`'s CLI flags** (`--no-ai-safe`, `echo "yes" | medusa scan ...`) were
   written against an assumed interactive-confirmation behavior; the `medusa-security` PyPI
   package's documented flags don't obviously include either. Worth a real test run once medusa

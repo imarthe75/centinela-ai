@@ -38,7 +38,7 @@
   (confirmó que 10.4.3.28 ya no existe): `sf_sigeti_superset`, `casmart_ia`,
   `CLONE-COMPRAMEX-DIGITAL`, `CLONE-COMPRAMEX-DIGITAL-BD`, `CLONE-PMCP-BD`, `CLONE-SICOPA-BD`,
   junto con sus hallazgos y remediaciones asociadas. Quedan 12 activos en `infra_inventory`.
-  `10.4.3.51` (pmcp) sigue en `inventory.ini` (no es un activo del dashboard) — no se tocó.
+  `10.4.3.51` (pmcp) también se quitó de `inventory.ini` por la misma razón.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
