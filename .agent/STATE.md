@@ -31,14 +31,32 @@
 - Corregido `centinela-zeek`: escribía sus logs en `/` (raíz del contenedor) en vez de
   `/usr/local/zeek/logs` (el volumen montado), por lo que Centinela nunca podía leer alertas de
   red. Se agregó `working_dir: /usr/local/zeek/logs`.
-- **Vault (10.4.3.208) sigue sellado** — su auto-unsealer está corriendo pero con una llave que
-  ya no coincide con el storage actual. Requiere que alguien recupere/actualice la llave
-  correcta manualmente; no es algo resoluble desde este repositorio.
 - **6 activos con IPs no alcanzables fueron eliminados del inventario** a petición del usuario
   (confirmó que 10.4.3.28 ya no existe): `sf_sigeti_superset`, `casmart_ia`,
   `CLONE-COMPRAMEX-DIGITAL`, `CLONE-COMPRAMEX-DIGITAL-BD`, `CLONE-PMCP-BD`, `CLONE-SICOPA-BD`,
   junto con sus hallazgos y remediaciones asociadas. Quedan 12 activos en `infra_inventory`.
   `10.4.3.51` (pmcp) también se quitó de `inventory.ini` por la misma razón.
+- Normalizados 3 activos con `asset_type='DATABASE'` (valor no estándar, fuera de
+  `cat_asset_types`) a `'Database (SQL)'` — sin esto, `compramex_prod_copia`, `casmartdb` y
+  `postgresql-central-23-postgres` quedaban invisibles para el ciclo de escaneo (el `WHERE
+  asset_type IN (...)` de `auditor_ext.py:main()` nunca los incluía).
+- **Bug real corregido en `scan_appserver()`** (`auditors/auditor_ext.py`): al segundo `nuclei`
+  le faltaba `-silent`, así que su banner/warnings en stdout hacían `found_vulns = True` en
+  *cada* corrida aunque no hubiera hallazgos reales — resultado: ningún activo `SERVER` sin
+  agente Wazuh (`centinela`, `casmart_authentik`, `chat`, `prism`, `casmartsuperset`) generaba
+  jamás ni un hallazgo real ni el mensaje de "escaneo limpio". Corregido + hecho más defensivo
+  (`found_vulns` solo se marca tras un `json.loads` exitoso).
+- **ZAP DAST nunca funcionó**: la imagen Docker referenciada (`owasp/zap2docker-stable`) ya no
+  existe en Docker Hub. Corregida a `zaproxy/zap-stable:latest` (imagen oficial actual de OWASP)
+  y pre-descargada en este host.
+- **Vault (10.4.3.208) ya está desellado y autenticando correctamente.** El usuario recuperó el
+  nuevo `ROOT_TOKEN` (generado en un re-init del 4 de agosto) desde
+  `core-casmarts/vault/vault-init-keys.txt` en 10.4.3.208 y lo actualizó en `.env`. `Secrets
+  Backend (Vault)` reporta "Online". Aún no hay ningún secreto guardado bajo
+  `casmarts/ansible/*` — es esperado, nadie pudo escribir ahí mientras estuvo sellado.
+- **Pendiente real, fuera de este repo** (nota del usuario): la causa de que Authentik entregue
+  el mismo `preferred_username` a usuarios distintos está en la configuración de Authentik
+  (`auth.casmart.internal`), no en este monorepo — cualquier fix aquí sería solo defensivo.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
@@ -59,7 +77,11 @@
 7. **Reorganización del código raíz**: Los módulos `.py` sueltos se movieron a paquetes (`core/`, `auditors/`, `discovery/`, `remediation/`, `scripts/`, `tests/`, `ui/`). Los entrypoints que invoca Docker (`centinela.py`, `main.py`, `sentinel.py`) se mantuvieron en la raíz.
 
 ## 🚧 Pendientes
-- Recuperar/actualizar la llave de unseal correcta de Vault en `10.4.3.208` (ver Hitos 2026-08-04).
+- Conseguir credenciales SSH (o registrarlas en Vault) para `casmartsuperset` (10.4.3.25),
+  `prism` (10.4.3.30) y `chat` (10.4.3.31) — están vivos (puerto 22 abierto) pero sin credencial
+  conocida, así que no se les puede instalar el agente Wazuh todavía.
+- Configurar `GITLAB_TOKEN` en `.env` para que `POST /api/gitlab/scan` pueda autenticar contra
+  `http://10.4.3.10` y auditar los repositorios reales.
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real

@@ -27,7 +27,7 @@ import string
 logger = logging.getLogger(__name__)
 
 # ZAP Configuration
-ZAP_DOCKER_IMAGE = "owasp/zap2docker-stable:latest"
+ZAP_DOCKER_IMAGE = "zaproxy/zap-stable:latest"
 ZAP_CONTAINER_PREFIX = "zap-scan"
 ZAP_PORT = 8090
 ZAP_API_TIMEOUT = 30
