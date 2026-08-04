@@ -79,9 +79,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState([])
   const [roiStats, setRoiStats] = useState({
-    avg_remediation_time_minutes: 1.5,
-    effectiveness_rate_percentage: 98.4,
-    comparison: { ai_resolved: 15, manual_resolved: 4 }
+    avg_remediation_time_minutes: 0,
+    effectiveness_rate_percentage: 0,
+    comparison: { ai_resolved: 0, manual_resolved: 0 }
   })
   const [wazuhLogs, setWazuhLogs] = useState(null)
   const [showWazuhLogsModal, setShowWazuhLogsModal] = useState(false)
@@ -120,6 +120,8 @@ export default function Dashboard() {
   const [vaultTarget, setVaultTarget] = useState('')        // asset_name del activo
   const [vaultPassword, setVaultPassword] = useState('')
   const [vaultUser, setVaultUser] = useState('')
+  const [vaultAuthType, setVaultAuthType] = useState('PASSWORD') // 'PASSWORD' or 'SSH_KEY'
+  const [vaultSshKey, setVaultSshKey] = useState('')
   const [vaultSaving, setVaultSaving] = useState(false)
   const [vaultResult, setVaultResult] = useState(null)     // { ok: bool, msg: string }
   
@@ -129,13 +131,111 @@ export default function Dashboard() {
   const [manualReason, setManualReason] = useState('')
   const [manualSaving, setManualSaving] = useState(false)
 
+  const [usersList, setUsersList] = useState([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [currentUserRole, setCurrentUserRole] = useState('Viewer')
+
   useEffect(() => {
     if (auth.isAuthenticated) {
       fetchData()
-      const interval = setInterval(fetchData, 15000)
+      fetchUsers()
+      const interval = setInterval(fetchData, 5000)
       return () => clearInterval(interval)
     }
   }, [auth.isAuthenticated, assetFilter])
+
+  const fetchUsers = async () => {
+    try {
+      setUsersLoading(true)
+      const res = await axios.get(`${API_BASE}/users`)
+      if (Array.isArray(res.data)) {
+        setUsersList(res.data)
+        // Detect current user role accurately
+        const profile = auth.user?.profile || {}
+        const usernameCandidates = [
+          profile.preferred_username,
+          profile.nickname,
+          profile.sub,
+          profile.name
+        ].filter(Boolean).map(s => s.toLowerCase())
+        const emailCandidate = (profile.email || '').toLowerCase()
+
+        const match = res.data.find(u => {
+          const uName = (u.username || '').toLowerCase()
+          const uEmail = (u.email || '').toLowerCase()
+          return usernameCandidates.includes(uName) || (emailCandidate && uEmail === emailCandidate)
+        })
+        if (match) {
+          setCurrentUserRole(match.role)
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching Authentik users:", e)
+    } finally {
+      setUsersLoading(false)
+    }
+  }
+
+  const handleToggleUserRole = async (username, currentRole) => {
+    const newRole = currentRole === 'Admin' ? 'Viewer' : 'Admin'
+    try {
+      await axios.post(`${API_BASE}/users/role`, { username, role: newRole })
+      alert(`✅ Rol de ${username} actualizado exitosamente a ${newRole} en Authentik.`)
+      fetchUsers()
+    } catch (error) {
+      console.error("Error updating user role:", error)
+      alert("Error al actualizar el rol en Authentik: " + (error.response?.data?.detail || error.message))
+    }
+  }
+
+  const [systemConfig, setSystemConfig] = useState([])
+  const [configLoading, setConfigLoading] = useState(false)
+  const [configSaving, setConfigSaving] = useState(false)
+
+  const [availableModels, setAvailableModels] = useState([])
+  const [loadingModels, setLoadingModels] = useState(false)
+
+  const fetchModelsForProvider = async (providerName) => {
+    try {
+      setLoadingModels(true)
+      const res = await axios.get(`${API_BASE}/llm/models?provider=${providerName}`)
+      if (res.data && Array.isArray(res.data.models)) {
+        setAvailableModels(res.data.models)
+      }
+    } catch (e) {
+      console.error("Error fetching LLM models:", e)
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  const fetchSystemConfig = async () => {
+    try {
+      setConfigLoading(true)
+      const res = await axios.get(`${API_BASE}/config`)
+      if (Array.isArray(res.data)) {
+        setSystemConfig(res.data)
+      }
+    } catch (e) {
+      console.error("Error fetching system config:", e)
+    } finally {
+      setConfigLoading(false)
+    }
+  }
+
+  const handleSaveConfig = async () => {
+    try {
+      setConfigSaving(true)
+      await axios.post(`${API_BASE}/config`, { settings: systemConfig })
+      alert("✅ Configuración del sistema y agentes guardada exitosamente.")
+      fetchSystemConfig()
+    } catch (e) {
+      console.error("Error saving system config:", e)
+      alert("Error al guardar la configuración: " + (e.response?.data?.detail || e.message))
+    } finally {
+      setConfigSaving(false)
+    }
+  }
 
   const showNotification = (alertData) => {
     const newToast = {
@@ -269,7 +369,7 @@ export default function Dashboard() {
   if (!auth.isAuthenticated) {
     return (
       <div className="h-screen bg-[#0F172A] flex flex-col items-center justify-center p-8 text-center overflow-hidden relative">
-        <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_50%_50%,#06B6D410,transparent_50%)]" />
+        <div className="absolute top-0 left-0 w-full h-full" style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(6, 182, 212, 0.06), transparent 50%)' }} />
         <div className="z-10 animate-in fade-in zoom-in duration-700">
             <div className="w-24 h-24 bg-[#06B6D4]/10 rounded-3xl border border-[#06B6D4]/20 flex items-center justify-center text-[#06B6D4] mb-8 mx-auto shadow-2xl shadow-[#06B6D4]/10">
                 <ShieldCheck size={48} />
@@ -321,7 +421,7 @@ export default function Dashboard() {
       setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
       setDailyDetections(Array.isArray(resDaily.data) ? resDaily.data : [])
       setTops(resTops.data || { recent_assets: [], most_vulnerable: [], most_remediated: [] })
-      setRoiStats(resRoi.data || { avg_remediation_time_minutes: 1.5, effectiveness_rate_percentage: 98.4, comparison: { ai_resolved: 15, manual_resolved: 4 } })
+      setRoiStats(resRoi.data || { avg_remediation_time_minutes: 0, effectiveness_rate_percentage: 0, comparison: { ai_resolved: 0, manual_resolved: 0 } })
       setLastSync(new Date())
       setLoading(false)
     } catch (error) {
@@ -429,22 +529,27 @@ export default function Dashboard() {
     setVaultTarget(assetName)
     setVaultPassword('')
     setVaultUser('')
+    setVaultAuthType('PASSWORD')
+    setVaultSshKey('')
     setVaultResult(null)
     setShowVaultModal(true)
   }
 
   const handleSaveVaultSecret = async (e) => {
     e.preventDefault()
-    if (!vaultPassword) return
+    if (vaultAuthType === 'PASSWORD' && !vaultPassword) return
+    if (vaultAuthType === 'SSH_KEY' && !vaultSshKey) return
     setVaultSaving(true)
     setVaultResult(null)
     try {
       await axios.post(`${API_BASE}/inventory/${encodeURIComponent(vaultTarget)}/vault-secret`, {
-        sudo_password: vaultPassword,
+        sudo_password: vaultAuthType === 'PASSWORD' ? vaultPassword : undefined,
+        ssh_private_key: vaultAuthType === 'SSH_KEY' ? vaultSshKey : undefined,
         ansible_user: vaultUser || undefined
       })
       setVaultResult({ ok: true, msg: `Credencial de '${vaultTarget}' almacenada en Vault. Aura-Sentinel la usará automáticamente.` })
       setVaultPassword('')
+      setVaultSshKey('')
     } catch (err) {
       const detail = err?.response?.data?.detail || 'Error desconocido al conectar con Vault.'
       setVaultResult({ ok: false, msg: detail })
@@ -570,16 +675,32 @@ export default function Dashboard() {
             active={currentView === 'health'} 
             onClick={() => setCurrentView('health')}
           />
+          <NavItem 
+            icon={<Users size={20} />} 
+            label="Gestión Usuarios" 
+            active={currentView === 'users'} 
+            onClick={() => { setCurrentView('users'); fetchUsers(); }}
+          />
+          {currentUserRole === 'Admin' && (
+            <NavItem 
+              icon={<Cpu size={20} />} 
+              label="Configuración Sistema" 
+              active={currentView === 'settings'} 
+              onClick={() => { setCurrentView('settings'); fetchSystemConfig(); }}
+            />
+          )}
         </nav>
 
         <div className="p-4 border-t border-slate-800">
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="w-full hidden lg:flex items-center gap-3 p-3 mb-4 rounded-xl bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest hover:bg-white transition-all shadow-lg shadow-[#06B6D4]/20"
-          >
-            <Plus size={20} />
-            Añadir Activo
-          </button>
+          {currentUserRole === 'Admin' && (
+            <button 
+              onClick={() => setShowAddModal(true)}
+              className="w-full hidden lg:flex items-center gap-3 p-3 mb-4 rounded-xl bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest hover:bg-white transition-all shadow-lg shadow-[#06B6D4]/20"
+            >
+              <Plus size={20} />
+              Añadir Activo
+            </button>
+          )}
           <div className="hidden lg:block mb-4 px-3">
             <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Sincronización</p>
             <div className="text-[10px] text-emerald-500 font-bold uppercase tracking-tighter flex items-center gap-2">
@@ -624,7 +745,11 @@ export default function Dashboard() {
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className="text-xs font-bold text-white leading-none">{auth.user?.profile?.name || "Operador"}</p>
-                <p className="text-[10px] text-[#06B6D4] uppercase font-black tracking-tighter">Mando de Seguridad</p>
+                <div className="flex items-center gap-1 justify-end mt-1">
+                  <span className={`px-2 py-0.5 text-[9px] font-black rounded-md uppercase tracking-wider ${currentUserRole === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/40' : 'bg-slate-700/50 text-slate-400 border border-slate-700'}`}>
+                    {currentUserRole === 'Admin' ? '🛡️ Admin' : '👁️ Viewer'}
+                  </span>
+                </div>
               </div>
               <div className="w-10 h-10 rounded-xl bg-[#06B6D4]/20 border border-[#06B6D4]/30 flex items-center justify-center text-[#06B6D4] font-black">
                 {auth.user?.profile?.preferred_username?.[0]?.toUpperCase() || "A"}
@@ -1077,44 +1202,28 @@ export default function Dashboard() {
                                                              log.executed_bool ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
                                                         </div>
                                                         <div>
-                                                            <p className="text-white font-bold text-sm">{log.cve_id === 'SCAN-AUDIT' ? 'Auditoría de Activo' : log.cve_id}</p>
-                                                            <p className="text-[9px] text-slate-500 font-bold truncate max-w-[150px]">{log.cve_id === 'SCAN-AUDIT' ? 'Resultado de escaneo pasivo' : log.script_path}</p>
+                                                            <p className="text-white font-bold text-sm">
+                                                                {log.cve_id === 'SCAN-AUDIT' ? 'Auditoría de Activo' : log.cve_id}
+                                                            </p>
+                                                            <p className="text-[9px] text-slate-500 font-bold truncate max-w-[150px]">
+                                                                {log.cve_id === 'SCAN-AUDIT' ? 'Resultado de escaneo pasivo' : log.script_path || 'Análisis SOAR'}
+                                                            </p>
                                                         </div>
                                                     </div>
                                                 </td>
                                                 <td className="p-6 text-xs font-bold text-slate-400">{log.asset_name}</td>
                                                 <td className="p-6">
-                                                    <span className={`px-2 py-1 rounded text-[9px] font-black ${
-                                                        log.severity === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 
-                                                        log.severity === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 
-                                                        log.severity === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' : 
-                                                        log.severity === 'Info' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-500/20 text-slate-400'
-                                                    }`}>
-                                                        {log.severity}
-                                                    </span>
-                                                </td>
-                                                <td className="p-6">
-                                                    <div className="flex items-center gap-2">
-                                                        {['db-primary', 'db-replica-1', 'db-replica-2', 'cache', 'vault', 'gateway', 'storage', 'netdata', 'dozzle', 'opensign-mongo'].some(h => log.asset_name?.toLowerCase().includes(h)) ? (
-                                                            <span className="text-[9px] font-black text-cyan-400 uppercase bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20" title="Mitigado nativamente mediante Hardening">SEGURO (HARDENING)</span>
-                                                        ) : ['plane', 'penpot', 'gitea', 'redmine', 'camunda', 'sonar', 'wiki', 'drawio', 'plantuml', 'opendesign'].some(t => log.asset_name?.toLowerCase().includes(t)) ? (
-                                                            <span className="text-[9px] font-black text-slate-400 uppercase bg-slate-800 px-2 py-0.5 rounded border border-slate-700" title="Soporte y remediaciones a cargo de proveedor">PROVEEDOR (SUITE)</span>
-                                                        ) : log.cve_id === 'SCAN-AUDIT' ? (
-                                                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-tighter">FINALIZADO (SIN HALLAZGOS)</span>
-                                                        ) : log.executed_bool ? (
-                                                            <span className="text-[9px] font-black text-emerald-500 uppercase">REMEDIADO</span>
-                                                        ) : (
-                                                            <span className={`text-[9px] font-black uppercase ${
-                                                                log.status === 'CORRELATED' ? 'text-[#06B6D4]' : 
-                                                                log.status === 'AI_FAILED' ? 'text-red-400' : 'text-orange-500 animate-pulse'
-                                                            }`}>
-                                                                {log.status === 'CORRELATED' ? 'LISTO PARA APROBAR' : 
-                                                                 log.status === 'AI_FAILED' ? 'FALLO IA (REINTENTANDO)' : 
-                                                                 log.status === 'NEW' || log.status === 'PENDING' ? 'PENDIENTE IA' : log.status}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </td>
+                                                     <span className={`px-2 py-1 rounded text-[9px] font-black uppercase ${log.severity_badge_class || 'bg-slate-500/20 text-slate-400 border border-slate-500/30'}`}>
+                                                         {log.severity_label || log.severity || 'INFO'}
+                                                     </span>
+                                                 </td>
+                                                 <td className="p-6">
+                                                     <div className="flex items-center gap-2">
+                                                         <span className={`text-[9px] font-black uppercase ${log.status_text_class || 'text-orange-500'}`}>
+                                                             {log.status_label || log.status}
+                                                         </span>
+                                                     </div>
+                                                 </td>
                                                 <td className="p-6 text-right">
                                                     <ChevronRight size={16} className={`text-slate-700 transition-all ${selectedRemediation?.id === log.id ? 'translate-x-1 text-white' : ''}`} />
                                                 </td>
@@ -1173,9 +1282,8 @@ export default function Dashboard() {
                                             <Info size={14} className="text-[#06B6D4]" />
                                             {selectedRemediation.cve_id === 'SCAN-AUDIT' ? 'Resumen de Verificación' : '¿Qué encontramos?'}
                                         </h4>
-                                        <div className="p-4 bg-slate-800/50 rounded-2xl text-xs text-slate-400 leading-relaxed italic whitespace-pre-wrap">
-                                            {selectedRemediation.cve_id === 'SCAN-AUDIT' ? selectedRemediation.description : 
-                                             (selectedRemediation.executive_summary || "Análisis de IA pendiente de generación detallada...")}
+                                        <div className="p-4 bg-slate-800/50 rounded-2xl text-xs text-slate-300 leading-relaxed italic whitespace-pre-wrap">
+                                            {selectedRemediation.executive_summary || selectedRemediation.description || "Análisis de IA generado por el motor de seguridad SOAR."}
                                         </div>
                                     </section>
 
@@ -1224,11 +1332,6 @@ export default function Dashboard() {
                                         <div className="flex-grow py-4 bg-emerald-500/10 text-emerald-500 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-emerald-500/20 flex items-center justify-center gap-2 cursor-default">
                                             <CheckCircle2 size={16} />
                                             Activo Remediado
-                                        </div>
-                                    ) : selectedRemediation.cve_id === 'SCAN-AUDIT' ? (
-                                        <div className="flex-grow py-4 bg-blue-500/10 text-blue-400 font-black uppercase text-[10px] tracking-widest rounded-2xl border border-blue-500/20 flex items-center justify-center gap-2">
-                                            <ShieldCheck size={16} />
-                                            Activo Verificado
                                         </div>
                                     ) : (
                                         <>
@@ -1442,22 +1545,16 @@ export default function Dashboard() {
                                     </div>
                                     <div className="text-right flex flex-col items-end gap-1">
                                         <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">Sincronizado</p>
-                                        {['db-primary', 'db-replica-1', 'db-replica-2', 'cache', 'vault', 'gateway', 'storage', 'netdata', 'dozzle', 'opensign-mongo'].some(h => group.name.toLowerCase().includes(h)) ? (
-                                            <span className="text-[8px] bg-cyan-500/10 text-cyan-400 font-black px-2 py-0.5 rounded-md border border-cyan-500/20 uppercase tracking-wider scale-95 origin-right" title="Mitigado nativamente mediante Hardening e imágenes mínimas">
-                                                Seguro por Diseño
-                                            </span>
-                                        ) : ['plane', 'penpot', 'gitea', 'redmine', 'camunda', 'sonar', 'wiki', 'drawio', 'plantuml', 'opendesign'].some(t => group.name.toLowerCase().includes(t)) ? (
-                                            <span className="text-[8px] bg-slate-800 text-slate-400 font-black px-2 py-0.5 rounded-md border border-slate-700 uppercase tracking-wider scale-95 origin-right" title="Componente de suite de terceros. Control de ciclo de vida gestionado por proveedor.">
-                                                Suite de Terceros
-                                            </span>
-                                        ) : (
-                                            <p className="text-[9px] text-slate-500 font-bold">Health: 100%</p>
-                                        )}
                                     </div>
                                 </div>
                                 
                                 <h4 className="text-white font-bold text-xl mb-1 tracking-tight">{group.name}</h4>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mb-3">Identidad Consolidada</p>
+                                <div className="flex items-center gap-2 mb-3">
+                                   <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${group.interfaces[0]?.asset_type_badge_class || 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'}`}>
+                                     {group.interfaces[0]?.asset_type_label || group.interfaces[0]?.asset_type || 'SERVER'}
+                                   </span>
+                                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">Identidad Consolidada</span>
+                                </div>
                                 
                                 {/* Wazuh & Vault status badges */}
                                 <div className="flex flex-wrap gap-2 mb-6">
@@ -1477,11 +1574,11 @@ export default function Dashboard() {
                                   
                                   {group.has_vault_secret ? (
                                     <span className="text-[8px] bg-amber-500/10 text-amber-400 font-black px-2 py-0.5 rounded border border-amber-400/20 uppercase tracking-wider">
-                                      Sudo Vault: Sí
+                                      Vault Creds: Sí
                                     </span>
                                   ) : (
                                     <span className="text-[8px] bg-red-500/10 text-red-400 font-black px-2 py-0.5 rounded border border-red-500/20 uppercase tracking-wider">
-                                      Sudo Vault: No
+                                      Vault Creds: No
                                     </span>
                                   )}
                                 </div>
@@ -1618,22 +1715,196 @@ export default function Dashboard() {
                         </div>
                     ))}
                 </div>
+            </div>
+          )}
+
+          {currentView === 'users' && (
+            <div className="space-y-8 animate-in fade-in duration-300">
+                <div className="flex items-center justify-between mb-8">
+                    <div>
+                        <h2 className="text-white font-bold text-2xl mb-1 flex items-center gap-3">
+                            <Users className="text-[#06B6D4]" size={28} />
+                            Gestión de Usuarios y Roles (Authentik IDP)
+                        </h2>
+                        <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+                            Control de Acceso Basado en Roles (RBAC) sincronizado con Authentik Central
+                        </p>
+                    </div>
+                    <button 
+                        onClick={fetchUsers} 
+                        className="bg-[#0F172A] border border-slate-800 text-slate-300 hover:text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2"
+                    >
+                        <Activity size={14} className={usersLoading ? "animate-spin text-[#06B6D4]" : ""} />
+                        Refrescar desde Authentik
+                    </button>
+                </div>
 
                 <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
-                    <h3 className="text-white font-bold text-lg mb-6 flex items-center gap-2">
-                        <Monitor size={20} className="text-[#06B6D4]" />
-                        Estado de los Nodos Regionales
-                    </h3>
-                    <div className="space-y-4">
-                        <div className="p-4 bg-[#0F172A] rounded-2xl border border-slate-800 flex items-center justify-between">
-                            <span className="text-xs font-bold text-white">Nodo Central - CDMX</span>
-                            <span className="px-3 py-1 bg-emerald-500/10 text-emerald-500 text-[10px] font-black rounded-lg">MAESTRO</span>
-                        </div>
-                        <div className="p-4 bg-[#0F172A] rounded-2xl border border-slate-800 flex items-center justify-between">
-                            <span className="text-xs font-bold text-white">Nodos Quintana Roo (Chetumal, Cancún, Playa)</span>
-                            <span className="px-3 py-1 bg-[#06B6D4]/10 text-[#06B6D4] text-[10px] font-black rounded-lg">CONECTADO</span>
-                        </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-slate-800 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                    <th className="pb-4">Usuario</th>
+                                    <th className="pb-4">Nombre Completo</th>
+                                    <th className="pb-4">Correo Electrónico</th>
+                                    <th className="pb-4">Rol en Centinela</th>
+                                    <th className="pb-4 text-right">Acción / Permisos</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/50">
+                                {usersList.map((usr, idx) => (
+                                    <tr key={idx} className="hover:bg-white/5 transition-colors">
+                                        <td className="py-4 text-sm font-bold text-white flex items-center gap-3">
+                                            <div className="w-8 h-8 rounded-lg bg-[#06B6D4]/10 border border-[#06B6D4]/30 flex items-center justify-center text-[#06B6D4] font-black text-xs">
+                                                {usr.username?.[0]?.toUpperCase()}
+                                            </div>
+                                            {usr.username}
+                                        </td>
+                                        <td className="py-4 text-xs font-bold text-slate-300">{usr.name ||usr.username}</td>
+                                        <td className="py-4 text-xs font-bold text-slate-400">{usr.email || 'N/A'}</td>
+                                        <td className="py-4">
+                                            <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider ${usr.role === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>
+                                                {usr.role === 'Admin' ? '🛡️ Administrador' : '👁️ Visualizador'}
+                                            </span>
+                                        </td>
+                                        <td className="py-4 text-right">
+                                            {currentUserRole === 'Admin' ? (
+                                                <button 
+                                                    onClick={() => handleToggleUserRole(usr.username, usr.role)}
+                                                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${usr.role === 'Admin' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20' : 'bg-[#06B6D4]/10 text-[#06B6D4] border border-[#06B6D4]/30 hover:bg-[#06B6D4]/20'}`}
+                                                >
+                                                    {usr.role === 'Admin' ? 'Cambiar a Visualizador' : 'Hacer Administrador'}
+                                                </button>
+                                            ) : (
+                                                <span className="text-[10px] font-bold text-slate-600 uppercase">Sin Privilegios</span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     </div>
+                </div>
+            </div>
+          )}
+
+          {currentView === 'settings' && (
+            <div className="space-y-8 animate-in fade-in duration-300">
+                <div className="flex items-center justify-between mb-8">
+                    <div>
+                        <h2 className="text-white font-bold text-2xl mb-1 flex items-center gap-3">
+                            <Cpu className="text-[#06B6D4]" size={28} />
+                            Configuración del Sistema & Agentes
+                        </h2>
+                        <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+                            Administración centralizada de API Keys, Endpoints de Agentes, Integraciones y Políticas
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button 
+                            onClick={fetchSystemConfig} 
+                            className="bg-[#0F172A] border border-slate-800 text-slate-300 hover:text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2"
+                        >
+                            <Activity size={14} className={configLoading ? "animate-spin text-[#06B6D4]" : ""} />
+                            Recargar
+                        </button>
+                        <button 
+                            onClick={handleSaveConfig} 
+                            disabled={configSaving}
+                            className="bg-[#06B6D4] text-[#0F172A] hover:bg-white px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg shadow-[#06B6D4]/20 flex items-center gap-2"
+                        >
+                            <ShieldCheck size={16} />
+                            {configSaving ? 'Guardando...' : 'Guardar Cambios'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-6">
+                    {['LLM_AGENTS', 'SECURITY_AGENTS', 'INTEGRATIONS', 'POLICY_RULES'].map((cat, cIdx) => {
+                        const items = systemConfig.filter(s => s.category === cat)
+                        const categoryTitles = {
+                            LLM_AGENTS: '🧠 Agentes de Inteligencia Artificial (LLM & Inference)',
+                            SECURITY_AGENTS: '🛡️ Agentes de Seguridad (Wazuh EDR, Zeek NIDS, Falco)',
+                            INTEGRATIONS: '🔌 Integraciones Externas (Authentik, GitLab, HashiCorp Vault)',
+                            POLICY_RULES: '⚙️ Políticas de Autonomía & SLAs de Seguridad'
+                        }
+                        if (items.length === 0) return null
+                        return (
+                            <div key={cIdx} className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 space-y-6">
+                                <h3 className="text-white font-bold text-lg border-b border-slate-800 pb-4">
+                                    {categoryTitles[cat] || cat}
+                                </h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {items.map((item, idx) => (
+                                        <div key={idx} className="space-y-2">
+                                            <div className="flex justify-between items-center">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block flex items-center gap-2">
+                                                    {item.key}
+                                                </label>
+                                                {item.key === 'AI_MODEL' && (
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={() => {
+                                                            const currentProv = systemConfig.find(s => s.key === 'AI_PROVIDER')?.value || 'nvidia_nim'
+                                                            fetchModelsForProvider(currentProv)
+                                                        }}
+                                                        className="text-[9px] font-black text-[#06B6D4] hover:underline uppercase tracking-wider flex items-center gap-1"
+                                                    >
+                                                        <Zap size={10} />
+                                                        {loadingModels ? 'Cargando...' : 'Cargar Modelos Disponibles'}
+                                                    </button>
+                                                )}
+                                            </div>
+
+                                            {item.key === 'AI_PROVIDER' ? (
+                                                <select 
+                                                    className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none"
+                                                    value={item.value || 'nvidia_nim'}
+                                                    onChange={(e) => {
+                                                        const updated = systemConfig.map(s => s.key === item.key ? { ...s, value: e.target.value } : s)
+                                                        setSystemConfig(updated)
+                                                        fetchModelsForProvider(e.target.value)
+                                                    }}
+                                                >
+                                                    <option value="smart_router">Smart Router Global (Automático con Fallback)</option>
+                                                    <option value="nvidia_nim">NVIDIA NIM Cloud / Inference</option>
+                                                    <option value="google_genai">Google AI Studio (Gemini)</option>
+                                                    <option value="groq">Groq Cloud (Llama / Mixtral)</option>
+                                                    <option value="openai">OpenAI (GPT-4o / GPT-4)</option>
+                                                    <option value="anthropic">Anthropic (Claude 3.5)</option>
+                                                    <option value="ollama">Ollama / Servidor Local / On-Premise</option>
+                                                </select>
+                                            ) : item.key === 'AI_MODEL' && availableModels.length > 0 ? (
+                                                <select 
+                                                    className="w-full bg-[#0F172A] border border-[#06B6D4]/50 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none"
+                                                    value={item.value || ''}
+                                                    onChange={(e) => {
+                                                        const updated = systemConfig.map(s => s.key === item.key ? { ...s, value: e.target.value } : s)
+                                                        setSystemConfig(updated)
+                                                    }}
+                                                >
+                                                    {availableModels.map((m, mIdx) => (
+                                                        <option key={mIdx} value={m}>{m}</option>
+                                                    ))}
+                                                </select>
+                                            ) : (
+                                                <input 
+                                                    type={item.key.includes('KEY') || item.key.includes('SECRET') || item.key.includes('TOKEN') ? 'password' : 'text'} 
+                                                    className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none"
+                                                    value={item.value || ''}
+                                                    onChange={(e) => {
+                                                        const updated = systemConfig.map(s => s.key === item.key ? { ...s, value: e.target.value } : s)
+                                                        setSystemConfig(updated)
+                                                    }}
+                                                />
+                                            )}
+                                            <p className="text-[9px] text-slate-500 font-medium">{item.description}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )
+                    })}
                 </div>
             </div>
           )}
@@ -1673,7 +1944,8 @@ export default function Dashboard() {
                                         value={newAsset.asset_type}
                                         onChange={(e) => setNewAsset({...newAsset, asset_type: e.target.value})}
                                     >
-                                        <option value="CONTAINER">Docker Container</option>
+                                         <option value="CONTAINER">Docker Container</option>
+                                        <option value="GITLAB">GitLab / Gitea Repository</option>
                                         <option value="KUBERNETES">Kubernetes Cluster</option>
                                         <option value="SERVER">Servidor Linux/Windows</option>
                                         <option value="IP">Dirección IP / Puerto</option>
@@ -1697,52 +1969,139 @@ export default function Dashboard() {
                                 </div>
                             </div>
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Endpoint / IP / URI de Conexión</label>
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                    {newAsset.asset_type === 'GITLAB' ? 'URL de Instancia GitLab / Gitea' : 'Endpoint / IP / URI de Conexión'}
+                                </label>
                                 <input 
                                     type="text" 
                                     required
                                     className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none"
-                                    placeholder="ej. 192.168.1.50, postgresql://db..., https://api..."
+                                    placeholder={newAsset.asset_type === 'GITLAB' ? 'ej. http://10.4.3.10 o https://gitlab.casmart.internal' : 'ej. 192.168.1.50, postgresql://db..., https://api...'}
                                     value={newAsset.endpoint}
                                     onChange={(e) => setNewAsset({...newAsset, endpoint: e.target.value})}
                                 />
                             </div>
                         </div>
-                        <div>
-                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
-                                <Users size={12} className="text-[#06B6D4]" />
-                                Usuario Sudo/Ansible (Vault Secret)
-                            </label>
-                            <input 
-                                type="text" 
-                                className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 mb-4"
-                                placeholder="ej. pmcp, administrator"
-                                value={newAsset.vault_ansible_user || ''}
-                                onChange={(e) => setNewAsset({...newAsset, vault_ansible_user: e.target.value})}
-                            />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
-                                <Lock size={12} className="text-[#06B6D4]" />
-                                Contraseña Sudo (Vault Secret)
-                            </label>
-                            <div className="relative">
-                                <input 
-                                    type="password" 
-                                    className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
-                                    placeholder="••••••••••••"
-                                    value={newAsset.vault_sudo_token || ''}
-                                    onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
-                                />
-                                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
-                                    <Shield size={16} />
+
+                        {newAsset.asset_type === 'GITLAB' ? (
+                            <>
+                                <div>
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                        <Users size={12} className="text-[#06B6D4]" />
+                                        Usuario de GitLab / Gitea
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 mb-4"
+                                        placeholder="ej. root o gitlab-admin"
+                                        value={newAsset.gitlab_user || ''}
+                                        onChange={(e) => setNewAsset({...newAsset, gitlab_user: e.target.value})}
+                                    />
                                 </div>
-                            </div>
-                            <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
-                                <CheckCircle2 size={10} />
-                                Almacenamiento encriptado y gestionado mediante HashiCorp Vault. No se expone al frontend ni a la red.
-                            </p>
-                        </div>
+                                <div>
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                        <Lock size={12} className="text-[#06B6D4]" />
+                                        Personal Access Token (PAT)
+                                    </label>
+                                    <div className="relative">
+                                        <input 
+                                            type="password" 
+                                            required
+                                            className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
+                                            placeholder="glpat-xxxxxxxxxxxxxxxxxxxx"
+                                            value={newAsset.gitlab_token || ''}
+                                            onChange={(e) => setNewAsset({...newAsset, gitlab_token: e.target.value})}
+                                        />
+                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
+                                            <Shield size={16} />
+                                        </div>
+                                    </div>
+                                    <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                        <CheckCircle2 size={10} />
+                                        El Token PAT permite auditar repositorios y generar Merge Requests automáticos. Se encripta en Vault.
+                                    </p>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div>
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                        <Users size={12} className="text-[#06B6D4]" />
+                                        Usuario de Conexión / Ansible (Vault Secret)
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 mb-4"
+                                        placeholder="ej. pmcp, ubuntu, root"
+                                        value={newAsset.vault_ansible_user || ''}
+                                        onChange={(e) => setNewAsset({...newAsset, vault_ansible_user: e.target.value})}
+                                    />
+                                </div>
+
+                                <div className="space-y-4">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Método de Autenticación SSH / Sudo</label>
+                                    <div className="flex gap-4 mb-4">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setNewAsset({...newAsset, auth_type: 'PASSWORD'})}
+                                            className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type !== 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
+                                        >
+                                            🔑 Contraseña Sudo
+                                        </button>
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setNewAsset({...newAsset, auth_type: 'SSH_KEY'})}
+                                            className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type === 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
+                                        >
+                                            📜 Llave Privada SSH (.pem / RSA)
+                                        </button>
+                                    </div>
+
+                                    {newAsset.auth_type === 'SSH_KEY' ? (
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                                <KeyRound size={12} className="text-[#06B6D4]" />
+                                                Llave Privada SSH (RSA / OpenSSH / PEM)
+                                            </label>
+                                            <textarea 
+                                                rows={4}
+                                                className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-mono text-xs focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 resize-none"
+                                                placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEowIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                                                value={newAsset.ssh_private_key || ''}
+                                                onChange={(e) => setNewAsset({...newAsset, ssh_private_key: e.target.value})}
+                                            />
+                                            <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                                <CheckCircle2 size={10} />
+                                                La Llave Privada SSH se guarda encriptada directamente en HashiCorp Vault. Nunca se almacena en la BD.
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                                <Lock size={12} className="text-[#06B6D4]" />
+                                                Contraseña Sudo (Vault Secret)
+                                            </label>
+                                            <div className="relative">
+                                                <input 
+                                                    type="password" 
+                                                    className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
+                                                    placeholder="••••••••••••"
+                                                    value={newAsset.vault_sudo_token || ''}
+                                                    onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
+                                                />
+                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
+                                                    <Shield size={16} />
+                                                </div>
+                                            </div>
+                                            <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                                <CheckCircle2 size={10} />
+                                                Almacenamiento encriptado y gestionado mediante HashiCorp Vault. No se expone al frontend ni a la red.
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
                         <div className="pt-4">
                             <button 
                                 type="submit"
@@ -1984,27 +2343,70 @@ export default function Dashboard() {
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
-                                Contraseña Sudo *
+                                Método de Credencial
                             </label>
-                            <div className="relative">
-                                <input
-                                    type="password"
+                            <div className="flex gap-3 mb-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setVaultAuthType('PASSWORD')}
+                                    className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all border ${vaultAuthType === 'PASSWORD' ? 'bg-amber-400/20 border-amber-400 text-amber-300' : 'bg-[#0F172A] border-slate-700 text-slate-400'}`}
+                                >
+                                    🔑 Contraseña Sudo
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setVaultAuthType('SSH_KEY')}
+                                    className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all border ${vaultAuthType === 'SSH_KEY' ? 'bg-amber-400/20 border-amber-400 text-amber-300' : 'bg-[#0F172A] border-slate-700 text-slate-400'}`}
+                                >
+                                    📜 Llave Privada SSH (.pem / RSA)
+                                </button>
+                            </div>
+                        </div>
+
+                        {vaultAuthType === 'SSH_KEY' ? (
+                            <div>
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                    Llave Privada SSH (PEM / RSA / OpenSSH) *
+                                </label>
+                                <textarea
+                                    rows={5}
                                     required
-                                    className="w-full bg-[#0F172A] border border-amber-400/30 rounded-2xl p-4 text-amber-300 font-bold text-sm focus:ring-2 focus:ring-amber-400 outline-none pr-12 placeholder-slate-700"
-                                    placeholder="••••••••••••"
-                                    value={vaultPassword}
-                                    onChange={(e) => setVaultPassword(e.target.value)}
+                                    className="w-full bg-[#0F172A] border border-amber-400/30 rounded-2xl p-4 text-amber-300 font-mono text-xs focus:ring-2 focus:ring-amber-400 outline-none placeholder-slate-700 resize-none"
+                                    placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEowIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                                    value={vaultSshKey}
+                                    onChange={(e) => setVaultSshKey(e.target.value)}
                                     autoFocus
                                 />
-                                <div className="absolute right-4 top-1/2 -translate-y-1/2 text-amber-400/40">
-                                    <Shield size={16} />
-                                </div>
+                                <p className="text-[9px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
+                                    <CheckCircle2 size={10} />
+                                    Cifrado AES-256 en HashiCorp Vault. La llave privada se guarda de forma totalmente confidencial.
+                                </p>
                             </div>
-                            <p className="text-[9px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
-                                <CheckCircle2 size={10} />
-                                Cifrado AES-256 en HashiCorp Vault. No se almacena en la BD ni en el frontend.
-                            </p>
-                        </div>
+                        ) : (
+                            <div>
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                                    Contraseña Sudo *
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        type="password"
+                                        required
+                                        className="w-full bg-[#0F172A] border border-amber-400/30 rounded-2xl p-4 text-amber-300 font-bold text-sm focus:ring-2 focus:ring-amber-400 outline-none pr-12 placeholder-slate-700"
+                                        placeholder="••••••••••••"
+                                        value={vaultPassword}
+                                        onChange={(e) => setVaultPassword(e.target.value)}
+                                        autoFocus
+                                    />
+                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-amber-400/40">
+                                        <Shield size={16} />
+                                    </div>
+                                </div>
+                                <p className="text-[9px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
+                                    <CheckCircle2 size={10} />
+                                    Cifrado AES-256 en HashiCorp Vault. No se almacena en la BD ni en el frontend.
+                                </p>
+                            </div>
+                        )}
 
                         {vaultResult && (
                             <div className={`p-4 rounded-2xl text-xs font-bold flex items-center gap-2 ${vaultResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
@@ -2016,7 +2418,7 @@ export default function Dashboard() {
                         <div className="pt-2 flex gap-3">
                             <button
                                 type="submit"
-                                disabled={vaultSaving || !vaultPassword}
+                                disabled={vaultSaving || (vaultAuthType === 'PASSWORD' ? !vaultPassword : !vaultSshKey)}
                                 className="flex-1 py-4 bg-amber-500 text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-amber-400 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {vaultSaving ? (

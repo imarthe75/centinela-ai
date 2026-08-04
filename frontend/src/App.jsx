@@ -9,6 +9,15 @@ const oidcConfig = {
   post_logout_redirect_uri: "https://centinela.casmart.internal/",
   response_type: "code",
   scope: "openid profile email",
+  automaticSilentRenew: false,
+  metadata: {
+    issuer: "https://auth.casmart.internal/application/o/centinela-ai/",
+    authorization_endpoint: "https://auth.casmart.internal/application/o/authorize/",
+    token_endpoint: "https://auth.casmart.internal/application/o/token/",
+    userinfo_endpoint: "https://auth.casmart.internal/application/o/userinfo/",
+    end_session_endpoint: "https://auth.casmart.internal/application/o/centinela-ai/end-session/",
+    jwks_uri: "https://auth.casmart.internal/application/o/centinela-ai/jwks/",
+  },
   // Limpia el ?code=&state= de la URL tras el intercambio exitoso.
   // Sin esto, React.StrictMode ejecuta el callback dos veces y el segundo
   // intento falla con 400 porque el authorization code ya fue usado.

@@ -21,4 +21,5 @@ WeasyPrint
 docker
 semgrep
 prowler
+medusa-security
 neo4j

@@ -4,7 +4,7 @@ from psycopg2.extras import RealDictCursor
 import subprocess
 import os
 from datetime import datetime
-import db_manager
+from core import db_manager
 import hvac
 
 # Configuration for Ansible-based remediation

@@ -1,7 +1,7 @@
 import sys
 sys.path.append("/app")
-import auditor_ext
-import db_manager
+from auditors import auditor_ext
+from core import db_manager
 
 # Get the 8 servers
 with db_manager.get_db_cursor() as cur:

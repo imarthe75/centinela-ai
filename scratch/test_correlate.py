@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.insert(0, '/app')
-import db_manager
+from core import db_manager
 from psycopg2.extras import RealDictCursor
 
 # Inject the environment variables from .env if needed

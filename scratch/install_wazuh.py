@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 sys.path.append("/app")
-import db_manager
+from core import db_manager
 import hvac
 
 # Uvicorn is running on port 8000 inside the container centinela-backend

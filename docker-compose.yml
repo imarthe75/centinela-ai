@@ -1,21 +1,22 @@
-version: '3.8'
 services:
   centinela-ai:
     build: .
     container_name: centinela-ai
     restart: always
+    cap_add:
+    - SYS_PTRACE
     networks:
     - aura-network
     env_file:
     - .env
     volumes:
     - .:/app
-    - ../core-casmarts:/app/core-casmarts:ro
-    - ../consulta-smart/backend/app/core/credentials/google-v-credentials.json:/app/credentials.json:ro
     - /var/run/docker.sock:/var/run/docker.sock
     - zeek-logs:/app/logs/zeek:ro
+    group_add:
+    - "${DOCKER_GID:-136}"
     environment:
-    - VAULT_ADDR=http://10.4.3.208:8200
+    - VAULT_ADDR=${VAULT_ADDR:-http://10.4.3.208:8200}
     - VAULT_TOKEN=${VAULT_TOKEN}
     - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
     - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
@@ -25,14 +26,17 @@ services:
     - AI_MODEL=${AI_MODEL}
     - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
     - GCP_LOCATION=${GCP_LOCATION}
-    - DB_HOST=casmarts-core-db-primary
-    - DB_NAME=${DB_NAME}
-    - DB_USER=${DB_USER}
-    - DB_PASSWORD=${DB_PASSWORD}
-    - VALKEY_HOST=casmarts-core-cache
-    - AUTHENTIK_URL=https://auth.casmart.internal
-    - AUTHENTIK_CLIENT_ID=centinela-ai
-    - AUTHENTIK_INTERNAL_URL=https://auth.casmart.internal
+    - DB_HOST=${DB_HOST:-10.4.3.23}
+    - DB_NAME=${DB_NAME:-centinela_db}
+    - DB_USER=${DB_USER:-centinela_user}
+    - DB_PASSWORD=${DB_PASSWORD:-centinela_sec_db_2026}
+    - VALKEY_HOST=${VALKEY_HOST:-10.4.3.23}
+    - AUTHENTIK_URL=${AUTHENTIK_URL:-https://auth.casmart.internal}
+    - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-centinela-ai}
+    - AUTHENTIK_CLIENT_SECRET=${AUTHENTIK_CLIENT_SECRET}
+    - AUTHENTIK_INTERNAL_URL=${AUTHENTIK_INTERNAL_URL:-https://auth.casmart.internal}
+    - GITLAB_URL=${GITLAB_URL:-http://10.4.3.10}
+    - GITLAB_TOKEN=${GITLAB_TOKEN}
     - NEO4J_URI=bolt://centinela-neo4j:7687
     - NEO4J_USER=neo4j
     - NEO4J_PASSWORD=password
@@ -55,18 +59,24 @@ services:
     volumes:
     - .:/app
     - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+    - "${DOCKER_GID:-136}"
     environment:
-    - DB_HOST=casmarts-core-db-primary
-    - DB_NAME=casmarts_security
-    - DB_USER=admin
-    - DB_PASSWORD=casmarts_secure_pwd
+    - DB_HOST=${DB_HOST:-10.4.3.23}
+    - DB_NAME=${DB_NAME:-centinela_db}
+    - DB_USER=${DB_USER:-centinela_user}
+    - DB_PASSWORD=${DB_PASSWORD:-centinela_sec_db_2026}
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=http://10.4.3.208:8200
-    - VAULT_TOKEN=${VAULT_TOKEN:-root}
-    - AUTHENTIK_URL=https://auth.casmart.internal
-    - AUTHENTIK_CLIENT_ID=centinela-ai
-    - AUTHENTIK_INTERNAL_URL=https://auth.casmart.internal
+    - VAULT_ADDR=${VAULT_ADDR:-http://10.4.3.208:8200}
+    - VAULT_TOKEN=${VAULT_TOKEN}
+    - AUTHENTIK_URL=${AUTHENTIK_URL:-https://auth.casmart.internal}
+    - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-centinela-ai}
+    - AUTHENTIK_CLIENT_SECRET=${AUTHENTIK_CLIENT_SECRET}
+    - AUTHENTIK_INTERNAL_URL=${AUTHENTIK_INTERNAL_URL:-https://auth.casmart.internal}
+    - NEO4J_URI=bolt://centinela-neo4j:7687
+    - NEO4J_USER=neo4j
+    - NEO4J_PASSWORD=password
     ports:
     - 8302:8000
     deploy:
@@ -102,15 +112,17 @@ services:
     volumes:
     - .:/app
     - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+    - "${DOCKER_GID:-136}"
     environment:
-    - DB_HOST=casmarts-core-db-primary
-    - DB_NAME=casmarts_security
-    - DB_USER=admin
-    - DB_PASSWORD=casmarts_secure_pwd
+    - DB_HOST=${DB_HOST:-10.4.3.23}
+    - DB_NAME=${DB_NAME:-centinela_db}
+    - DB_USER=${DB_USER:-centinela_user}
+    - DB_PASSWORD=${DB_PASSWORD:-centinela_sec_db_2026}
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=http://10.4.3.208:8200
-    - VAULT_TOKEN=${VAULT_TOKEN:-root}
+    - VAULT_ADDR=${VAULT_ADDR:-http://10.4.3.208:8200}
+    - VAULT_TOKEN=${VAULT_TOKEN}
     - ANSIBLE_REMOTE_USER=${ANSIBLE_REMOTE_USER:-pmcp}
     - ANSIBLE_BECOME_PASS=${ANSIBLE_BECOME_PASS:-}
     command: python sentinel.py
@@ -178,6 +190,34 @@ services:
 #         limits:
 #           memory: 256M
 
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.14.1
+    container_name: casmarts-core-wazuh-manager
+    hostname: wazuh-manager
+    restart: always
+    networks:
+      - aura-network
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=
+      - FILEBEAT_SSL_VERIFICATION_MODE=none
+    volumes:
+      - wazuh-manager-config:/var/ossec/etc
+      - wazuh-manager-data:/var/ossec/var/multigroups
+      - wazuh-manager-logs:/var/ossec/logs
+      - wazuh-manager-queue:/var/ossec/queue
+      - wazuh-manager-agentless:/var/ossec/agentless
+      - wazuh-manager-integrations:/var/ossec/integrations
+      - wazuh-manager-active-response:/var/ossec/active-response/bin
+      - wazuh-manager-api-config:/var/ossec/api/configuration
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
   centinela-neo4j:
     image: neo4j:5.12.0-community
     container_name: centinela-neo4j
@@ -206,6 +246,7 @@ services:
       - NET_ADMIN
     volumes:
       - zeek-logs:/usr/local/zeek/logs
+    working_dir: /usr/local/zeek/logs
     command: zeek -i eth0
     deploy:
       resources:
@@ -221,6 +262,14 @@ volumes:
       o: "size=150m"
   neo4j-data:
   zeek-logs:
+  wazuh-manager-config:
+  wazuh-manager-data:
+  wazuh-manager-logs:
+  wazuh-manager-queue:
+  wazuh-manager-agentless:
+  wazuh-manager-integrations:
+  wazuh-manager-active-response:
+  wazuh-manager-api-config:
 
 networks:
   aura-network:

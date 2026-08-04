@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.insert(0, '/app')
-import db_manager
+from core import db_manager
 
 targets = [
     'ce01-server',

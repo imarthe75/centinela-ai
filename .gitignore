@@ -3,3 +3,15 @@ node_modules/
 .venv/
 __pycache__/
 .env
+id_rsa_centinela
+id_rsa_centinela.pub
+credentials.json
+sentinela.db
+api_response.json
+*.pem
+*.key
+*.ppk
+docs/
+keys/
+database/*.db
+database/sentinela.db
