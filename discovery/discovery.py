@@ -91,18 +91,23 @@ def discover_wazuh_agents():
                             cur.execute("SELECT id FROM infra_inventory WHERE LOWER(asset_name) = LOWER(%s) OR LOWER(asset_name) = LOWER(%s)", (agent_name, f"{agent_name}-server"))
                             existing = cur.fetchone()
 
-                        if not existing and agent_name:
+                        if not existing and agent_name and len(agent_name) >= 5:
                             # Last-resort fuzzy match: asset_name contains the agent hostname
                             # or vice versa (e.g. agent "authentik" <-> asset "casmart_authentik").
                             # Avoids spawning duplicate assets when naming conventions differ
                             # slightly between the OS hostname and the inventory record.
+                            # Restricted to SERVER/AppServer assets and a minimum name length —
+                            # short/generic agent hostnames (e.g. "kiwi") can otherwise spuriously
+                            # substring-match unrelated rows (a GitLab repo path containing the
+                            # word "compramex" once matched a Wazuh agent named "compramex").
                             # (Wildcard built in Python, not SQL: literal '%' in the query
                             # string clashes with psycopg2's %s parameter substitution.)
                             name_pattern = f"%{agent_name.lower()}%"
                             cur.execute("""
                                 SELECT id FROM infra_inventory
-                                WHERE LOWER(asset_name) LIKE %s
-                                   OR %s LIKE '%%' || LOWER(asset_name) || '%%'
+                                WHERE asset_type IN ('SERVER', 'AppServer')
+                                  AND (LOWER(asset_name) LIKE %s
+                                       OR %s LIKE '%%' || LOWER(asset_name) || '%%')
                                 LIMIT 1
                             """, (name_pattern, agent_name.lower()))
                             existing = cur.fetchone()

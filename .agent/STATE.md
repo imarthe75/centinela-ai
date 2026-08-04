@@ -80,13 +80,30 @@
   remediación fallida queda honestamente en `FAILED` (`executed_bool=False`, sin marcar el
   hallazgo como `RESOLVED`); re-aprobarla desde la UI hace que Sentinel la reintente. Probado en
   vivo sobre `CLONE-COMPRAMEX-CORE` (sin credenciales): ahora reporta `FAILED` correctamente.
-- **`casmartsuperset`, `prism`, `chat` siguen sin credenciales SSH funcionales.** Se probó
-  `casmarts.key` y `casmart.key` (que sí funcionan para `casmart_authentik`/`casmartdb`) contra
-  `prism` (10.4.3.30, usuario `wiki`) y `chat` (10.4.3.31, usuario `chatbotpdf`) — ambos
-  rechazados con "Permission denied (publickey,password)" para ambas llaves. La llave SÍ se
-  ofrece correctamente (verificado con `ssh -v`), simplemente no está autorizada en esos hosts
-  con ese usuario. Falta una llave/password distinta, o agregar la pública de `casmarts.key` al
-  `authorized_keys` de esos usuarios en prism/chat.
+- ~~`prism`/`chat` sin credenciales SSH funcionales~~ — **resuelto 2026-08-04**: el usuario dio
+  password para `kiwi@10.4.3.30` (prism) y `chatbotpdf@10.4.3.31` (chat), y autorizó instalar la
+  llave pública que ya está en `authorized_keys` de este servidor (la misma de `casmarts.key`/
+  `casmart.key`, comentario "CASmartS") en cualquier host que no la tuviera. Se instaló en
+  ambos vía `sshpass` + append a `~/.ssh/authorized_keys` (en `chat` el archivo existente no
+  terminaba en newline, así que el append corrompió la línea anterior — se corrigió a mano,
+  backup en `~/.ssh/authorized_keys.bak` en ese host). Agregados a `inventory.ini` y a Vault
+  (`ssh_private_key` para que Sentinel también los pueda remediar). Wazuh instalado y verificado
+  activo en ambos — de hecho **ambos ya tenían `wazuh-agent` preinstalado**, solo hacía falta
+  apuntarlo al manager y arrancarlo. Descubrimiento adicional: `CLONE-COMPRAMEX-CORE`/`-BD`
+  también tenían el agente preinstalado y se auto-enrolaron solos en cuanto existió un manager
+  real — quedaron como agentes `compramex`/`compramex-bd`, sincronizados al inventario.
+- **`casmartsuperset` (10.4.3.25) sigue sin credenciales.** Se probaron 15 usuarios comunes con
+  el password que dio el usuario (`gNng898u`) — todos rechazados. Falta el usuario correcto.
+- **Bug encontrado y corregido en `discovery.py`**: el matching "fuzzy" (agregado hoy mismo)
+  hizo un falso positivo — el agente Wazuh `compramex` matcheó por substring contra un
+  repositorio de GitLab (`GitLab/edomex-casmart/compramex/...`) porque su path contenía la
+  palabra "compramex", asignándole un `agent_id` de Wazuh sin sentido. También falló al no
+  encontrar ningún match para el agente `kiwi` (hostname real de prism, sin relación léxica con
+  "prism") y creó un activo duplicado. Se corrigió a mano en la base y se restringió el fuzzy
+  match a activos `SERVER`/`AppServer` con nombre de agente de al menos 5 caracteres — reduce el
+  problema pero no lo elimina del todo: cuando el hostname real de una máquina no se parece en
+  nada al nombre de negocio del activo (como `kiwi` vs `prism`), no hay heurística de texto que
+  lo resuelva; requeriría guardar el mapeo hostname↔asset_id en el momento de instalar el agente.
 
 ## 🎯 Hitos Anteriores (30 de Julio, 2026)
 1. **Despliegue e Integración en Gateway (`10.4.3.208`)** — *nota 2026-08-04: este despliegue en
@@ -107,10 +124,8 @@
 7. **Reorganización del código raíz**: Los módulos `.py` sueltos se movieron a paquetes (`core/`, `auditors/`, `discovery/`, `remediation/`, `scripts/`, `tests/`, `ui/`). Los entrypoints que invoca Docker (`centinela.py`, `main.py`, `sentinel.py`) se mantuvieron en la raíz.
 
 ## 🚧 Pendientes
-- Conseguir una llave/password que sí funcione para `casmartsuperset` (10.4.3.25), `prism`
-  (10.4.3.30, usuario `wiki`) y `chat` (10.4.3.31, usuario `chatbotpdf`) — ambas llaves
-  conocidas (`casmarts.key`, `casmart.key`) fueron rechazadas en los dos últimos. Sin esto no se
-  les puede instalar Wazuh ni guardar credenciales en Vault para que Sentinel los remedie.
+- Conseguir el usuario correcto para `casmartsuperset` (10.4.3.25) — se tiene el password
+  (`gNng898u`) pero 15 usuarios comunes probados fueron todos rechazados.
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real

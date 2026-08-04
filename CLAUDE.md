@@ -119,12 +119,31 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   Every ZAP attempt threw `ZAPNotAvailableError` and silently fell back to nuclei-only. Fixed to
   `zaproxy/zap-stable:latest` (OWASP's current official image, same `zap.sh -daemon` + REST API
   invocation pattern) and pre-pulled.
-- **3 `SERVER` assets still have no known SSH credentials for Wazuh install**: `casmartsuperset`
-  (10.4.3.25), `prism` (10.4.3.30), `chat` (10.4.3.31). All three are reachable (port 22 open).
-  Tried `casmarts.key` (which works for `casmart_authentik`/10.4.3.208) against prism and chat
-  under 10 likely usernames (authentik, root, ubuntu, casmart, prism, chat, admin, centinela,
-  deploy, pmcp) — all rejected with "Permission denied (publickey)". Needs the correct username
-  from the user, or confirmation that this key isn't authorized on those hosts at all.
+- ~~`prism`/`chat` had no known SSH credentials~~ — **resolved 2026-08-04**: user supplied
+  passwords for `kiwi@10.4.3.30` (prism) and `chatbotpdf@10.4.3.31` (chat) and authorized
+  installing this server's own public key (already in this host's `~/.ssh/authorized_keys`,
+  same key as `casmarts.key`/`casmart.key`, comment "CASmartS") onto any host missing it.
+  Installed via `sshpass` + append to `~/.ssh/authorized_keys` on both. **Gotcha**: on `chat`
+  the existing `authorized_keys` line had no trailing newline, so the naive append merged onto
+  it and corrupted both keys — always `cat`/inspect the file after appending to a
+  possibly-single-line `authorized_keys`, don't assume `echo ... >>` is safe. Fixed by inserting
+  a newline between the two keys (backup left at `~/.ssh/authorized_keys.bak` on `chat`). Both
+  hosts turned out to already have `wazuh-agent` preinstalled — just needed pointing at the
+  manager and starting. Added to `inventory.ini` and Vault (`ssh_private_key`), verified active
+  both locally (`systemctl is-active`) and from the manager (`agent_control -l`).
+- **`casmartsuperset` (10.4.3.25) still has no known credentials.** Have a password
+  (`gNng898u`) but tried 15 common usernames against it, all rejected — needs the actual
+  username.
+- **`discovery.py`'s fuzzy asset-name matching produced a real false positive**: the Wazuh agent
+  named `compramex` (an OS hostname) substring-matched a *GitLab repo* asset
+  (`GitLab/edomex-casmart/compramex/...`, itself named after the same product) purely because
+  the word "compramex" appears in both, wrongly tagging that repo with a Wazuh `agent_id`.
+  Separately, the agent named `kiwi` (prism's real hostname) matched nothing at all since
+  "kiwi" and "prism" share no substring, and would have created a duplicate asset on the next
+  discovery run. Fixed by restricting the fuzzy tier to `SERVER`/`AppServer` assets with an
+  agent name ≥5 chars — this closes the GitLab false-positive but **does not** fix the "hostname
+  has zero lexical relation to the business name" case; that needs the hostname↔asset_id
+  mapping captured at install time instead of guessed later from a name string.
 - ~~GitLab project scanning has no token~~ — **resolved 2026-08-04**: user supplied several
   GitLab PATs; tested each against `GET /api/v4/user` and `/api/v4/personal_access_tokens/self`
   to find one with `api`/`read_repository` scope (`sonar_pat`, user `monitor`, expires
