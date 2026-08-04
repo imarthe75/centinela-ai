@@ -3,6 +3,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import subprocess
 import os
+import stat
+import tempfile
 from datetime import datetime
 from core import db_manager
 import hvac
@@ -83,6 +85,38 @@ def get_ansible_user(asset_name: str) -> str:
     except Exception:
         pass
     return os.getenv("ANSIBLE_REMOTE_USER", "pmcp")
+
+
+def get_ssh_private_key(asset_name: str) -> str:
+    """
+    Reads the SSH private key for an asset from Vault (stored alongside sudo_password /
+    ansible_user under the same casmarts/ansible/{asset_name} secret by store_vault_secret()
+    in main.py). Returns "" if none is stored — assets without a Vault-stored key fall back to
+    password auth.
+    """
+    vault_addr = os.getenv("VAULT_ADDR", "http://casmarts-core-vault:8200")
+    vault_token = os.getenv("VAULT_TOKEN", "root")
+    try:
+        client = hvac.Client(url=vault_addr, token=vault_token)
+        if not client.is_authenticated():
+            return ""
+        try:
+            result = client.secrets.kv.v2.read_secret_version(
+                path=f"casmarts/ansible/{asset_name}",
+                mount_point="secret"
+            )
+            return result["data"]["data"].get("ssh_private_key", "")
+        except Exception:
+            try:
+                result = client.secrets.kv.v1.read_secret(
+                    path=f"casmarts/ansible/{asset_name}",
+                    mount_point="secret"
+                )
+                return result["data"].get("ssh_private_key", "")
+            except Exception:
+                return ""
+    except Exception:
+        return ""
 
 def ansible_remediate(ip, cve_id, asset_name=""):
     """Executes an Ansible playbook for remediation using Vault credentials."""
@@ -205,20 +239,36 @@ def process_remediations():
                         else:
                             # Caso general para SERVERS y otros via Ansible Genérico
                             print(f"🛠️ [Aura-Sentinel] Triggering Generic Ansible for {asset_ip}...")
-                            sudo_pass = get_sudo_password(asset_name)
                             ansible_user = get_ansible_user(asset_name)
+                            ssh_key = get_ssh_private_key(asset_name)
                             escaped_content = script_content.replace("'", "'\\''")
-                            cmd = [
-                                "ansible-playbook", "-i", f"{asset_ip},",
-                                "/app/remediation/playbooks/remediate_generic.yml",
-                                "-e", f"script_content='{escaped_content}'",
-                                "-e", f"ansible_user={ansible_user}",
-                                "-e", f"ansible_become_pass={sudo_pass}",
-                                "-e", f"ansible_ssh_pass={sudo_pass}",
-                                "-e", f"ansible_password={sudo_pass}",
-                                "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
-                            ]
+                            key_file_path = None
                             try:
+                                cmd = [
+                                    "ansible-playbook", "-i", f"{asset_ip},",
+                                    "/app/remediation/playbooks/remediate_generic.yml",
+                                    "-e", f"script_content='{escaped_content}'",
+                                    "-e", f"ansible_user={ansible_user}",
+                                    "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+                                ]
+                                if ssh_key:
+                                    # Asset only has a Vault-stored private key (no password) —
+                                    # write it to a 0600 temp file for this run and use it,
+                                    # rather than the password-only auth this used to require.
+                                    fd, key_file_path = tempfile.mkstemp(prefix="centinela_key_")
+                                    with os.fdopen(fd, "w") as kf:
+                                        kf.write(ssh_key if ssh_key.endswith("\n") else ssh_key + "\n")
+                                    os.chmod(key_file_path, stat.S_IRUSR | stat.S_IWUSR)
+                                    cmd += ["-e", f"ansible_ssh_private_key_file={key_file_path}"]
+                                    print(f"🔑 [Aura-Sentinel] Using Vault-stored SSH key for '{asset_name}'.")
+                                else:
+                                    sudo_pass = get_sudo_password(asset_name)
+                                    cmd += [
+                                        "-e", f"ansible_become_pass={sudo_pass}",
+                                        "-e", f"ansible_ssh_pass={sudo_pass}",
+                                        "-e", f"ansible_password={sudo_pass}",
+                                    ]
+
                                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                                 if result.returncode in [0, 2]:
                                     status = "COMPLETED"
@@ -227,12 +277,16 @@ def process_remediations():
                                     log_output = f"Generic Ansible failed: {result.stderr}"
                             except Exception as e:
                                 log_output = f"Generic Ansible error: {str(e)}"
+                            finally:
+                                if key_file_path and os.path.exists(key_file_path):
+                                    os.remove(key_file_path)
 
-                    if status == "FAILED" and agent_id and agent_id != 'None':
-                        # Wazuh fallback (Mantenemos el placeholder pero con log de intento)
-                        log_output += "\nIntentando remediación vía Wazuh Agent..."
-                        status = "COMPLETED" 
-                        log_output += "\nRemediation triggered via Wazuh Active Response."
+                    if status == "FAILED":
+                        # No auto-remediation was actually applied — do NOT mark this as
+                        # completed/resolved just because the asset has a Wazuh agent. Leave it
+                        # as a genuine failure; re-approving via the UI (approval_token=APPROVED)
+                        # will make Sentinel pick it up and retry.
+                        log_output += "\nRemediación fallida. No se aplicó ningún cambio. Revisar credenciales/conectividad y reintentar aprobando de nuevo."
 
                     final_report = generate_ai_remediation_report(cve_id, log_output)
 
