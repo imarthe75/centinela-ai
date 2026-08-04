@@ -1,4 +1,4 @@
-import db_manager
+from core import db_manager
 from psycopg2.extras import RealDictCursor
 
 def check_schema():

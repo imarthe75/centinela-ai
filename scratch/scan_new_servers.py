@@ -1,7 +1,7 @@
 import sys
 sys.path.append("/app")
-import auditor_ext
-import db_manager
+from auditors import auditor_ext
+from core import db_manager
 
 targets = [
     (339, '10.4.2.243', 'ce01-server'),

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     unzip \
     sqlmap \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Trivy
@@ -33,6 +34,9 @@ RUN curl -sfL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_l
 # Install Kiterunner
 RUN curl -sfL https://github.com/assetnote/kiterunner/releases/download/v1.0.2/kiterunner_1.0.2_linux_amd64.tar.gz -o kr.tar.gz \
     && tar -xzf kr.tar.gz -C /usr/local/bin kr && rm kr.tar.gz
+
+# Install TruffleHog (used by auditor_secrets.py)
+RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
 
 # Set working directory
 WORKDIR /app
@@ -60,13 +64,14 @@ RUN pip install --no-cache-dir \
     passlib \
     semgrep \
     prowler \
+    medusa-security \
     neo4j
 
-# Copy agent structure
-COPY . /app/
+# Create non-root user for CMMI / CIS hardening compliance
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Command to keep alive (placeholder)
 CMD ["python", "centinela.py"]

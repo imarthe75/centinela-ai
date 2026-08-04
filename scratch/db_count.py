@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.insert(0, '/app')
-import db_manager
+from core import db_manager
 
 with db_manager.get_db_connection() as conn:
     with conn.cursor() as cur:

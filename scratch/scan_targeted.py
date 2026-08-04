@@ -1,5 +1,5 @@
-import auditor_ext
-import db_manager
+from auditors import auditor_ext
+from core import db_manager
 
 targets = [
     (260, '10.4.2.198', 'AppServer'),
