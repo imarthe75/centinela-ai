@@ -1,6 +1,60 @@
 # Estado del Proyecto - Centinela CAI
 
-## 📅 Fecha: 4 de Agosto, 2026
+## 📅 Fecha: 5 de Agosto, 2026
+
+## 🎯 Hitos Recientes (2026-08-05, segunda mitad) — "los scripts de remediación no remedian nada"
+El usuario mostró un caso real: un "fix" de `DOCKER-MISSING-NON-ROOT-USER` que solo imprimía una
+advertencia y creaba un usuario Linux local sin relación, sin tocar nunca el Dockerfile. Auditoría
+completa de la taxonomía real de hallazgos (`SELECT cve_id, asset_type, COUNT(*) ...`) confirmó
+que es sistémico: **~517 hallazgos** (`CODE-INJECTION-EVAL`, `HARDCODED-SECRET`,
+`DOCKER-MISSING-NON-ROOT-USER`, `SCA-CVE-*`, `STD-*`, `COGNITIVE-*`, `CMD`/`SQL`/`SSRF-*`) viven
+en assets `GitLab-Repo` — no hay host remoto que "endurecer" por SSH, la corrección real es un
+cambio de código. `sentinel.py` solo sabía ejecutar Ansible/SSH contra una IP; para estos casos
+`asset_ip` es en realidad la URL del repo, así que toda aprobación fallaba en la conexión (o algo
+peor si coincidía por accidente con un host real). Ver el detalle completo en `CLAUDE.md`
+("AI remediation scripts were cosmetic..."); resumen de lo corregido:
+
+- `remediation/gitlab_autofix.py` (ya conectado a un endpoint real,
+  `POST /api/gitlab/autofix/{vuln_id}`, pero nunca llamado desde el frontend) estaba roto de
+  punta a punta: usaba `re` sin importarlo, nunca clonaba ni editaba nada, y abría un Merge
+  Request con un `source_branch` que jamás se había subido (GitLab siempre rechaza eso).
+  Reescrito con clone → parche real → commit/push a una rama `centinela-fix/*` → Merge Request
+  (nunca push directo a la rama principal). También tenía `project_id` fijo en `1` sin importar
+  el repo real de la vulnerabilidad — ahora se resuelve desde el propio asset.
+- Dos parches **determinísticos** (sin LLM, mecánicos y seguros): Dockerfile USER no-root, y
+  bump de dependencia SCA a la versión segura conocida. Verificados en vivo contra un proyecto
+  GitLab desechable creado y borrado solo para esta prueba (nunca se tocó un repo real ya
+  escaneado): ambos generaron un MR real con exactamente el diff esperado.
+- Para hallazgos que necesitan entendimiento real de código, `correlate_vulnerability()` ahora
+  pide al LLM un `fix_patch` (diff unificado) usando archivo/línea/fragmento real, guardado en
+  `vulnerability_log.fix_patch` (columna que ya existía en el esquema, sin usar) y aplicado con
+  `git apply` por el mismo pipeline. Verificado el flujo completo (parseo → extracción →
+  `git apply` → MR) con una respuesta de LLM simulada y con un diff real generado por
+  `git diff` — la cuota diaria de Groq seguía agotada al momento de la prueba, así que la
+  llamada real al LLM en producción todavía no se verificó end-to-end.
+- `can_automate` estaba **fijo en `True`** en el fallback heurístico y **fijo en `False`**
+  (ignorando lo que decía el LLM) en el camino JSON principal — ninguno reflejaba la realidad.
+  Corregido en ambos.
+- `SCAN-AUDIT` (mensajes de "no se encontraron vulnerabilidades"/"escaneo omitido") caía por
+  coincidencia de palabra clave en la rama de **bloqueo de firewall** (`ufw default deny
+  incoming` + solo 22/80/443) — aprobar un hallazgo que literalmente dice "sin vulnerabilidades"
+  habría aplicado un firewall restrictivo a un host sano sin motivo. Corregido, junto con
+  `HEURISTIC-SECURITY-DEBT` (un meta-hallazgo agregado, tampoco "remediable" con un script).
+- De paso, encontrados y corregidos: (a) `auditor_master_vulnerabilities.py`/
+  `auditor_sca_dependencies.py`/`auditor_compliance_standards.py` capturaban `file`/`line` pero
+  nunca los guardaban en la base (ahora en `url_path`), y tenían el mismo bug de `ON CONFLICT DO
+  NOTHING` sin constraint real que Medusa/PROWLER-AUDIT (ver gotcha #3) — cada escaneo del org
+  de GitLab reinsertaba cada hallazgo como nuevo; (b) el regex de `CODE-INJECTION-EVAL` no tenía
+  límite de palabra y disparaba con cualquier identificador que contuviera "eval" (confirmado:
+  136 de 140 hallazgos reales eran falsos positivos, ej. `onErrorEval`); (c) para los 641
+  hallazgos reales de ZAP (en hosts `SERVER` de verdad, sí automatizables), se construyó un
+  generador real de hardening de cabeceras nginx, verificado contra la estructura real de
+  `casmart_authentik` (nginx corre en un contenedor `nginx:alpine`, no a nivel de sistema, con
+  `conf.d` montado de solo lectura desde el host) — el paso final de aplicar el cambio en vivo
+  fue bloqueado por el clasificador de permisos por ser una escritura a infraestructura
+  compartida (`casmarts-core-gateway` sirve varias apps más, no solo Authentik); la lógica del
+  script sí se validó contra la estructura real del host, pero la ejecución final queda
+  pendiente de aprobación manual vía la UI de SOAR.
 
 ## 🎯 Hitos Recientes (2026-08-04)
 - **ZAP DAST nunca había funcionado ni una sola vez, ni con la imagen corregida.** Al probar un

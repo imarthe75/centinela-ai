@@ -330,3 +330,95 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   time — pip resolved differently per build. Pinned `medusa-security==2026.7.0` in both
   `requirements.txt` and the main `Dockerfile`'s pip list so this can't silently drift again;
   rebuilt both images.
+- **AI remediation scripts were cosmetic across most of the finding taxonomy** — **resolved
+  2026-08-05**, in response to real user-reported examples (a `DOCKER-MISSING-NON-ROOT-USER`
+  "fix" that only printed a warning and created an unrelated local Linux user, never touching
+  the actual Dockerfile). Root cause was architectural: **all** `sast-native`/`sca-native`/
+  `standards-audit` findings (~517 rows — `CODE-INJECTION-EVAL`, `HARDCODED-SECRET`,
+  `DOCKER-MISSING-NON-ROOT-USER`, `SCA-CVE-*`, `STD-*`, `COGNITIVE-*`, `CMD`/`SQL`/`SSRF-*`) live
+  on `asset_type = 'GitLab-Repo'` assets — there is no live host to SSH into and "harden"; the
+  real fix is a code change in the repo itself. `sentinel.py`'s only execution path was Ansible
+  SSH (`asset_ip` for these rows is actually the repo's `web_url`, not an IP — every approval
+  would have failed at the Ansible connection step, or worse, silently done nothing relevant if
+  it somehow connected to a *different* host that happened to share the IP octets). Fixed in
+  several parts:
+  1. `remediation/gitlab_autofix.py` was **already wired to a real endpoint**
+     (`POST /api/gitlab/autofix/{vuln_id}` in `main.py`, just never called from the frontend)
+     but was non-functional end-to-end: referenced `re` without importing it, never cloned or
+     edited anything, and called GitLab's MR API with a `source_branch` that was never pushed
+     (which GitLab has always rejected — you cannot open an MR from a branch that doesn't
+     exist). Rewritten with real `git clone` → apply fix → `git commit`/`push` to a new
+     `centinela-fix/*` branch → open Merge Request (never a direct push to the default branch).
+     Also fixed `project_id` defaulting to a hardcoded `1` regardless of which repo the
+     vulnerability actually belonged to — now resolved from the vuln's own asset via GitLab's
+     path-based project lookup.
+  2. Added two **deterministic** patchers (no LLM needed, mechanical and safe):
+     `DOCKER-MISSING-NON-ROOT-USER`/`DOCKER-ROOT-USER` (adds/fixes a real `USER` directive in
+     the Dockerfile) and `SCA-CVE-*` (bumps the vulnerable package to the known-fixed version in
+     `requirements.txt`/`package.json`, using the `fixed_version` `auditor_sca_dependencies.py`
+     already computes from its `KNOWN_VULNERABLE_PACKAGES` table but never surfaced anywhere).
+     Verified live on a disposable throwaway GitLab project created and destroyed for this
+     purpose (never touched a real scanned repo): both produced a real, correctly-scoped MR with
+     exactly the expected one-line diff.
+  3. For findings that need real code understanding (`CODE-INJECTION-EVAL`, `HARDCODED-SECRET`,
+     `CMD`/`SQL`/`SSRF-*`), `correlate_vulnerability()` now asks the LLM for a `fix_patch`
+     (unified diff, using the file/line/snippet now available — see the file-path fix below) —
+     stored in `vulnerability_log.fix_patch` (an existing, previously entirely unused column) —
+     instead of a nonsensical bash "remediation_script". `gitlab_autofix.py` applies it with
+     `git apply` through the same clone/branch/push/MR pipeline as the deterministic patchers.
+     Verified the full JSON-parsing → `fix_patch` extraction → `git apply` → MR chain live with
+     a realistic mocked LLM response (Groq's daily token quota was still exhausted at test time,
+     see the AI-provider entry above, so the real end-to-end LLM call itself couldn't be
+     exercised today) — a real `git diff`-generated patch applied and opened a correct MR.
+  4. `can_automate` was previously **hardcoded to `True`** in the heuristic fallback path and
+     **hardcoded to `False`** (discarding whatever the LLM actually said) in the main JSON-parse
+     path — neither reflected reality. Added `heuristic_can_automate()` (mirrors
+     `generate_heuristic_script()`'s own branches) and made the JSON path respect the LLM's own
+     `can_automate` while still requiring real output (a patch or a script) to ever be `True`.
+  5. `STD-ISO25010-LONG-METHOD`/`COGNITIVE-COMPLEXITY-EXCEEDED` (code-quality findings, 267 rows
+     combined) and non-vulnerability status messages (`SCAN-AUDIT` — "no vulnerabilities found"/
+     "scan skipped"; `HEURISTIC-SECURITY-DEBT` — an aggregate meta-finding) now get an honest
+     "no automated fix, here's why" message instead of a fake success script. `SCAN-AUDIT` was
+     previously keyword-matched into the **firewall-lockdown branch** (`ufw default deny
+     incoming` + allow only 22/80/443) — meaning approving a finding that literally says "no
+     vulnerabilities found" would have applied a deny-all firewall policy to a perfectly healthy
+     host for no reason. Fixed.
+  6. **Separately found and fixed, incidentally, while building this**: `auditor_master_vulnerabilities.py`/
+     `auditor_sca_dependencies.py`/`auditor_compliance_standards.py` (the `sast-native`/
+     `sca-native`/`standards-audit` engines) captured `file`/`line` on every finding but never
+     actually persisted them anywhere — the `INSERT` only carried `cve_id`/`severity`/
+     `description`, so no remediation (human or AI) could ever know which file to fix. Now
+     stored in `url_path` as `relative/path:LINE` (reusing the same generic "where this finding
+     lives" column `auditor_zap.py` already uses for URLs) and prefixed into `description`. Same
+     three files also had the exact `ON CONFLICT DO NOTHING`-with-no-real-constraint bug as the
+     Medusa/PROWLER-AUDIT cases above (see gotcha #3) — every re-scan of the GitLab org
+     re-inserted every finding as brand new. Fixed with the same explicit
+     SELECT-then-UPDATE/INSERT dedupe pattern already working in `auditor_zap.py`.
+  7. **Also found, while investigating why `CODE-INJECTION-EVAL` "fixes" made no sense**: the
+     detection regex `r'eval\s*\('` had no word boundary and (with `re.IGNORECASE`) matched the
+     substring "Eval(" inside *any* longer identifier — e.g. `this.onErrorEval(err)` was flagged
+     as a dangerous `eval()` call. Confirmed against real production data: **136 of 140** logged
+     `CODE-INJECTION-EVAL` findings were exactly this false positive, not an actual `eval()`
+     call. Fixed with `r'\beval\s*\('`.
+  8. Real ZAP DAST findings (641 rows, on real reachable `SERVER` assets — genuinely
+     automatable, unlike the GitLab-Repo cases above) got a real nginx security-header
+     remediation generator (`generate_zap_header_fix()` in `centinela.py`) covering the standard
+     header findings actually present in production (`X-Content-Type-Options`,
+     `Strict-Transport-Security`, `X-Frame-Options`, CSP, `X-Powered-By`/`Server` leaks,
+     Cache-Control, Permissions-Policy, Referrer-Policy). Detects nginx at the system level
+     first, then falls back to detecting a **containerized** nginx reverse-proxy (confirmed live
+     on `casmart_authentik`: no system nginx, but a `nginx:alpine` gateway container fronting
+     it) — and within that, detects whether `/etc/nginx/conf.d` is writable inside the container
+     or only via its host-side bind-mount source (confirmed live: `casmart_authentik`'s gateway
+     mounts `conf.d` **read-only** in-container from
+     `/opt/ecosistema-casmarts/core-casmarts/gateway/conf.d` on the host — a deliberate, common
+     hardening pattern). Writes an idempotent, additive-only snippet file (never touches
+     existing vhost configs), validates with `nginx -t` before reloading, and verifies the
+     header is actually present in a live response afterward. **Not live-tested end-to-end**:
+     the final apply-and-reload step is a live write to `casmarts-core-gateway`, which is shared
+     infrastructure fronting several other apps (`admin.conf`/`apps.conf`/`auth.conf`/
+     `axioma.conf`/`core.conf`/`lexivault.conf`/`oidc.conf`/`projects.conf`) outside this repo's
+     own footprint — blocked by the permission classifier as a live shared-infra write; the
+     script's *logic* was validated against the real host structure via read-only inspection
+     (real bind-mount path, real container name, real absence of system nginx), but the actual
+     apply-and-verify run needs to happen via a real approval in the SOAR UI.
