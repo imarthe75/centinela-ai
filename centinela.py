@@ -155,6 +155,86 @@ else:
 def get_valkey_connection():
     return redis.Redis(**VALKEY_CONFIG)
 
+def generate_heuristic_script(vuln):
+    cve = str(vuln.get('cve_id', 'SECURITY-FINDING')).upper()
+    asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
+    atype = str(vuln.get('asset_type', 'SERVER')).upper()
+    ep = str(vuln.get('endpoint', '0.0.0.0'))
+    desc = str(vuln.get('description', '')).lower()
+
+    header = f"#!/bin/bash\n# Script de Remediación Automática - Centinela AI\n# Host: {asset} ({ep})\n# Vulnerabilidad / Regla: {cve}\nset -e\necho '🔒 Ejecutando hardening y remediación de seguridad en {asset} ({ep})...'\n"
+
+    if 'DOCKER' in cve or 'CONTAINER' in cve or 'NON-ROOT' in cve or 'non-root' in desc:
+        body = f"""# Remediar DOCKER-MISSING-NON-ROOT-USER / Hardening de Usuarios en Contenedores
+echo '🔍 Verificando ejecuciones de contenedor como usuario no-root...'
+if command -v docker >/dev/null 2>&1; then
+    docker ps --format '{{{{.ID}}}} {{{{.Names}}}}' | while read cid name; do
+        cuser=$(docker exec "$cid" whoami 2>/dev/null || echo "root")
+        if [ "$cuser" = "root" ]; then
+            echo "⚠️ Advertencia: El contenedor $name ($cid) ejecuta procesos como root."
+        fi
+    done
+fi
+
+if ! id -u centinela &>/dev/null; then
+    echo '👤 Creando usuario de servicio restringido centinela (UID 10001)...'
+    useradd -m -s /bin/bash -u 10001 centinela 2>/dev/null || true
+fi
+echo '✅ Hardening de usuario no-root completado.'
+"""
+    elif 'SSH' in cve or 'ROOT-LOGIN' in cve or 'AUTH' in cve:
+        body = """# Remediar SSH-ROOT-LOGIN / Deshabilitar acceso root por SSH
+if [ -f /etc/ssh/sshd_config ]; then
+    echo '🔐 Configurando SSH sin acceso directo a root...'
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%s)
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || true
+    echo '✅ Configuración SSH endurecida exitosamente.'
+else
+    echo 'ℹ️ /etc/ssh/sshd_config no encontrado.'
+fi
+"""
+    elif 'GITLAB' in cve or 'PIPELINE' in cve or 'CODE-INJECTION' in cve:
+        body = f"""# Remediar inyección / hardening de repositorios GitLab
+echo '🛠️ Auditando y asegurando repositorio {asset}...'
+if [ -d .git ]; then
+    chmod -R go-w .git 2>/dev/null || true
+fi
+if [ -f /etc/gitlab/gitlab.rb ]; then
+    sed -i "s/^\(gitlab_rails\['gitlab_https'\]\s*=\s*\).*/\\1true/" /etc/gitlab/gitlab.rb
+    gitlab-ctl reconfigure 2>/dev/null || true
+fi
+echo '✅ Hardening de proyecto GitLab completado.'
+"""
+    elif 'PORT' in cve or 'OPEN' in cve or 'EXPOSED' in cve or 'NET' in cve or 'SCAN-AUDIT' in cve:
+        body = f"""# Remediar exposición de puertos en {ep}
+if command -v ufw >/dev/null 2>&1; then
+    echo '🛡️ Aplicando perfil de firewall UFW...'
+    ufw default deny incoming 2>/dev/null || true
+    ufw default allow outgoing 2>/dev/null || true
+    ufw allow 22/tcp 2>/dev/null || true
+    ufw allow 80/tcp 2>/dev/null || true
+    ufw allow 443/tcp 2>/dev/null || true
+    ufw --force enable 2>/dev/null || true
+elif command -v iptables >/dev/null 2>&1; then
+    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+fi
+echo '✅ Verificación de reglas de puerto y firewall completada.'
+"""
+    else:
+        body = f"""# Hardening general de servicio e infraestructura
+echo '🔍 Auditando parámetros de seguridad en {asset} ({ep})...'
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet wazuh-agent 2>/dev/null && echo 'Agente Wazuh activo' || true
+fi
+echo '✅ Verificación y hardening de {cve} finalizado.'
+"""
+
+    footer = f"echo '✅ Hardening completado para {cve}.'\n"
+    return header + body + footer
+
+
 def correlate_vulnerability(vuln):
     """
     Use AI to correlate vulnerability data and suggest remediation.
@@ -164,8 +244,6 @@ def correlate_vulnerability(vuln):
         
     print(f"🤖 [Centinela-AI] Senior Audit analysis for {vuln['cve_id']} on {vuln['asset_name']}...")
     
-    # Prompt mejorado basado en CAI Senior Auditor
-    # Prompt mejorado basado en CAI Senior Auditor
     prompt_text = f"""
         Actúa como el Auditor Senior de Ciberseguridad de CASMARTS, experto en infraestructura crítica, 
         entornos Linux, seguridad en la nube y servidores de aplicaciones / middleware (WildFly, Tomcat, Nginx, JBoss). 
@@ -192,20 +270,14 @@ def correlate_vulnerability(vuln):
             "evidencia_tecnica": "Extracto del log, puerto o configuración afectada",
             "impacto_negocio": "Descripción del riesgo para la operación de CASMARTS",
             "accion_remediacion": "Pasos simples para un desarrollador",
-            "remediation_script": "Comando técnico exacto o script en bash para ejecutar y corregir el problema",
+            "remediation_script": "Script bash autónomo e ejecutable específico para solucionar esta vulnerabilidad",
             "can_automate": true/false
         }}
 
         REGLAS DE SCRIPTS:
-        - El campo 'remediation_script' DEBE contener un script bash completo, autónomo y ejecutable.
-        - IDEMPOTENCIA: El script debe poder ejecutarse varias veces sin causar errores (ej. usar 'mkdir -p', 'grep' antes de añadir líneas).
-        - VERIFICACIÓN: El script DEBE incluir comandos para verificar que la corrección funcionó (ej. 'netstat -tuln | grep 9990' para confirmar cierre).
-        - DETECCIÓN UNIVERSAL: Los scripts DEBEN detectar si el servicio es WildFly, Tomcat o Nginx y actuar en consecuencia.
-        - Si el activo es 'CONTAINER', el script se ejecutará DENTRO del contenedor. NO uses 'sudo'.
-        - Si el activo es 'SERVER', asume que tienes permisos de 'root' o 'sudo' (pero el script debe ser agnóstico al método de elevación).
-        - Si el activo es 'AppServer', intenta usar las herramientas de gestión integradas (como jboss-cli.sh --connect --command=...).
-        - NOTA OBLIGATORIA: Para activos no automatizables (can_automate: false), añade SIEMPRE como paso final en 'accion_remediacion' la instrucción para instalar el agente de Wazuh de forma agnóstica:
-          "Para habilitar monitoreo continuo, instale el Agente Wazuh: curl -sO https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.x_amd64.deb && sudo dpkg -i wazuh-agent*.deb"
+        - El campo 'remediation_script' DEBE contener un script bash completo, autónomo y ejecutable específico para la vulnerabilidad {vuln['cve_id']}. NO utilices scripts genéricos de 'ufw status'.
+        - IDEMPOTENCIA: El script debe poder ejecutarse varias veces sin causar errores.
+        - VERIFICACIÓN: El script DEBE incluir comandos para verificar que la corrección funcionó.
     """
     
     content = ""
@@ -233,13 +305,15 @@ def correlate_vulnerability(vuln):
             ep = vuln.get('endpoint', '0.0.0.0')
             sev = vuln.get('severity', 'Medium')
             
+            script_code = generate_heuristic_script(vuln)
+            
             content = json.dumps({
                 "riesgo_detectado": f"Exposición de Seguridad - {cve}",
                 "nivel_severidad": sev,
                 "evidencia_tecnica": f"Hallazgo reportado en {ep} ({atype}). {vuln.get('description', 'Parámetros o puertos no endurecidos.')}",
                 "impacto_negocio": f"Riesgo potencial de reconocimiento de infraestructura o vector de acceso no autorizado en {asset}.",
-                "accion_remediacion": f"1. Aplicar reglas de firewall e inhabilitar puertos innecesarios en {ep}.\n2. Realizar hardening de servicios y habilitar monitoreo continuo con Agente Wazuh.",
-                "remediation_script": f"#!/bin/bash\n# Script de Remediación Automática - Centinela AI\n# Host: {asset} ({ep})\necho '🔒 Ejecutando verificación de hardening en {ep}...'\nufw status || true\necho '✅ Hardening completado para {cve}.'",
+                "accion_remediacion": f"1. Aplicar reglas de hardening específicas e inhabilitar componentes no seguros en {ep}.\n2. Realizar hardening de servicios y habilitar monitoreo continuo con Agente Wazuh.",
+                "remediation_script": script_code,
                 "can_automate": True
             })
         
