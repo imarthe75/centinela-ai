@@ -64,7 +64,7 @@ RUN pip install --no-cache-dir \
     passlib \
     semgrep \
     prowler \
-    medusa-security \
+    medusa-security==2026.7.0 \
     neo4j
 
 # Create non-root user for CMMI / CIS hardening compliance
