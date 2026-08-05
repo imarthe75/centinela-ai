@@ -131,11 +131,78 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   is `True`. No stored secrets exist yet under `casmarts/ansible/*` — that's expected, nobody
   could write there while it was sealed; `has_vault_secret` will start turning `true` per-asset
   as credentials get added via "Añadir Activo" / the vault-secret endpoint going forward.
-- **ZAP DAST silently never ran** — `auditor_zap.py` referenced `owasp/zap2docker-stable:latest`,
-  a Docker Hub image that no longer exists ("pull access denied... repository does not exist").
-  Every ZAP attempt threw `ZAPNotAvailableError` and silently fell back to nuclei-only. Fixed to
-  `zaproxy/zap-stable:latest` (OWASP's current official image, same `zap.sh -daemon` + REST API
-  invocation pattern) and pre-pulled.
+- ~~ZAP DAST silently never ran~~ — **resolved 2026-08-04, the hard way**. First layer:
+  `auditor_zap.py` referenced `owasp/zap2docker-stable:latest`, a Docker Hub image that no
+  longer exists, so every attempt threw `ZAPNotAvailableError` and silently fell back to
+  nuclei-only. Fixing just the image to `zaproxy/zap-stable:latest` was nowhere near enough —
+  live-testing a real scan end-to-end (`auditor_zap.run_zap_scan(...)`) surfaced **eight more
+  real, independent bugs stacked on top of each other**, meaning ZAP had in all likelihood
+  *never once* worked in this deployment. In the order they were found:
+  1. `docker run` had no `-d` — it ran attached in the foreground, so the launch call just hung
+     until its own 30s timeout on every single attempt, regardless of anything else.
+  2. `-p {port}:8090` published to the wrong container-side port — this image listens on 8080,
+     not 8090 (the old `zap2docker-stable` image's default).
+  3. **Fundamental**: `docker run` here goes through the mounted `docker.sock`, which makes ZAP
+     a *sibling* container on the host's Docker daemon, not a child of `centinela-ai`. A
+     `-p host:container` mapping binds on the **real host's** interfaces — `localhost` from
+     inside `centinela-ai` can never reach it, no matter what host port is used. Since both
+     containers share `aura-network`, the fix is to address ZAP by its container name (Docker's
+     built-in per-network DNS) instead of any `localhost:<port>` — dropped host port publishing
+     entirely, everything now goes through `http://<container_id>:8080`.
+  4. The addon/config cache volume was mounted at `/root/.zap/db`, but this image runs as uid
+     1000 ("zap", `$HOME=/home/zap`) and downloads all its addons to `/home/zap/.ZAP/plugin/*`
+     on every cold start — `/root/.zap/db` was never on this image's write path at all, so
+     nothing was ever actually cached (~40s of addon downloads on *every* launch).
+  5. Fixing the mount path to `/home/zap/.ZAP` then failed with "The home path is not
+     writable": the bind-mount source is auto-created by the **host's** dockerd (owned by
+     root) the first time it's referenced — another docker-outside-of-docker gotcha, since
+     `os.makedirs()` from inside `centinela-ai` only touches *its own* filesystem, not the real
+     host path `docker run -v` resolves against. Fixed by `chmod`-ing the mount source via a
+     disposable `busybox` container before ever starting ZAP.
+  6. Sharing one cache directory across concurrent scans then failed differently: "The home
+     directory is already in use" — ZAP takes an exclusive lock on its home dir, so concurrent
+     scans can't share a cache path at all. Switched to one subdirectory per scan (accepting the
+     ~40s addon re-download per scan as a real characteristic of this tool, not a bug).
+  7. ZAP bound its API to `127.0.0.1` inside its own container by default — its own Docker
+     `HEALTHCHECK` (which `curl`s `localhost` from inside) reported "healthy" while every other
+     container on `aura-network` got connection refused reaching it by name. Fixed with
+     `-host 0.0.0.0`.
+  8. Even reachable, ZAP separately rejected every request as "not permitted" — it allowlists
+     API request origins by `Host` header independently of `api.disablekey`. Fixed with
+     `-config api.addrs.addr.name=.* -config api.addrs.addr.regex=true` (ZAP's documented way to
+     permit any origin).
+  9. The readiness probe itself called `core/**action**/version` — "version" is a **view**
+     (read-only), not an action, in ZAP's API taxonomy, so it 400'd on literally every request,
+     meaning the code could never detect ZAP was actually up even after fixes 1–8 landed.
+  10. The active-scan call passed `scanPolicyName: context_config["profile"]` — our own internal
+      profile names (`light`/`balanced`/etc., see `ZAPScanProfile`) aren't real ZAP scan-policy
+      names (`"Default Policy"`, `"Pen Test"`, etc. — confirmed via
+      `/json/ascan/view/scanPolicyNames/`), so every active scan failed with `does_not_exist`.
+      Fixed by omitting the param entirely (ZAP falls back to its own default policy); our
+      profiles still control timeout/depth/rule-count via `context_config` elsewhere.
+
+  Verified with a real full scan end-to-end (`launch → spider → active scan → alerts →
+  cleanup`) against a live target: completed in ~65s, spider found 3 URLs, active scan reached
+  100% and returned a real (in this case empty) findings list — not a masked failure.
+- ~~**11th ZAP bug, found incidentally while debugging Medusa**: every single ZAP finding was
+  logged with the identical generic `cve_id` "ZAP-ZAP-UNKNOWN"~~ — **resolved 2026-08-05**.
+  `retrieve_zap_alerts()` read `alert.get("pluginid", "ZAP-UNKNOWN")`, but ZAP's real REST API
+  returns the key as `pluginId` (camelCase) — the lowercase lookup always missed, so every
+  finding fell back to the same default, and `log_zap_findings()`'s own `f"ZAP-{code}"` prefix
+  then doubled it to `ZAP-ZAP-UNKNOWN`. Confirmed via 180 already-logged real findings on
+  `casmart_authentik`: `cweid`/`wascid` (correctly cased in the code) were populated on every
+  single row, `pluginid` never was — 100% consistent with a pure key-casing miss, not missing
+  data from ZAP. Also caused a secondary symptom that looked like a runaway loop: with 180
+  distinct real findings all sharing one identifier, the AI correlation engine's log lines
+  (`Senior Audit analysis for ZAP-ZAP-UNKNOWN on casmart_authentik...`) looked identical on every
+  line even though it was correctly working through 180 distinct rows — pure log-message
+  confusion caused by the same underlying bug, not an actual infinite loop. Fixed by reading
+  `pluginId` first (falling back to the old lowercase key, then a bare `"UNKNOWN"` with no
+  redundant prefix). The 180 already-logged rows keep their old generic `cve_id` — they're real,
+  legitimate findings (confirmed 180/180 distinct URLs, not duplicate spam), just mislabeled;
+  no safe way to backfill the real `pluginId` without re-scanning, and re-scanning `casmart_authentik`
+  again wasn't attempted here (live active-scans need separate authorization each time). Left as
+  a known cosmetic gap: those specific rows will keep their generic ID until next rescan.
 - ~~`prism`/`chat` had no known SSH credentials~~ — **resolved 2026-08-04**: user supplied
   passwords for `kiwi@10.4.3.30` (prism) and `chatbotpdf@10.4.3.31` (chat) and authorized
   installing this server's own public key (already in this host's `~/.ssh/authorized_keys`,
@@ -170,11 +237,16 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   mapping captured at install time instead of guessed later from a name string.
 - ~~GitLab project scanning has no token~~ — **resolved 2026-08-04**: user supplied several
   GitLab PATs; tested each against `GET /api/v4/user` and `/api/v4/personal_access_tokens/self`
-  to find one with `api`/`read_repository` scope (`sonar_pat`, user `monitor`, expires
-  2027-07-02 — several of the others were 401/403, revoked or wrong scope). Set as
-  `GITLAB_TOKEN` in `.env`. Ran a real `POST /api/gitlab/scan`: 46/63 GitLab projects cloned and
-  audited, **74 real vulnerabilities found** (SAST + SCA + standards) and correlated. The other
-  17 projects likely failed to clone (empty repos, or need investigation if that's wrong).
+  to find valid ones. First pass used `sonar_pat` (user `monitor`, `api`/`read_repository`
+  scope) — 46/63 projects scanned, 74 vulnerabilities found. The other 17 turned out **not** to
+  be empty repos: `git clone` on any of them returned a real `403 You are not allowed to
+  download code from this project` — the `monitor` service account has no repository access to
+  the entire `arquitectura/` GitLab group (it can list those projects via the API but not clone
+  them). Confirmed `israelm`'s own personal token *can* clone them, switched `GITLAB_TOKEN` to
+  that one, re-ran the scan: **59/59 projects scanned, 431 real vulnerabilities found**. Using a
+  named admin's personal token for an automated integration isn't ideal long-term — cleaner fix
+  would be granting the `monitor` service account Developer access to the `arquitectura/` group
+  in GitLab and switching back, but that's a GitLab-side permission change, not a code fix.
 - ~~`sentinel.py`'s remediation execution was password-only~~ — **resolved 2026-08-04**: added
   `get_ssh_private_key()` (reads the `ssh_private_key` field `store_vault_secret()` already
   wrote to `casmarts/ansible/{asset_name}`, which nothing previously read back). The generic
@@ -200,7 +272,61 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   (with their findings/remediation rows) at the user's request — those IPs no longer exist.
   `10.4.3.51` (pmcp) was also removed from `inventory.ini`'s `[casmarts_nodes]` group for the
   same reason.
-- **`auditor_medusa.py`'s CLI flags** (`--no-ai-safe`, `echo "yes" | medusa scan ...`) were
-  written against an assumed interactive-confirmation behavior; the `medusa-security` PyPI
-  package's documented flags don't obviously include either. Worth a real test run once medusa
-  is actually invoked against a repo, since it may silently fail today.
+- ~~`auditor_medusa.py`'s CLI flags were unverified~~ — **resolved 2026-08-05**: ran
+  `medusa scan --help` for real against the correctly-pinned version (see version-drift note
+  below). `--no-ai-safe` does exist in `medusa-security` 2026.7.0 but is unrelated to prompts —
+  it toggles payload obfuscation. `--no-install` doesn't exist in this version at all (it was
+  seen during earlier ad-hoc testing against a different, unpinned resolve). Neither the old
+  `echo "yes" | medusa scan ... --no-ai-safe` pattern nor a `--no-install` flag was ever the
+  right fix. The actual fix needed **no special flag at all**: with no TTY attached (always true
+  under `subprocess.run`), medusa auto-detects it can't prompt and prints "Non-interactive mode:
+  continuing without optional tools." on its own. Command is now just
+  `medusa scan "{repo_path}" --format json -o "{output_dir}"`. Also bumped the internal
+  `subprocess.run(..., timeout=...)` from 300s to 900s — Medusa shells out to `trivy fs
+  --scanners vuln,secret,misconfig` as a sub-process on top of its own ~45 analyzers, and a cold
+  Trivy CVE-database download alone can eat the old 300s budget. Verified with a real scan
+  against a cloned repo (`arquitectura/resident-agent-framework`) after clearing stale
+  `__pycache__` in `centinela-backend` — a first verification attempt silently kept running the
+  old 300s-timeout bytecode even after the source was edited (see stale-bytecode gotcha #1) and
+  timed out at exactly 300.2s; clearing `__pycache__` and rerunning confirmed the live code
+  actually reflects the fix. Even with the timeout raised and a clean environment, the scan
+  still failed every time with the command as given — root-caused to **three more independent
+  bugs**, found by testing the real end-to-end path instead of trusting the CLI help text:
+  1. Medusa's own default multi-worker pool (`-w` auto-detects >1 workers) reliably crashed with
+     a `BrokenPipeError` inside `multiprocessing.Pool` while sending a result back to the
+     parent — reproduced consistently both under heavy host load (see below) and on an idle
+     host, so it's a real bug in this version's worker-pool IPC, not resource starvation. Fixed
+     by forcing `-w 1` (single worker, no pool) — same repo then scanned cleanly in ~9s.
+  2. Medusa 2026.7.0 always writes a second, unrelated `scan_history.json` (a JSON *list*, not a
+     report) alongside the real report, and the real report's filename is timestamped
+     (`medusa-scan-YYYYMMDD-HHMMSS.json`), not the fixed `medusa-report.json`/`report.json` the
+     original code assumed. Picking "the first `*.json` file in the directory listing" is
+     non-deterministic and grabbed `scan_history.json` on a real run, crashing with `'list'
+     object has no attribute 'get'` when the code tried `data.get("findings", [])`. Fixed by
+     explicitly excluding `scan_history.json` from the candidate list.
+  3. `cve_id` was built with Python's built-in `hash()` on `file_path + str(line)` —
+     **`hash()` on strings is randomized per process** (`PYTHONHASHSEED`, unset here) by design,
+     confirmed live: the same string produced two different hash values across two separate
+     `python3` invocations in the same container. That means the exact same finding got a
+     *different* `cve_id` every time `centinela-backend` restarted, silently defeating
+     `log_vulnerability()`'s dedupe-by-`(asset_id, cve_id)` check and re-inserting every
+     previously-seen Medusa finding as "new" on every restart — the same duplicate-flooding
+     failure mode as the original PROWLER-AUDIT bug, just via non-deterministic ID generation
+     instead of a missing dedupe check. Fixed with `hashlib.sha256(...).hexdigest()[:8]`
+     (deterministic across runs), and also stripped a redundant `MEDUSA-` prefix from
+     `rule_id` before building `cve_id` (Medusa's own rule IDs are already `MEDUSA-`-prefixed,
+     e.g. `MEDUSA-GENAI-SCAN-134`, which was doubling up to `MEDUSA-MEDUSA-GENAI-SCAN-134-...` —
+     the same cosmetic bug class as the ZAP `pluginId` fix below). Verified: rerunning the same
+     scan twice produced 21/21 `🔄 Updated` (not `📝 Logged`) on the second pass, confirming the
+     hash is now stable and dedupe actually works.
+
+  While debugging the `BrokenPipeError` under load, also found and cleaned up **three leftover
+  `zap-scan-*` test containers** from the ZAP verification above that were never actually torn
+  down (one had been running for 40+ minutes) — real resource waste, and a contributing factor
+  to the host's load average hitting 76 (8 CPUs) during testing. **Separately found real version
+  drift**: `centinela-ai`'s image had
+  `medusa-security 2026.7.0`, `centinela-backend`'s had `2025.8.5.4` (11 months older, different
+  incompatible flags) even though both Dockerfiles installed it "unpinned" around the same
+  time — pip resolved differently per build. Pinned `medusa-security==2026.7.0` in both
+  `requirements.txt` and the main `Dockerfile`'s pip list so this can't silently drift again;
+  rebuilt both images.

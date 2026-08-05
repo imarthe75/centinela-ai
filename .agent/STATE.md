@@ -3,6 +3,22 @@
 ## 📅 Fecha: 4 de Agosto, 2026
 
 ## 🎯 Hitos Recientes (2026-08-04)
+- **ZAP DAST nunca había funcionado ni una sola vez, ni con la imagen corregida.** Al probar un
+  scan real de punta a punta salieron **10 bugs independientes apilados uno sobre otro**:
+  faltaba `-d` en `docker run` (bloqueaba en foreground), el puerto interno correcto es 8080 no
+  8090, `localhost` desde `centinela-ai` nunca puede alcanzar un contenedor lanzado vía
+  `docker.sock` montado (son contenedores *hermanos*, no padre-hijo — hay que usar el nombre del
+  contenedor en `aura-network`), el volumen de caché apuntaba a una ruta que la imagen nunca usa
+  (`/root/.zap/db` en vez de `/home/zap/.ZAP`), permisos del volumen (creado por el host como
+  root), ZAP no permite compartir su home dir entre scans concurrentes ("already in use"), ZAP
+  se bindea a 127.0.0.1 por defecto (necesita `-host 0.0.0.0`), ZAP también rechaza peticiones
+  por `Host` header aunque el puerto sí responda (necesita `-config api.addrs.addr.*`), el
+  endpoint de verificación de "listo" usaba `action/version` cuando debía ser `view/version`
+  (por eso nunca se detectaba que ya estaba arriba), y el `scanPolicyName` enviado no
+  corresponde a ninguna política real de ZAP. Verificado con un scan real completo: spider
+  encontró URLs, active scan llegó a 100%, resultado real (vacío en ese caso) — no un fallo
+  disfrazado. Ver `CLAUDE.md` para el detalle completo, es un buen caso de estudio de
+  docker-outside-of-docker.
 - **Los reportes/scripts de remediación IA volvieron a ser detallados y específicos**, no
   genéricos. Causa raíz: `correlate_vulnerability()` en `centinela.py` solo intentaba
   `genai_client` (Google, fallando) y caía directo a la plantilla determinística — nunca
@@ -14,9 +30,68 @@
   agregó `AI_MODEL_NVIDIA` y se movió el proveedor configurado al frente del orden. Verificado
   en vivo: un escaneo limpio en `prism` ahora genera `can_automate=false` y un resumen
   ejecutivo real de "sin hallazgos críticos", en vez de la plantilla genérica de firewall que
-  aparecía antes sin importar el tipo de hallazgo (hasta en repos de GitLab). **Pendiente
+  aparecía antes sin importar el tipo de hallazgo (hasta en repos de GitLab). ~~**Pendiente
   menor**: cuando el LLM no devuelve JSON estricto, el parser de respaldo por regex a veces
-  produce contenido pobre porque sus patrones no matchean el formato de prosa real de Groq.
+  produce contenido pobre porque sus patrones no matchean el formato de prosa real de Groq.~~
+  — **resuelto 2026-08-05**: no era el parser de respaldo, era `json.loads()` fallando con
+  `JSONDecodeError` porque Groq incrusta saltos de línea literales sin escapar dentro del valor
+  string de `remediation_script` (JSON válido en espíritu, inválido en el modo estricto de
+  Python). Cambiados ambos call sites en `centinela.py` a `json.loads(content, strict=False)`.
+
+## 🎯 Hitos Recientes (2026-08-05)
+- **`auditor_medusa.py` tenía flags de CLI nunca verificados contra la versión real.** El
+  comando original (`echo "yes" | medusa scan ... --no-ai-safe`) asumía un prompt interactivo de
+  confirmación que no existe en `medusa-security==2026.7.0`: `--no-ai-safe` sí existe en esa
+  versión pero es un toggle de ofuscación de payloads, no de prompts; `--no-install` no existe en
+  absoluto en esta versión (se vio en pruebas ad-hoc contra un resolve distinto, antes de fijar
+  la versión en `requirements.txt`). El fix real no necesita ningún flag especial: sin TTY
+  (siempre el caso bajo `subprocess.run`), Medusa detecta solo que no puede preguntar e imprime
+  "Non-interactive mode: continuing without optional tools." Comando final:
+  `medusa scan "{repo_path}" --format json -o "{output_dir}"`. También se subió el timeout
+  interno de `subprocess.run` de 300s a 900s — Medusa invoca `trivy fs --scanners
+  vuln,secret,misconfig` como subproceso además de sus ~45 analizadores propios, y una descarga
+  en frío de la base de datos de Trivy por sí sola puede agotar los 300s originales. **Trampa
+  encontrada durante la verificación**: la primera corrida de prueba después de editar el
+  timeout a 900s siguió fallando a los 300.2s exactos — bytecode `__pycache__` obsoleto en
+  `centinela-backend` seguía ejecutando la versión vieja del archivo pese al bind-mount en vivo
+  (ver gotcha #1 de `CLAUDE.md`). Limpiar `__pycache__` y reiniciar el contenedor lo resolvió;
+  confirmado con `inspect.getsource()` que el código realmente cargado coincide con el archivo
+  en disco antes de volver a probar. **Incluso corregido eso, el scan seguía fallando** — tres
+  bugs más, encontrados solo al verificar la ruta real de punta a punta: (1) el pool de workers
+  por defecto de Medusa (`-w` auto, >1) fallaba de forma reproducible con `BrokenPipeError`
+  dentro de `multiprocessing.Pool`, tanto con carga alta como con el host en reposo — es un bug
+  real del pool en esta versión, no falta de recursos; arreglado forzando `-w 1`. (2) Medusa
+  siempre escribe un `scan_history.json` (una lista, no un reporte) junto al reporte real, cuyo
+  nombre además lleva timestamp (`medusa-scan-YYYYMMDD-HHMMSS.json`) — tomar "el primer .json de
+  la carpeta" es no determinístico y agarró el archivo equivocado, causando `'list' object has
+  no attribute 'get'`; arreglado excluyendo `scan_history.json` explícitamente. (3) `cve_id`
+  usaba `hash()` nativo de Python sobre `file_path + line`, pero ese hash se aleatoriza por
+  proceso (`PYTHONHASHSEED`) — confirmado en vivo que la misma cadena da dos hashes distintos en
+  dos invocaciones separadas — así que el mismo hallazgo obtenía un `cve_id` distinto en cada
+  reinicio del contenedor, rompiendo silenciosamente el dedupe de `log_vulnerability()` y
+  reinsertando todo como "nuevo" en cada reinicio (mismo patrón de falla que el bug original de
+  PROWLER-AUDIT, por causa distinta). Arreglado con `hashlib.sha256(...)[:8]` (estable entre
+  ejecuciones); también se quitó un prefijo `MEDUSA-` duplicado (`rule_id` de Medusa ya viene
+  con ese prefijo). Verificado: correr el mismo scan dos veces dio 21/21 "Updated" (no "Logged")
+  en la segunda pasada. De paso, se encontraron y eliminaron **tres contenedores `zap-scan-*`**
+  de pruebas anteriores que nunca se habían limpiado de verdad (uno llevaba 40+ minutos
+  corriendo) — desperdicio real y probable causa de que el load average del host llegara a 76
+  (8 CPUs) durante las pruebas.
+- **11er bug de ZAP, encontrado de casualidad mientras se depuraba Medusa** — **resuelto
+  2026-08-05**: todos los hallazgos de ZAP se registraban con el mismo `cve_id` genérico
+  "ZAP-ZAP-UNKNOWN". Causa: `alert.get("pluginid", ...)` usaba minúscula, pero la API real de
+  ZAP devuelve `pluginId` (camelCase) — el lookup nunca coincidía, y el prefijo propio de
+  `log_zap_findings()` duplicaba el "ZAP-" resultante. Confirmado con 180 hallazgos reales ya
+  guardados en `casmart_authentik`: `cweid`/`wascid` (bien escritos en el código) sí estaban
+  poblados en cada fila, `pluginid` nunca — 100% consistente con un typo de mayúsculas, no con
+  datos faltantes de ZAP. Esto también generó un síntoma secundario que parecía un loop
+  infinito: como 180 hallazgos reales y distintos compartían un solo identificador, las líneas
+  de log del motor de correlación IA se veían idénticas una tras otra aunque procesaba 180 filas
+  distintas correctamente — confusión de logging, no un loop real. Las 180 filas ya guardadas se
+  quedan con su `cve_id` genérico (hallazgos reales y legítimos, 180/180 con URLs distintas, no
+  spam duplicado) — no hay forma segura de recuperar el `pluginId` real sin volver a escanear, y
+  relanzar un scan activo contra `casmart_authentik` no se intentó aquí. Queda documentado como
+  brecha cosmética pendiente.
 - **El stack productivo vive en `10.4.3.34`**, no en `10.4.3.208`. Se encontró y eliminó por completo
   una segunda copia huérfana de Centinela-AI que llevaba 4 días corriendo en `10.4.3.208`
   (`/opt/ecosistema-casmarts/centinela-ai`), conectada a la misma base compartida `centinela_db` y
@@ -146,9 +221,12 @@
 ## 🚧 Pendientes
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
-- Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real
-  (se instaló hoy pero no se ha probado un scan real; los flags `--no-ai-safe` y el `echo "yes" |`
-  pueden no aplicar a la versión actual del CLI).
+- Si vuelve a hacer falta emparejar un agente Wazuh cuyo hostname real no se parece en nada al
+  nombre de negocio del activo (como pasó con `kiwi`/`prism`), la heurística de texto en
+  `discovery.py` no lo va a resolver sola — hay que capturar el hostname real al momento de
+  instalar el agente (vía Ansible) y guardarlo, no adivinarlo después por substring.
+- Considerar dar acceso Developer al grupo `arquitectura/` en GitLab a la cuenta de servicio
+  `monitor`, para dejar de usar el token personal de `israelm` en el escaneo automatizado.
 - Refinar la interfaz web React (Omni-Audit Matrix Tab) para explorar hallazgos por proyecto de GitLab.
 - Rotar el PAT de GitLab embebido en la URL del remoto `origin` y la clave `id_rsa_centinela` (quedaron expuestos en el historial de git).
 - Evaluar limpieza de historial de git (BFG/filter-repo) para los archivos de secretos ya commiteados, coordinando con el equipo (`10.4.3.10/arquitectura/centinela-cai`).
