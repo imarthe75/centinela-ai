@@ -37,6 +37,7 @@ def audit_requirements_txt(file_path: str, content: str) -> List[Dict[str, Any]]
 
             if pkg_name in KNOWN_VULNERABLE_PACKAGES:
                 for target_ver, cve, severity, desc in KNOWN_VULNERABLE_PACKAGES[pkg_name]:
+                    fixed_version = target_ver.lstrip("<>=")
                     findings.append({
                         "cve_id": f"SCA-{cve}",
                         "severity": severity,
@@ -44,7 +45,9 @@ def audit_requirements_txt(file_path: str, content: str) -> List[Dict[str, Any]]
                         "line": idx,
                         "package": pkg_name,
                         "installed_version": version,
-                        "description": f"Vulnerable dependency '{pkg_name}' ({version}). {desc} ({cve})."
+                        "fixed_version": fixed_version,
+                        "manifest": "requirements.txt",
+                        "description": f"Vulnerable dependency '{pkg_name}' ({version}). {desc} ({cve}). Fixed in {fixed_version}."
                     })
 
     return findings
@@ -61,13 +64,17 @@ def audit_package_json(file_path: str, content: str) -> List[Dict[str, Any]]:
             clean_pkg = pkg_name.lower()
             if clean_pkg in KNOWN_VULNERABLE_PACKAGES:
                 for target_ver, cve, severity, desc in KNOWN_VULNERABLE_PACKAGES[clean_pkg]:
+                    fixed_version = target_ver.lstrip("<>=")
                     findings.append({
                         "cve_id": f"SCA-{cve}",
                         "severity": severity,
                         "file": file_path,
+                        "line": 1,
                         "package": clean_pkg,
                         "installed_version": version,
-                        "description": f"Vulnerable npm dependency '{clean_pkg}' ({version}). {desc} ({cve})."
+                        "fixed_version": fixed_version,
+                        "manifest": "package.json",
+                        "description": f"Vulnerable npm dependency '{clean_pkg}' ({version}). {desc} ({cve}). Fixed in {fixed_version}."
                     })
     except Exception as e:
         print(f"⚠️ [SCA-Auditor] Error parsing {file_path}: {e}")
@@ -95,16 +102,44 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
             except Exception as e:
                 print(f"⚠️ [SCA-Auditor] Could not read {full_path}: {e}")
 
-    # Persist findings to database
+    # Persist findings to database. Same two fixes as auditor_master_vulnerabilities.py: the
+    # file location was never stored anywhere (url_path), and the bare "ON CONFLICT DO NOTHING"
+    # had no matching unique constraint to trigger on, so it silently re-inserted every finding
+    # as brand new on every scan. Also embeds package/installed/fixed_version/manifest into the
+    # description in a parseable form so a real "bump to fixed_version in manifest" patch can be
+    # generated later without re-deriving this from KNOWN_VULNERABLE_PACKAGES again.
     try:
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
+                rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
+                location = f"{rel_path}:{item.get('line', 0)}"
+                description = (
+                    f"**Archivo:** `{rel_path}`\n"
+                    f"**Paquete:** {item['package']}\n"
+                    f"**Versión instalada:** {item['installed_version']}\n"
+                    f"**Versión segura:** {item['fixed_version']}\n"
+                    f"**Manifiesto:** {item['manifest']}\n"
+                    f"{item['description']}"
+                )
+
                 cur.execute("""
-                    INSERT INTO public.vulnerability_log
-                    (asset_id, cve_id, severity, description, status, scan_engine, detected_at)
-                    VALUES (%s, %s, %s, %s, 'OPEN', 'sca-native', NOW())
-                    ON CONFLICT DO NOTHING
-                """, (asset_id, item["cve_id"], item["severity"], item["description"]))
+                    SELECT id FROM public.vulnerability_log
+                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
+                """, (asset_id, item["cve_id"], location))
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute("""
+                        UPDATE public.vulnerability_log
+                        SET severity = %s, description = %s, detected_at = NOW(), status = 'OPEN'
+                        WHERE id = %s
+                    """, (item["severity"], description, existing[0]))
+                else:
+                    cur.execute("""
+                        INSERT INTO public.vulnerability_log
+                        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path)
+                        VALUES (%s, %s, %s, %s, 'OPEN', 'sca-native', NOW(), %s)
+                    """, (asset_id, item["cve_id"], item["severity"], description, location))
     except Exception as db_err:
         print(f"⚠️ [SCA-Auditor] Could not log findings to DB: {db_err}")
 

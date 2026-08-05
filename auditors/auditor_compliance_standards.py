@@ -102,16 +102,34 @@ def run_compliance_standards_audit(target_dir: str = "/opt/centinela-ai", asset_
                 except Exception as e:
                     print(f"⚠️ [Standards-Auditor] Error reading {full_path}: {e}")
 
-    # Persist findings to database
+    # Persist findings to database. Same fixes as the other two native engines: file location
+    # was captured but never stored (url_path), and "ON CONFLICT DO NOTHING" had no matching
+    # unique constraint, so it silently re-inserted every finding as brand new on every scan.
     try:
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
+                rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
+                location = f"{rel_path}:{item.get('line', 0)}"
+                description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
+
                 cur.execute("""
-                    INSERT INTO public.vulnerability_log
-                    (asset_id, cve_id, severity, description, status, scan_engine, detected_at)
-                    VALUES (%s, %s, %s, %s, 'OPEN', 'standards-audit', NOW())
-                    ON CONFLICT DO NOTHING
-                """, (asset_id, item["cve_id"], item["severity"], item["description"]))
+                    SELECT id FROM public.vulnerability_log
+                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
+                """, (asset_id, item["cve_id"], location))
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute("""
+                        UPDATE public.vulnerability_log
+                        SET severity = %s, description = %s, detected_at = NOW(), status = 'OPEN'
+                        WHERE id = %s
+                    """, (item["severity"], description, existing[0]))
+                else:
+                    cur.execute("""
+                        INSERT INTO public.vulnerability_log
+                        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path)
+                        VALUES (%s, %s, %s, %s, 'OPEN', 'standards-audit', NOW(), %s)
+                    """, (asset_id, item["cve_id"], item["severity"], description, location))
     except Exception as db_err:
         print(f"⚠️ [Standards-Auditor] Could not log findings to DB: {db_err}")
 
