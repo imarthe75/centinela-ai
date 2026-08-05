@@ -179,13 +179,18 @@ class ManualRemediationModel(BaseModel):
 
 app = FastAPI(title="Centinela-AI Security API")
 
-@app.get("/manual")
+@app.get("/api/manual")
 async def technical_manual():
     """
     Serves docs-public/manual-tecnico.html directly -- a single named file, not a static mount.
     Deliberately NOT under docs/, which also holds real SSH keys (casmarts.key/.ppk) that must
     never be reachable over HTTP and is entirely gitignored for that reason; docs-public/ is a
     separate, tracked directory reserved for content that's safe and intended to be served.
+
+    Under /api/ specifically because that's the only path prefix the external reverse proxy in
+    front of centinela.casmart.internal is confirmed to route to this backend -- the frontend's
+    own API_BASE is the relative path "/api", and a bare /manual (tried first) hit the frontend's
+    client-side router instead and never reached this service at all.
     """
     from fastapi.responses import FileResponse
     manual_path = "/app/docs-public/manual-tecnico.html"

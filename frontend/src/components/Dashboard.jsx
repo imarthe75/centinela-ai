@@ -700,13 +700,18 @@ export default function Dashboard() {
             onClick={() => { setCurrentView('users'); fetchUsers(); }}
           />
           {currentUserRole === 'Admin' && (
-            <NavItem 
-              icon={<Cpu size={20} />} 
-              label="Configuración Sistema" 
-              active={currentView === 'settings'} 
+            <NavItem
+              icon={<Cpu size={20} />}
+              label="Configuración Sistema"
+              active={currentView === 'settings'}
               onClick={() => { setCurrentView('settings'); fetchSystemConfig(); }}
             />
           )}
+          <NavItem
+            icon={<FileText size={20} />}
+            label="Manual Técnico"
+            onClick={() => window.open('/api/manual', '_blank', 'noopener,noreferrer')}
+          />
         </nav>
 
         <div className="p-4 border-t border-slate-800">
