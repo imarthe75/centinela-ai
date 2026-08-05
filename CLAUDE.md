@@ -131,9 +131,16 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   hosts turned out to already have `wazuh-agent` preinstalled — just needed pointing at the
   manager and starting. Added to `inventory.ini` and Vault (`ssh_private_key`), verified active
   both locally (`systemctl is-active`) and from the manager (`agent_control -l`).
-- **`casmartsuperset` (10.4.3.25) still has no known credentials.** Have a password
-  (`gNng898u`) but tried 15 common usernames against it, all rejected — needs the actual
-  username.
+- ~~`casmartsuperset` had no known credentials~~ — **resolved 2026-08-04**: the username was
+  literally `casmartsuperset` all along; the earlier failures were because the password has a
+  trailing period (`gNng898u.`) that wasn't included in the first attempts. Installed the shared
+  key, added to `inventory.ini`/Vault, and set up Wazuh. Its `ossec.conf` turned out to still be
+  pointed at the old dead manager (`10.4.3.28`) from before this project's migration, and the
+  manager had a **stale agent registration from an earlier silent self-enroll attempt** under
+  the same name — `wazuh-agentd` kept cycling "Duplicate agent name" until that old registration
+  was removed (`manage_agents -r`) and the agent's `client.keys` cleared to force a clean
+  re-enrollment. All 7 SERVER assets now confirmed with an active Wazuh agent, both locally
+  (`systemctl is-active`) and from the manager (`agent_control -l`).
 - **`discovery.py`'s fuzzy asset-name matching produced a real false positive**: the Wazuh agent
   named `compramex` (an OS hostname) substring-matched a *GitLab repo* asset
   (`GitLab/edomex-casmart/compramex/...`, itself named after the same product) purely because
