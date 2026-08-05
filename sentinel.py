@@ -217,10 +217,30 @@ def process_remediations():
 
                     # Lógica de Ejecución Basada en Tipo de Activo
                     asset_type = rem.get('asset_type', 'SERVER')
-                    
-                    if script_content:
+
+                    if asset_type.upper() == 'GITLAB-REPO':
+                        # Source-code finding -- there's no host to SSH into (asset_ip here is
+                        # actually the repo's web_url, not a real IP), which is exactly what the
+                        # old code below tried anyway ("ansible-playbook -i {asset_ip},") and
+                        # would always fail on. Real remediation for these is a code change:
+                        # clone the repo, apply a fix, push a branch, open a Merge Request.
+                        print(f"🦊 [Aura-Sentinel] GitLab-Repo finding -- routing to git auto-fixer for {asset_name}")
+                        from remediation.gitlab_autofix import GitLabAutoFixer
+                        try:
+                            result = GitLabAutoFixer().auto_fix_vuln(vuln_id)
+                            if result.get("status") == "created":
+                                status = "COMPLETED"
+                                log_output = f"Merge Request abierto: {result.get('url')}\nRevisar y mergear manualmente -- Sentinel nunca hace push directo a la rama principal."
+                            elif result.get("status") == "skipped":
+                                log_output = f"Sin acción automática disponible: {result.get('message')}"
+                            else:
+                                log_output = f"Falló la remediación de GitLab: {result.get('message') or result.get('detail')}"
+                        except Exception as e:
+                            log_output = f"Error en GitLab auto-fixer: {str(e)}"
+
+                    elif script_content:
                         print(f"⚙️ [Aura-Sentinel] Executing generic remediation for {asset_name} ({asset_type})")
-                        
+
                         if asset_type == 'CONTAINER':
                             # Intento de ejecución vía Docker exec (asumiendo que el socket está mapeado o vía SSH)
                             # Por simplicidad y consistencia, usamos Ansible con el módulo community.docker si fuera necesario,
