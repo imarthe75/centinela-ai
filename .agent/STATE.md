@@ -92,8 +92,14 @@
   apuntarlo al manager y arrancarlo. Descubrimiento adicional: `CLONE-COMPRAMEX-CORE`/`-BD`
   también tenían el agente preinstalado y se auto-enrolaron solos en cuanto existió un manager
   real — quedaron como agentes `compramex`/`compramex-bd`, sincronizados al inventario.
-- **`casmartsuperset` (10.4.3.25) sigue sin credenciales.** Se probaron 15 usuarios comunes con
-  el password que dio el usuario (`gNng898u`) — todos rechazados. Falta el usuario correcto.
+- ~~`casmartsuperset` sin credenciales~~ — **resuelto 2026-08-04**: el usuario SÍ era
+  `casmartsuperset`, lo que faltaba era el punto al final del password (`gNng898u.`). Se instaló
+  la llave compartida, se agregó a `inventory.ini`/Vault. Su `ossec.conf` seguía apuntando al
+  manager viejo muerto (`10.4.3.28`), y el manager tenía un registro huérfano de un
+  auto-enrolamiento silencioso previo bajo el mismo nombre — `wazuh-agentd` repetía "Duplicate
+  agent name" hasta que se quitó ese registro viejo (`manage_agents -r`) y se limpió
+  `client.keys` del agente para forzar un re-enrolamiento limpio. **Los 7 activos SERVER
+  quedaron confirmados con Wazuh activo**, tanto localmente como desde el manager.
 - **Bug encontrado y corregido en `discovery.py`**: el matching "fuzzy" (agregado hoy mismo)
   hizo un falso positivo — el agente Wazuh `compramex` matcheó por substring contra un
   repositorio de GitLab (`GitLab/edomex-casmart/compramex/...`) porque su path contenía la
@@ -124,8 +130,6 @@
 7. **Reorganización del código raíz**: Los módulos `.py` sueltos se movieron a paquetes (`core/`, `auditors/`, `discovery/`, `remediation/`, `scripts/`, `tests/`, `ui/`). Los entrypoints que invoca Docker (`centinela.py`, `main.py`, `sentinel.py`) se mantuvieron en la raíz.
 
 ## 🚧 Pendientes
-- Conseguir el usuario correcto para `casmartsuperset` (10.4.3.25) — se tiene el password
-  (`gNng898u`) pero 15 usuarios comunes probados fueron todos rechazados.
 - Si `casmart_ia` u otros de los activos eliminados vuelven a existir con una IP nueva, volver
   a registrarlos vía "Añadir Activo" para que se les instale el agente Wazuh automáticamente.
 - Validar en vivo los flags de CLI de `auditor_medusa.py` contra el paquete `medusa-security` real
