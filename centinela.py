@@ -355,7 +355,11 @@ def correlate_vulnerability(vuln):
             return default
 
         try:
-            analysis = json.loads(content)
+            # strict=False allows raw control characters (e.g. literal newlines) inside JSON
+            # string values — LLMs routinely write multi-line bash into "remediation_script"
+            # with real line breaks instead of escaped \n, which strict JSON parsing rejects
+            # outright even though the rest of the document is well-formed.
+            analysis = json.loads(content, strict=False)
             if isinstance(analysis, dict) and "error" in analysis:
                 print(f"⚠️ [Centinela-AI] AI response contains error: {analysis['error']}")
                 return None
@@ -441,7 +445,7 @@ def correlate_vulnerability(vuln):
                     try:
                         if "```json" in content:
                             content = content.split("```json")[1].split("```")[0].strip()
-                        return json.loads(content)
+                        return json.loads(content, strict=False)
                     except:
                         return None
                 except Exception as groq_e:
