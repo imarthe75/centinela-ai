@@ -179,6 +179,20 @@ class ManualRemediationModel(BaseModel):
 
 app = FastAPI(title="Centinela-AI Security API")
 
+@app.get("/manual")
+async def technical_manual():
+    """
+    Serves docs-public/manual-tecnico.html directly -- a single named file, not a static mount.
+    Deliberately NOT under docs/, which also holds real SSH keys (casmarts.key/.ppk) that must
+    never be reachable over HTTP and is entirely gitignored for that reason; docs-public/ is a
+    separate, tracked directory reserved for content that's safe and intended to be served.
+    """
+    from fastapi.responses import FileResponse
+    manual_path = "/app/docs-public/manual-tecnico.html"
+    if not os.path.exists(manual_path):
+        raise HTTPException(status_code=404, detail="Manual no encontrado")
+    return FileResponse(manual_path, media_type="text/html")
+
 @app.post("/api/inventory")
 async def add_inventory_item(item: AssetModel):
     try:
