@@ -36,7 +36,11 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     cmd_patterns = [
         (r'subprocess\.(run|Popen|call|check_output)\s*\([^)]*shell\s*=\s*True', "CMD-INJECTION-SHELL-TRUE", "CRITICAL", "Command Injection risk: subprocess executed with shell=True."),
         (r'os\.system\s*\(', "CMD-INJECTION-OS-SYSTEM", "HIGH", "Insecure os.system call. Use subprocess with explicit argument list."),
-        (r'eval\s*\(', "CODE-INJECTION-EVAL", "CRITICAL", "Dynamic Code Execution risk via eval().")
+        # \b is required: without it this matched "eval(" as a substring inside any longer
+        # identifier ending in those letters (e.g. onErrorEval(err), retrieval(x)) -- confirmed
+        # against real production data where 136 of 140 logged CODE-INJECTION-EVAL findings were
+        # exactly this false positive, not an actual eval() call.
+        (r'\beval\s*\(', "CODE-INJECTION-EVAL", "CRITICAL", "Dynamic Code Execution risk via eval().")
     ]
     for idx, line in enumerate(lines, 1):
         for pattern, rule_id, severity, desc in cmd_patterns:
@@ -162,16 +166,45 @@ def run_master_vulnerability_scan(target_dir: str = "/opt/centinela-ai", asset_i
             except Exception as e:
                 print(f"⚠️ [Master-Auditor] Error reading {full_path}: {e}")
 
-    # Persist findings in DB if available
+    # Persist findings in DB if available. Two real bugs fixed here:
+    #
+    # 1. item["file"]/item["line"] were captured by every scanner above but never actually
+    #    written anywhere -- the INSERT only carried cve_id/severity/description, so no
+    #    remediation (human or AI) could ever know which file to fix. Now stored in url_path
+    #    as "relative/path.py:LINE" (repurposing the same generic "where this finding lives"
+    #    column ZAP already uses for URLs), and prefixed into description for readability.
+    #
+    # 2. "ON CONFLICT DO NOTHING" with no conflict target only suppresses inserts that violate
+    #    an actual unique constraint -- vulnerability_log has none beyond its own id, so this
+    #    was a complete no-op and every re-scan re-inserted every finding as brand new (the same
+    #    failure mode CLAUDE.md already documents for this table). Replaced with an explicit
+    #    SELECT-then-UPDATE/INSERT dedupe by (asset_id, cve_id, url_path), the same pattern
+    #    already working in auditor_zap.py's log_zap_findings().
     try:
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
+                rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
+                location = f"{rel_path}:{item.get('line', 0)}"
+                description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
+
                 cur.execute("""
-                    INSERT INTO public.vulnerability_log
-                    (asset_id, cve_id, severity, description, status, scan_engine, detected_at)
-                    VALUES (%s, %s, %s, %s, 'OPEN', 'sast-native', NOW())
-                    ON CONFLICT DO NOTHING
-                """, (asset_id, item["cve_id"], item["severity"], item["description"]))
+                    SELECT id FROM public.vulnerability_log
+                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
+                """, (asset_id, item["cve_id"], location))
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute("""
+                        UPDATE public.vulnerability_log
+                        SET severity = %s, description = %s, detected_at = NOW(), status = 'OPEN'
+                        WHERE id = %s
+                    """, (item["severity"], description, existing[0]))
+                else:
+                    cur.execute("""
+                        INSERT INTO public.vulnerability_log
+                        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path)
+                        VALUES (%s, %s, %s, %s, 'OPEN', 'sast-native', NOW(), %s)
+                    """, (asset_id, item["cve_id"], item["severity"], description, location))
     except Exception as db_err:
         print(f"⚠️ [Master-Auditor] Could not log findings to DB: {db_err}")
 
