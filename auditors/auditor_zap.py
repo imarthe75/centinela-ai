@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 # ZAP Configuration
 ZAP_DOCKER_IMAGE = "zaproxy/zap-stable:latest"
 ZAP_CONTAINER_PREFIX = "zap-scan"
-ZAP_PORT = 8090
 ZAP_API_TIMEOUT = 30
 ZAP_SCAN_TIMEOUT = 900  # 15 minutes max per scan
 ZAP_DOCKER_NETWORK = "aura-network"
@@ -79,32 +78,74 @@ def generate_container_id():
     """Generate unique container ID for this scan."""
     return f"{ZAP_CONTAINER_PREFIX}-{int(time.time())}-{''.join(random.choices(string.ascii_lowercase, k=4))}"
 
-def launch_zap_container(container_id: str, db_cache_path: str = "/tmp/zap-cache") -> str:
+def launch_zap_container(container_id: str, db_cache_path: str = "/tmp/zap-cache") -> Tuple[str, int]:
     """
-    Launches an ephemeral ZAP container with persistent DB cache.
+    Launches an ephemeral ZAP container with persistent config/addon cache.
 
     Args:
         container_id: Unique identifier for this scan
-        db_cache_path: Host path to cached ZAP DB
+        db_cache_path: Host path to cached ZAP home dir (addons/plugins)
 
     Returns:
-        Container ID if successful
+        (container_id, zap_base_url) if successful — zap_base_url is the container's own
+        address on aura-network (http://<container_id>:8080), NOT a host port. This code runs
+        `docker run` through the mounted docker.sock, which makes ZAP a *sibling* container on
+        the host's Docker daemon, not a child of this one — a `-p host:container` mapping binds
+        on the real host's interfaces, which "localhost" from inside this container can never
+        reach. Since both containers share aura-network, addressing ZAP by its container name
+        (Docker's built-in per-network DNS) is what actually works.
 
     Raises:
         ZAPNotAvailableError: If container fails to start
     """
-    os.makedirs(db_cache_path, exist_ok=True)
+    # ZAP refuses to start a second instance against a home dir already in use ("The home
+    # directory is already in use") — it takes an exclusive lock there, so concurrent scans
+    # can't share one cache path the way the (still shared) nuclei/DB-style cache elsewhere in
+    # this codebase does. Each scan gets its own subdirectory instead: no lock collisions, at
+    # the cost of a full addon re-download per scan (ZAP's home dir isn't just add-on storage,
+    # it's session-scoped state) — a real tradeoff, not a bug, given this tool's design.
+    scan_home = os.path.join(db_cache_path, container_id)
+
+    # NOTE: os.makedirs(scan_home) here would create a directory inside *this* container's own
+    # filesystem, not on the real host — `docker run -v` below goes through the mounted
+    # docker.sock, so its bind-mount source is resolved by the host's dockerd against the real
+    # host filesystem (same docker-outside-of-docker gotcha as above). The host auto-creates a
+    # missing bind-mount source itself, owned by root, which the image's uid-1000 "zap" user
+    # then can't write to ("The home path is not writable") and crashes on. Fix ownership
+    # host-side via a disposable container before ever starting ZAP itself.
+    subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{scan_home}:/target", "busybox",
+         "chmod", "-R", "0777", "/target"],
+        capture_output=True, timeout=30
+    )
 
     cmd = [
-        "docker", "run",
+        "docker", "run", "-d",
         "--name", container_id,
         "--network", ZAP_DOCKER_NETWORK,
-        "-p", f"{ZAP_PORT}:8090",
-        "-v", f"{db_cache_path}:/root/.zap/db",
+        # The image runs as uid 1000 ("zap", $HOME=/home/zap), which is where it downloads its
+        # addons/plugins and stores config on every cold start (confirmed via container logs:
+        # /home/zap/.ZAP/plugin/*.zap) — /root/.zap/db was never on this image's write path at
+        # all, so nothing was ever actually cached and every launch re-downloaded everything.
+        "-v", f"{scan_home}:/home/zap/.ZAP",
+        "-u", "1000:1000",
         "-e", "ZAP_CONFIG_BETA=1",
         ZAP_DOCKER_IMAGE,
-        "zap.sh", "-config", "api.disablekey=true", "-daemon"
+        # -host 0.0.0.0: without this ZAP binds its API to 127.0.0.1 inside its own container —
+        # its Docker HEALTHCHECK (which curls localhost from inside) reports "healthy" while
+        # every other container on aura-network gets connection refused reaching it by name.
+        # api.addrs.addr.name/.regex: ZAP's API separately allowlists request origins by Host
+        # header regardless of api.disablekey — without this every request from another
+        # container (Host: <container-name>, not localhost) gets rejected as "not permitted"
+        # even once the network-level connection succeeds.
+        "zap.sh", "-config", "api.disablekey=true", "-host", "0.0.0.0",
+        "-config", "api.addrs.addr.name=.*", "-config", "api.addrs.addr.regex=true",
+        "-daemon"
     ]
+
+    # zaproxy/zap-stable listens on 8080 by default (the old owasp/zap2docker-stable image used
+    # 8090 — confirmed via container logs: "ZAP is now listening on localhost:8080").
+    zap_base_url = f"http://{container_id}:8080"
 
     print(f"🚀 [ZAP-Auditor] Launching container {container_id}...")
     try:
@@ -112,16 +153,23 @@ def launch_zap_container(container_id: str, db_cache_path: str = "/tmp/zap-cache
         if result.returncode != 0:
             raise ZAPNotAvailableError(f"Container launch failed: {result.stderr[:200]}")
 
-        # Wait for ZAP API to be ready
-        max_retries = 20
+        # Wait for ZAP API to be ready. ZAP is a JVM app — a cold start reliably takes well
+        # over the old 10s budget (20 retries * 0.5s), which is why every launch used to fail
+        # here even once the -d/networking issues above were fixed. 60 retries * 1s = 60s.
+        max_retries = 60
         for i in range(max_retries):
             try:
-                response = requests.get(f"http://localhost:{ZAP_PORT}/json/core/action/version", timeout=2)
+                # "version" is a read-only lookup — it's a "view" in ZAP's API, not an "action"
+                # (actions are for state-changing calls like starting a scan). The old path
+                # here always 400'd, so the readiness probe could never succeed even once ZAP
+                # was actually up, masking every other fix above behind a false "not ready".
+                response = requests.get(f"{zap_base_url}/json/core/view/version", timeout=2)
                 if response.status_code == 200:
                     print(f"✅ [ZAP-Auditor] ZAP API ready on {container_id}")
-                    return container_id
+                    return container_id, zap_base_url
             except:
-                time.sleep(0.5)
+                pass
+            time.sleep(1)
 
         raise ZAPNotAvailableError("ZAP API did not respond in time")
     except subprocess.TimeoutExpired:
@@ -167,13 +215,14 @@ def configure_zap_context(target_url: str, scan_profile: str = "balanced"):
         ]
     }
 
-def run_zap_spider(target_url: str, max_depth: int = 3) -> List[str]:
+def run_zap_spider(target_url: str, max_depth: int = 3, zap_base_url: str = None) -> List[str]:
     """
     Executes ZAP spider to discover URLs via crawling.
 
     Args:
         target_url: Target application URL
         max_depth: Maximum crawl depth
+        zap_base_url: This scan's ZAP container network address (http://<container>:8080)
 
     Returns:
         List of discovered URLs
@@ -188,7 +237,7 @@ def run_zap_spider(target_url: str, max_depth: int = 3) -> List[str]:
             "recurse": "true"
         }
         response = requests.get(
-            f"http://localhost:{ZAP_PORT}/json/spider/action/scan",
+            f"{zap_base_url}/json/spider/action/scan",
             params=params,
             timeout=ZAP_API_TIMEOUT
         )
@@ -203,7 +252,7 @@ def run_zap_spider(target_url: str, max_depth: int = 3) -> List[str]:
         start_time = time.time()
         while time.time() - start_time < max_wait:
             response = requests.get(
-                f"http://localhost:{ZAP_PORT}/json/spider/view/status",
+                f"{zap_base_url}/json/spider/view/status",
                 params={"scanId": spider_id},
                 timeout=ZAP_API_TIMEOUT
             )
@@ -217,7 +266,7 @@ def run_zap_spider(target_url: str, max_depth: int = 3) -> List[str]:
 
         # Retrieve discovered URLs
         response = requests.get(
-            f"http://localhost:{ZAP_PORT}/json/spider/view/results",
+            f"{zap_base_url}/json/spider/view/results",
             params={"scanId": spider_id},
             timeout=ZAP_API_TIMEOUT
         )
@@ -229,13 +278,14 @@ def run_zap_spider(target_url: str, max_depth: int = 3) -> List[str]:
         logger.error(f"Spider error: {e}")
         return []
 
-def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
+def run_zap_active_scan(target_url: str, context_config: Dict, zap_base_url: str = None) -> List[Dict]:
     """
     Executes ZAP active scanning with payloads.
 
     Args:
         target_url: Target application URL
         context_config: Scanning context configuration
+        zap_base_url: This scan's ZAP container network address (http://<container>:8080)
 
     Returns:
         List of vulnerability findings
@@ -243,9 +293,13 @@ def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
     print(f"🎯 [ZAP-Auditor] Starting active scan on {target_url} ({context_config['profile']})...")
 
     try:
-        # Configure scan policy
+        # scanPolicyName must name a policy that actually exists in ZAP ("Default Policy",
+        # "Pen Test", etc. — confirmed via /json/ascan/view/scanPolicyNames/); our own profile
+        # names ("light"/"balanced"/"aggressive"/"api" — see ZAPScanProfile) aren't ZAP policy
+        # names and every scan silently failed with "does_not_exist" trying to use one as if it
+        # were. Omitting the param lets ZAP use its own default policy; our profiles still
+        # control timeout/depth/rule-count via context_config elsewhere in this flow.
         params = {
-            "scanPolicyName": context_config["profile"],
             "url": target_url,
             "recurse": "true",
             "inScopeOnly": "false",
@@ -253,7 +307,7 @@ def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
         }
 
         response = requests.get(
-            f"http://localhost:{ZAP_PORT}/json/ascan/action/scan",
+            f"{zap_base_url}/json/ascan/action/scan",
             params=params,
             timeout=ZAP_API_TIMEOUT
         )
@@ -272,7 +326,7 @@ def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
 
         while time.time() - start_time < max_wait:
             response = requests.get(
-                f"http://localhost:{ZAP_PORT}/json/ascan/view/status",
+                f"{zap_base_url}/json/ascan/view/status",
                 params={"scanId": scan_id},
                 timeout=ZAP_API_TIMEOUT
             )
@@ -293,7 +347,7 @@ def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
             raise ZAPTimeoutError(f"Active scan exceeded {max_wait}s timeout")
 
         # Retrieve alerts/findings
-        findings = retrieve_zap_alerts(scan_id)
+        findings = retrieve_zap_alerts(scan_id, zap_base_url)
         print(f"✅ [ZAP-Auditor] Active scan complete. Found {len(findings)} vulnerabilities")
         return findings
 
@@ -303,19 +357,20 @@ def run_zap_active_scan(target_url: str, context_config: Dict) -> List[Dict]:
         logger.error(f"Active scan error: {e}")
         return []
 
-def retrieve_zap_alerts(scan_id: Optional[str] = None) -> List[Dict]:
+def retrieve_zap_alerts(scan_id: Optional[str] = None, zap_base_url: str = None) -> List[Dict]:
     """
     Retrieves vulnerability alerts from ZAP.
 
     Args:
         scan_id: Specific scan ID (None = all alerts)
+        zap_base_url: This scan's ZAP container network address (http://<container>:8080)
 
     Returns:
         List of vulnerability finding dicts
     """
     try:
         response = requests.get(
-            f"http://localhost:{ZAP_PORT}/json/core/view/alerts",
+            f"{zap_base_url}/json/core/view/alerts",
             params={"baseurl": "", "start": 0, "count": 1000},
             timeout=ZAP_API_TIMEOUT
         )
@@ -326,7 +381,13 @@ def retrieve_zap_alerts(scan_id: Optional[str] = None) -> List[Dict]:
         findings = []
         for alert in alerts:
             finding = {
-                "code": alert.get("pluginid", "ZAP-UNKNOWN"),
+                # ZAP's REST API returns "pluginId" (camelCase) — a lowercase "pluginid" lookup
+                # always misses, so every finding fell back to the same default and every ZAP
+                # vulnerability was logged with the identical generic cve_id "ZAP-ZAP-UNKNOWN"
+                # (see log_zap_findings' own "ZAP-" prefix below — hence the doubled "ZAP-ZAP-").
+                # Confirmed via 180 real logged findings: cweid/wascid (correctly cased) always
+                # populated, pluginid never did.
+                "code": alert.get("pluginId", alert.get("pluginid", "UNKNOWN")),
                 "name": alert.get("alert", "Unknown Vulnerability"),
                 "description": alert.get("description", ""),
                 "severity": normalize_zap_severity(alert.get("riskcode", 1)),
@@ -441,17 +502,18 @@ def run_zap_scan(target_url: str, asset_id: int, scan_profile: str = "balanced",
     container_id = generate_container_id()
 
     try:
-        # Launch ephemeral container
-        launch_zap_container(container_id, db_cache_path)
+        # Launch ephemeral container, addressed by its own container name on aura-network so
+        # concurrent scans can't collide the way a shared/fixed host port did
+        container_id, zap_base_url = launch_zap_container(container_id, db_cache_path)
 
         # Configure context
         context = configure_zap_context(target_url, scan_profile)
 
         # Run spider first
-        urls = run_zap_spider(target_url, context["max_depth"])
+        urls = run_zap_spider(target_url, context["max_depth"], zap_base_url)
 
         # Run active scan
-        findings = run_zap_active_scan(target_url, context)
+        findings = run_zap_active_scan(target_url, context, zap_base_url)
 
         # Log findings
         if findings:
@@ -471,8 +533,14 @@ def run_zap_scan(target_url: str, asset_id: int, scan_profile: str = "balanced",
         logger.error(f"Unexpected ZAP error: {e}")
         raise
     finally:
-        # Always cleanup container
+        # Always cleanup container and its per-scan home dir (see launch_zap_container — each
+        # scan gets its own directory now, so nothing else will ever reuse this one)
         stop_zap_container(container_id)
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{db_cache_path}:/target", "busybox",
+             "rm", "-rf", f"/target/{container_id}"],
+            capture_output=True, timeout=30
+        )
 
 if __name__ == "__main__":
     # Test scan
