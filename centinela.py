@@ -170,19 +170,54 @@ def get_valkey_connection():
 # server-wide HTTP header findings -- covers every ZAP header finding actually seen in
 # production. Unmatched ZAP finding types fall through to an honest "no deterministic rule for
 # this one" message instead of a fake generic script.
+# Each entry: (needle to match in the finding's description, nginx directive that fixes it,
+# short real risk name, short real business-impact description). The name/risk are used to
+# build genuinely differentiated executive_summary/impacto_negocio text -- previously that text
+# was a single generic template regardless of which of these branches actually ran.
 ZAP_HEADER_FIXES = [
-    ("x-content-type-options", 'add_header X-Content-Type-Options "nosniff" always;'),
-    ("strict-transport-security", 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'),
-    ("x-frame-options", 'add_header X-Frame-Options "SAMEORIGIN" always;'),
-    ("anti-clickjacking", 'add_header X-Frame-Options "SAMEORIGIN" always;'),
-    ("content security policy", 'add_header Content-Security-Policy "default-src \'self\'" always;'),
-    ("csp header not set", 'add_header Content-Security-Policy "default-src \'self\'" always;'),
-    ("x-powered-by", 'proxy_hide_header X-Powered-By;'),
-    ('"server" http response header', 'server_tokens off;'),
-    ("cache-control", 'add_header Cache-Control "no-store, max-age=0" always;'),
-    ("permissions-policy", 'add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;'),
-    ("referrer-policy", 'add_header Referrer-Policy "strict-origin-when-cross-origin" always;'),
+    ("x-content-type-options", 'add_header X-Content-Type-Options "nosniff" always;',
+     "Cabecera X-Content-Type-Options ausente",
+     "El navegador puede interpretar (MIME-sniff) una respuesta como un tipo de contenido distinto al declarado, habilitando ataques de XSS vía archivos disfrazados."),
+    ("strict-transport-security", 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;',
+     "Cabecera HSTS (Strict-Transport-Security) ausente",
+     "Sin HSTS, un atacante en la misma red puede forzar un downgrade a HTTP y interceptar tráfico (ataque de tipo SSL stripping)."),
+    ("x-frame-options", 'add_header X-Frame-Options "SAMEORIGIN" always;',
+     "Cabecera X-Frame-Options ausente (clickjacking)",
+     "El sitio puede ser embebido en un iframe de un dominio malicioso, permitiendo ataques de clickjacking sobre usuarios autenticados."),
+    ("anti-clickjacking", 'add_header X-Frame-Options "SAMEORIGIN" always;',
+     "Falta protección anti-clickjacking",
+     "El sitio puede ser embebido en un iframe de un dominio malicioso, permitiendo ataques de clickjacking sobre usuarios autenticados."),
+    ("content security policy", 'add_header Content-Security-Policy "default-src \'self\'" always;',
+     "Content-Security-Policy ausente",
+     "Sin CSP, el navegador no tiene una segunda barrera contra XSS -- un script inyectado se ejecuta sin restricción de origen."),
+    ("csp header not set", 'add_header Content-Security-Policy "default-src \'self\'" always;',
+     "Content-Security-Policy ausente",
+     "Sin CSP, el navegador no tiene una segunda barrera contra XSS -- un script inyectado se ejecuta sin restricción de origen."),
+    ("x-powered-by", 'proxy_hide_header X-Powered-By;',
+     "Fuga de información vía cabecera X-Powered-By",
+     "Revela el framework/tecnología backend exacta, facilitando a un atacante buscar CVEs específicos de esa versión."),
+    ('"server" http response header', 'server_tokens off;',
+     "Fuga de versión de servidor vía cabecera Server",
+     "Revela la versión exacta del servidor web, facilitando a un atacante buscar CVEs específicos de esa versión."),
+    ("cache-control", 'add_header Cache-Control "no-store, max-age=0" always;',
+     "Directivas Cache-Control insuficientes",
+     "Contenido potencialmente sensible puede quedar cacheado en proxies intermedios o en el navegador de un usuario compartido."),
+    ("permissions-policy", 'add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;',
+     "Cabecera Permissions-Policy ausente",
+     "El sitio no restringe explícitamente el acceso a APIs sensibles del navegador (cámara, micrófono, geolocalización) si un script es comprometido."),
+    ("referrer-policy", 'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
+     "Cabecera Referrer-Policy ausente",
+     "URLs internas (potencialmente con tokens o rutas sensibles) pueden filtrarse al sitio de destino vía el header Referer en enlaces salientes."),
 ]
+
+
+def match_zap_header_entry(vuln):
+    """Returns the matched (needle, directive, name, risk) tuple for this ZAP finding, or None."""
+    desc = str(vuln.get('description', '')).lower()
+    for entry in ZAP_HEADER_FIXES:
+        if entry[0] in desc:
+            return entry
+    return None
 
 
 def generate_zap_header_fix(vuln):
@@ -200,7 +235,7 @@ def generate_zap_header_fix(vuln):
     """
     desc = str(vuln.get('description', '')).lower()
     directive = None
-    for needle, fix in ZAP_HEADER_FIXES:
+    for needle, fix, _name, _risk in ZAP_HEADER_FIXES:
         if needle in desc:
             directive = fix
             break
@@ -428,6 +463,98 @@ def heuristic_can_automate(vuln):
     return True
 
 
+def generate_heuristic_analysis(vuln):
+    """
+    Real, category-specific risk/impact/action text for the heuristic (no-LLM) fallback path.
+    Mirrors generate_heuristic_script's own branches -- previously this text was a single
+    generic template ("Exposición de Seguridad - {cve}" / "Riesgo potencial de reconocimiento
+    de infraestructura...") used for every single finding regardless of which branch actually
+    ran, even after the scripts themselves were made real and category-specific. Returns
+    (riesgo_detectado, impacto_negocio, accion_remediacion).
+    """
+    cve = str(vuln.get('cve_id', 'SECURITY-FINDING'))
+    cve_u = cve.upper()
+    asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
+    atype = str(vuln.get('asset_type', '')).upper()
+    ep = str(vuln.get('endpoint', '0.0.0.0'))
+    desc = str(vuln.get('description', '')).lower()
+    location = str(vuln.get('url_path', '')) or 'ver descripción'
+
+    if cve_u.startswith('ZAP-'):
+        entry = match_zap_header_entry(vuln)
+        if entry:
+            _needle, directive, name, risk = entry
+            return (
+                name,
+                risk,
+                f"Se agrega la directiva nginx `{directive}` de forma idempotente en {asset} ({ep}) "
+                f"(detectando nginx a nivel de sistema o en un contenedor reverse-proxy), se valida "
+                f"con `nginx -t`, se recarga, y se verifica la cabecera en una respuesta real."
+            )
+        return (
+            f"Hallazgo DAST sin regla determinística: {cve}",
+            "Sin una regla de remediación conocida para este tipo de hallazgo, el riesgo real no puede confirmarse automáticamente.",
+            "No existe una corrección automatizable para este hallazgo específico -- revisar la descripción técnica y aplicar manualmente."
+        )
+
+    if cve_u in ('SCAN-AUDIT',) or any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido')):
+        return (
+            "Sin hallazgo técnico (mensaje informativo de escaneo)",
+            "Ninguno -- esta entrada documenta el resultado de un escaneo, no una vulnerabilidad.",
+            "No aplica ninguna acción; el escaneo no encontró problemas o fue omitido por falta de datos del agente."
+        )
+    if cve_u == 'HEURISTIC-SECURITY-DEBT':
+        return (
+            "Deuda de seguridad acumulada (hallazgo agregado)",
+            f"Resume múltiples hallazgos individuales ya reportados por separado sobre {asset}; no es en sí mismo un vector de ataque explotable.",
+            "Resolver los hallazgos individuales listados en la evidencia -- esta entrada se cierra sola cuando ya no hay hallazgos abiertos que agregar."
+        )
+
+    if atype == 'GITLAB-REPO':
+        if cve_u in ('DOCKER-MISSING-NON-ROOT-USER', 'DOCKER-ROOT-USER'):
+            return (
+                "Contenedor configurado para ejecutar como root",
+                "Si el contenedor es comprometido (ej. vía una dependencia vulnerable), el atacante obtiene privilegios de root dentro de él, ampliando el impacto de cualquier escape de contenedor.",
+                f"Sentinel abre un Merge Request agregando/corrigiendo la directiva `USER` no-root en el Dockerfile ({location}) al aprobar este hallazgo."
+            )
+        if cve_u.startswith('SCA-CVE-'):
+            return (
+                "Dependencia con CVE conocido",
+                "El paquete instalado tiene una vulnerabilidad pública documentada que puede ser explotada sin necesidad de descubrir un 0-day.",
+                f"Sentinel abre un Merge Request actualizando la dependencia a la versión segura conocida ({location}) al aprobar este hallazgo."
+            )
+        return (
+            f"Hallazgo de código fuente: {cve}",
+            f"Riesgo específico del tipo de hallazgo -- ver evidencia técnica en {location} para el detalle exacto.",
+            "Hallazgo de repositorio sin parche automático soportado todavía -- revisar el código en la ubicación indicada y corregir manualmente, o esperar a que la IA genere un parche cuando haya cupo de API disponible."
+        )
+
+    if 'DOCKER' in cve_u or 'CONTAINER' in cve_u or 'NON-ROOT' in cve_u or 'non-root' in desc:
+        return (
+            "Contenedor(es) ejecutando procesos como root",
+            "Si un contenedor comprometido corre como root, un escape de contenedor otorga control root directo del host.",
+            f"Se audita cada contenedor en ejecución en {ep} buscando procesos root y se provisiona un usuario de servicio restringido para futura remediación manual del Dockerfile/compose."
+        )
+    if 'SSH' in cve_u or 'ROOT-LOGIN' in cve_u or 'AUTH' in cve_u:
+        return (
+            "Acceso root habilitado por SSH",
+            "Permite ataques de fuerza bruta o diccionario directamente contra la cuenta con más privilegios del sistema.",
+            f"Se deshabilita `PermitRootLogin` y `PasswordAuthentication` en sshd_config de {ep} y se recarga el servicio SSH."
+        )
+    if 'PORT' in cve_u or 'OPEN' in cve_u or 'EXPOSED' in cve_u or 'NET' in cve_u:
+        return (
+            "Puertos de red expuestos sin restricción de firewall",
+            f"Amplía la superficie de ataque de red de {asset} -- cualquier servicio en un puerto abierto es alcanzable por quien tenga red hacia el host.",
+            f"Se aplica una política de firewall (UFW/iptables) en {ep} permitiendo solo el tráfico esencial (22/80/443)."
+        )
+
+    return (
+        f"Hallazgo de seguridad sin regla de remediación específica: {cve}",
+        f"Impacto no clasificado automáticamente para este tipo de hallazgo en {asset} -- ver evidencia técnica.",
+        f"No hay una regla de hardening determinística para {cve}; se registra el hallazgo y se verifica el estado del Agente Wazuh en {ep}, pero no se aplica ningún cambio de configuración."
+    )
+
+
 def correlate_vulnerability(vuln):
     """
     Use AI to correlate vulnerability data and suggest remediation.
@@ -551,17 +678,14 @@ def correlate_vulnerability(vuln):
             
             script_code = generate_heuristic_script(vuln)
             can_automate = heuristic_can_automate(vuln)
+            riesgo, impacto, accion = generate_heuristic_analysis(vuln)
 
             content = json.dumps({
-                "riesgo_detectado": f"Exposición de Seguridad - {cve}",
+                "riesgo_detectado": riesgo,
                 "nivel_severidad": sev,
                 "evidencia_tecnica": f"Hallazgo reportado en {ep} ({atype}). {vuln.get('description', 'Parámetros o puertos no endurecidos.')}",
-                "impacto_negocio": f"Riesgo potencial de reconocimiento de infraestructura o vector de acceso no autorizado en {asset}.",
-                "accion_remediacion": (
-                    f"1. Aplicar reglas de hardening específicas e inhabilitar componentes no seguros en {ep}.\n2. Realizar hardening de servicios y habilitar monitoreo continuo con Agente Wazuh."
-                    if can_automate else
-                    "Este hallazgo no tiene una corrección determinística automatizable -- ver el script/descripción para la acción manual específica requerida."
-                ),
+                "impacto_negocio": impacto,
+                "accion_remediacion": accion,
                 "remediation_script": script_code,
                 "can_automate": can_automate
             })
