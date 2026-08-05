@@ -110,7 +110,10 @@ def try_init_provider(p):
         elif p == "nvidia_nim" and ChatOpenAI is not None:
             api_key = get_secret("NVIDIA_NIM_API_KEY")
             base_url = get_secret("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-            use_model = model_name
+            # AI_MODEL is typically a Groq-style name (e.g. "llama-3.3-70b-versatile") that
+            # doesn't exist on NVIDIA's catalog and 404s at invoke time — use a separate,
+            # NVIDIA-specific model id, same pattern as AI_MODEL_GOOGLE for google_genai.
+            use_model = get_secret("AI_MODEL_NVIDIA", "meta/llama-3.1-70b-instruct")
             if api_key:
                 # ChatOpenAI may call chat/completions; NVIDIA integrate may expect different endpoints.
                 # We still initialize ChatOpenAI but prefer Google GenAI when available.
@@ -134,9 +137,15 @@ def try_init_provider(p):
         print(f"⚠️ [Centinela-AI] Provider {p} init failed: {e}")
     return False
 
-# Determine provider order
+# Determine provider order. The explicitly configured AI_PROVIDER always goes first —
+# AI_PROVIDER_ORDER is only the fallback sequence if that one fails to initialize or
+# isn't set. Previously AI_PROVIDER_ORDER's hardcoded default put nvidia_nim first
+# regardless of AI_PROVIDER, so setting AI_PROVIDER=groq never actually tried Groq.
 order_str = get_secret("AI_PROVIDER_ORDER", "nvidia_nim,openrouter,google_genai,groq,ollama")
 providers_order = [x.strip().lower() for x in order_str.split(",") if x.strip()]
+if provider in providers_order:
+    providers_order.remove(provider)
+providers_order.insert(0, provider)
 
 initialized = False
 for p in providers_order:
@@ -295,6 +304,14 @@ def correlate_vulnerability(vuln):
                 content = response.text.strip()
             except Exception as ge:
                 print(f"⚠️ [Centinela-AI] GenAI call failed: {ge}")
+
+        if not content and llm:
+            try:
+                print(f"🧠 [Centinela-AI] Using LLM provider '{provider}' for {vuln['cve_id']} on {vuln['asset_name']}...")
+                response = llm.invoke(prompt_text)
+                content = (response.content if hasattr(response, "content") else str(response)).strip()
+            except Exception as le:
+                print(f"⚠️ [Centinela-AI] LLM ('{provider}') call failed: {le}")
 
         if not content:
             # Fallback deterministic Security Engine Generator
