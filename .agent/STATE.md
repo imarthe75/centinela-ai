@@ -3,6 +3,20 @@
 ## 📅 Fecha: 4 de Agosto, 2026
 
 ## 🎯 Hitos Recientes (2026-08-04)
+- **Los reportes/scripts de remediación IA volvieron a ser detallados y específicos**, no
+  genéricos. Causa raíz: `correlate_vulnerability()` en `centinela.py` solo intentaba
+  `genai_client` (Google, fallando) y caía directo a la plantilla determinística — nunca
+  llamaba a `llm` (el proveedor real, `nvidia_nim`/`groq`, inicializado correctamente en el
+  arranque). Dos bugs de fondo: (1) el orden de proveedores ignoraba `AI_PROVIDER=groq` del
+  `.env`, siempre probaba `nvidia_nim` primero por el default hardcodeado de
+  `AI_PROVIDER_ORDER`; (2) `nvidia_nim` reusaba `AI_MODEL` (un nombre estilo Groq,
+  `llama-3.3-70b-versatile`) que no existe en el catálogo de NVIDIA → 404 en cada llamada. Se
+  agregó `AI_MODEL_NVIDIA` y se movió el proveedor configurado al frente del orden. Verificado
+  en vivo: un escaneo limpio en `prism` ahora genera `can_automate=false` y un resumen
+  ejecutivo real de "sin hallazgos críticos", en vez de la plantilla genérica de firewall que
+  aparecía antes sin importar el tipo de hallazgo (hasta en repos de GitLab). **Pendiente
+  menor**: cuando el LLM no devuelve JSON estricto, el parser de respaldo por regex a veces
+  produce contenido pobre porque sus patrones no matchean el formato de prosa real de Groq.
 - **El stack productivo vive en `10.4.3.34`**, no en `10.4.3.208`. Se encontró y eliminó por completo
   una segunda copia huérfana de Centinela-AI que llevaba 4 días corriendo en `10.4.3.208`
   (`/opt/ecosistema-casmarts/centinela-ai`), conectada a la misma base compartida `centinela_db` y

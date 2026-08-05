@@ -108,6 +108,23 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
 
 ## Known open issues (as of 2026-08-04, updated same day)
 
+- ~~AI remediation reports/scripts were generic instead of detailed~~ — **resolved same day**:
+  `correlate_vulnerability()` in `centinela.py` only ever tried `genai_client` (Google, failing)
+  and fell straight to the deterministic template — it never called `llm`, even though a
+  provider (`nvidia_nim`) was successfully initialized at startup. Root cause was two bugs in
+  provider selection: `AI_PROVIDER_ORDER`'s hardcoded default always tried `nvidia_nim` first
+  regardless of `AI_PROVIDER=groq` in `.env`, and `nvidia_nim` reused `AI_MODEL` (a Groq-style
+  name, `llama-3.3-70b-versatile`) that doesn't exist in NVIDIA's catalog, so it 404'd on every
+  call. Fixed both, and added a real `llm.invoke()` middle tier before the template fallback.
+  Verified live: findings now get genuinely differentiated output (e.g. a clean scan on `prism`
+  correctly gets `can_automate=false` and a real summary, not the same firewall-hardening
+  boilerplate every finding used to get regardless of type — that boilerplate had even been
+  showing up on GitLab SAST findings, which makes no sense for a code repo).
+- **When the LLM doesn't return strict JSON**, the existing prose-fallback regex parser in
+  `correlate_vulnerability()` (`extract_section()`) sometimes produces thin/generic content
+  because its label patterns (`**Riesgo detectado**`, etc.) don't match Groq's actual prose
+  formatting in every case. Not fixed — would need inspecting real non-JSON Groq responses to
+  tune the regexes, or tightening the prompt further to force JSON compliance.
 - ~~Vault is sealed~~ — **resolved same day**: the user recovered/rotated the root token after a
   Vault re-init (`ROOT_TOKEN` in `core-casmarts/vault/vault-init-keys.txt` on 10.4.3.208) and
   updated `.env`. `Secrets Backend (Vault)` now reports Online and `client.is_authenticated()`
