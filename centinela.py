@@ -164,6 +164,143 @@ else:
 def get_valkey_connection():
     return redis.Redis(**VALKEY_CONFIG)
 
+# Maps a substring found in a ZAP finding's own "Type:" text (already present in every ZAP
+# description regardless of whether cve_id resolved to a real pluginId) to the real nginx
+# directive that fixes it. These are the standard, well-known fixes for these specific,
+# server-wide HTTP header findings -- covers every ZAP header finding actually seen in
+# production. Unmatched ZAP finding types fall through to an honest "no deterministic rule for
+# this one" message instead of a fake generic script.
+ZAP_HEADER_FIXES = [
+    ("x-content-type-options", 'add_header X-Content-Type-Options "nosniff" always;'),
+    ("strict-transport-security", 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'),
+    ("x-frame-options", 'add_header X-Frame-Options "SAMEORIGIN" always;'),
+    ("anti-clickjacking", 'add_header X-Frame-Options "SAMEORIGIN" always;'),
+    ("content security policy", 'add_header Content-Security-Policy "default-src \'self\'" always;'),
+    ("csp header not set", 'add_header Content-Security-Policy "default-src \'self\'" always;'),
+    ("x-powered-by", 'proxy_hide_header X-Powered-By;'),
+    ('"server" http response header', 'server_tokens off;'),
+    ("cache-control", 'add_header Cache-Control "no-store, max-age=0" always;'),
+    ("permissions-policy", 'add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;'),
+    ("referrer-policy", 'add_header Referrer-Policy "strict-origin-when-cross-origin" always;'),
+]
+
+
+def generate_zap_header_fix(vuln):
+    """
+    Builds a real, idempotent nginx security-header remediation script for the standard
+    server-wide ZAP header findings. Returns None if this specific finding's type doesn't
+    match a known directive (caller should fall back to an honest "manual review" message
+    rather than a fake generic script).
+
+    The script is designed to be run by Sentinel via Ansible against the real target host:
+    it detects nginx, writes the missing directive into a dedicated, idempotent snippet file
+    (so it never touches/risks breaking existing vhost configs), validates with `nginx -t`
+    before reloading, and verifies the header is actually present in a live response
+    afterwards -- so a failure is reported as a failure, not silently swallowed.
+    """
+    desc = str(vuln.get('description', '')).lower()
+    directive = None
+    for needle, fix in ZAP_HEADER_FIXES:
+        if needle in desc:
+            directive = fix
+            break
+    if not directive:
+        return None
+
+    asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
+    ep = str(vuln.get('endpoint', '0.0.0.0'))
+    cve = str(vuln.get('cve_id', 'ZAP-FINDING'))
+    # Best-effort target host for the live verification curl -- endpoint may be a bare IP
+    # (asset inventory) rather than the specific URL that was flagged.
+    verify_host = ep if ep.startswith("http") else f"https://{ep}"
+
+    return f"""#!/bin/bash
+# Script de Remediación Automática - Centinela AI
+# Host: {asset} ({ep})
+# Vulnerabilidad / Regla: {cve}
+set -e
+echo '🔒 Aplicando cabecera de seguridad HTTP faltante en {asset} ({ep})...'
+
+SNIPPET_REL=/etc/nginx/conf.d/99-centinela-security-headers.conf
+DIRECTIVE='{directive}'
+NGINX_CONTAINER=""
+
+verify() {{
+    echo '✅ Verificando que la cabecera esté presente en una respuesta real...'
+    sleep 1
+    curl -sk -D - -o /dev/null "{verify_host}" | grep -qi "$(echo "$DIRECTIVE" | cut -d' ' -f2)" \\
+        && echo '✅ Verificación exitosa: la cabecera ahora está presente.' \\
+        || echo '⚠️ No se pudo confirmar la cabecera en la respuesta -- revisar manualmente (puede que otro vhost/proxy distinto esté sirviendo esta URL específica).'
+}}
+
+if command -v nginx >/dev/null 2>&1; then
+    echo 'ℹ️ nginx detectado directamente en el host.'
+    sudo mkdir -p /etc/nginx/conf.d
+    sudo touch "$SNIPPET_REL"
+    if sudo grep -qF "$DIRECTIVE" "$SNIPPET_REL" 2>/dev/null; then
+        echo "ℹ️ La directiva ya estaba presente (idempotente, nada que hacer)."
+    else
+        echo "$DIRECTIVE" | sudo tee -a "$SNIPPET_REL" > /dev/null
+        echo "✏️ Directiva agregada a $SNIPPET_REL"
+    fi
+    sudo nginx -t
+    sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
+    verify
+    exit 0
+fi
+
+# nginx no está instalado en el host -- muy común en despliegues dockerizados, donde el
+# reverse-proxy real corre como contenedor (confirmado en producción: casmart_authentik no
+# tiene nginx a nivel de sistema, pero sí un contenedor nginx:alpine haciendo de gateway).
+if command -v docker >/dev/null 2>&1; then
+    NGINX_CONTAINER=$(sudo docker ps --format '{{{{.Names}}}} {{{{.Image}}}}' 2>/dev/null | grep -i nginx | head -1 | awk '{{print $1}}')
+    if [ -n "$NGINX_CONTAINER" ]; then
+        echo "ℹ️ nginx no está en el host, pero se encontró el contenedor '$NGINX_CONTAINER' corriendo esa imagen."
+
+        if sudo docker exec "$NGINX_CONTAINER" sh -c "touch $SNIPPET_REL" 2>/dev/null; then
+            # conf.d is writable inside the container.
+            if sudo docker exec "$NGINX_CONTAINER" grep -qF "$DIRECTIVE" "$SNIPPET_REL" 2>/dev/null; then
+                echo "ℹ️ La directiva ya estaba presente (idempotente, nada que hacer)."
+            else
+                sudo docker exec -i "$NGINX_CONTAINER" sh -c "echo '$DIRECTIVE' >> $SNIPPET_REL"
+                echo "✏️ Directiva agregada a $SNIPPET_REL dentro del contenedor."
+            fi
+        else
+            # conf.d is bind-mounted read-only inside the container (common, deliberate
+            # hardening) -- confirmed in production on casmart_authentik's gateway. Find the
+            # real host-side source path via `docker inspect` and write there instead; the
+            # container can still see it (bind mounts share the same inode), we just can't
+            # write to it from inside.
+            echo "ℹ️ $SNIPPET_REL es de solo lectura dentro del contenedor -- buscando la ruta real en el host..."
+            HOST_CONFD=$(sudo docker inspect "$NGINX_CONTAINER" --format '{{{{range .Mounts}}}}{{{{if eq .Destination "/etc/nginx/conf.d"}}}}{{{{.Source}}}}{{{{end}}}}{{{{end}}}}')
+            if [ -z "$HOST_CONFD" ]; then
+                echo "⚠️ No se pudo determinar la ruta real de /etc/nginx/conf.d en el host. Acción manual requerida: agregar '$DIRECTIVE' a la configuración de $NGINX_CONTAINER."
+                exit 1
+            fi
+            HOST_SNIPPET="$HOST_CONFD/99-centinela-security-headers.conf"
+            sudo touch "$HOST_SNIPPET"
+            if sudo grep -qF "$DIRECTIVE" "$HOST_SNIPPET" 2>/dev/null; then
+                echo "ℹ️ La directiva ya estaba presente en $HOST_SNIPPET (idempotente, nada que hacer)."
+            else
+                echo "$DIRECTIVE" | sudo tee -a "$HOST_SNIPPET" > /dev/null
+                echo "✏️ Directiva agregada a $HOST_SNIPPET (ruta real en el host, visible dentro del contenedor vía bind mount)."
+            fi
+        fi
+
+        echo '🔍 Validando configuración de nginx...'
+        sudo docker exec "$NGINX_CONTAINER" nginx -t
+        echo '🔄 Recargando nginx...'
+        sudo docker exec "$NGINX_CONTAINER" nginx -s reload
+        verify
+        exit 0
+    fi
+fi
+
+echo "⚠️ No se encontró nginx en el host ni en un contenedor Docker. Acción manual requerida: agregar la directiva '$DIRECTIVE' en la configuración del reverse proxy o del servidor de aplicaciones correspondiente."
+exit 1
+"""
+
+
 def generate_heuristic_script(vuln):
     cve = str(vuln.get('cve_id', 'SECURITY-FINDING')).upper()
     asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
@@ -172,6 +309,26 @@ def generate_heuristic_script(vuln):
     desc = str(vuln.get('description', '')).lower()
 
     header = f"#!/bin/bash\n# Script de Remediación Automática - Centinela AI\n# Host: {asset} ({ep})\n# Vulnerabilidad / Regla: {cve}\nset -e\necho '🔒 Ejecutando hardening y remediación de seguridad en {asset} ({ep})...'\n"
+
+    if cve.startswith('ZAP-'):
+        zap_fix = generate_zap_header_fix(vuln)
+        if zap_fix:
+            return zap_fix
+        return (
+            f"#!/bin/bash\n# Centinela AI -- {cve} en {asset} ({ep})\n"
+            f"echo 'ℹ️ No existe una regla de remediación determinística para este tipo de hallazgo ZAP.'\n"
+            f"echo 'Acción manual requerida. Revisar la descripción del hallazgo para el detalle técnico exacto.'\n"
+            f"exit 1\n"
+        )
+
+    if cve in ('SCAN-AUDIT',) or cve == 'HEURISTIC-SECURITY-DEBT' or \
+       any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido', 'accumulation of', 'acumulación de')):
+        return (
+            f"#!/bin/bash\n# Centinela AI -- {cve} en {asset} ({ep})\n"
+            f"echo 'ℹ️ Este hallazgo es informativo (no es una vulnerabilidad técnica específica) y no requiere ni admite una acción de remediación automática.'\n"
+            f"echo 'Si es HEURISTIC-SECURITY-DEBT: resuelve los hallazgos individuales listados en la evidencia -- esta entrada es solo un resumen agregado.'\n"
+            f"exit 0\n"
+        )
 
     if 'DOCKER' in cve or 'CONTAINER' in cve or 'NON-ROOT' in cve or 'non-root' in desc:
         body = f"""# Remediar DOCKER-MISSING-NON-ROOT-USER / Hardening de Usuarios en Contenedores
@@ -204,19 +361,24 @@ else
     echo 'ℹ️ /etc/ssh/sshd_config no encontrado.'
 fi
 """
-    elif 'GITLAB' in cve or 'PIPELINE' in cve or 'CODE-INJECTION' in cve:
-        body = f"""# Remediar inyección / hardening de repositorios GitLab
-echo '🛠️ Auditando y asegurando repositorio {asset}...'
-if [ -d .git ]; then
-    chmod -R go-w .git 2>/dev/null || true
-fi
-if [ -f /etc/gitlab/gitlab.rb ]; then
-    sed -i "s/^\(gitlab_rails\['gitlab_https'\]\s*=\s*\).*/\\1true/" /etc/gitlab/gitlab.rb
-    gitlab-ctl reconfigure 2>/dev/null || true
-fi
-echo '✅ Hardening de proyecto GitLab completado.'
+    elif atype == 'GITLAB-REPO':
+        # This is a source-code finding (from sast-native/sca-native/standards-audit scanning
+        # a cloned repo) -- there is no live host for a bash "hardening" script to SSH into,
+        # which is what the old GITLAB/PIPELINE/CODE-INJECTION branch below did (chmod .git
+        # permissions, edit /etc/gitlab/gitlab.rb) regardless of what the actual finding was.
+        # The real fix is a code change in the repo itself. Sentinel's GitLab-Repo execution
+        # path (remediate_gitlab_repo in sentinel.py) handles the actually-automatable cases
+        # (DOCKER-MISSING-NON-ROOT-USER/DOCKER-ROOT-USER, SCA-CVE-*) deterministically by
+        # cloning the repo, applying the fix, and opening a Merge Request -- this script is
+        # just the human-readable record of that, since script_path is what the UI displays.
+        location = str(vuln.get('url_path', '')) or 'ver descripción'
+        body = f"""# {cve} es un hallazgo de código fuente en el repositorio {asset}, no de infraestructura.
+echo 'ℹ️ Ubicación exacta: {location}'
+echo 'ℹ️ No hay un host remoto que "endurecer" -- la corrección real es un cambio de código en el repositorio.'
+echo 'Si esta regla tiene parche automático soportado (Dockerfile USER, versión de dependencia), Sentinel abrirá un Merge Request al aprobar.'
+echo 'Si no, aplica manualmente el cambio indicado en la descripción del hallazgo en {location} y aprueba luego para marcarlo resuelto.'
 """
-    elif 'PORT' in cve or 'OPEN' in cve or 'EXPOSED' in cve or 'NET' in cve or 'SCAN-AUDIT' in cve:
+    elif 'PORT' in cve or 'OPEN' in cve or 'EXPOSED' in cve or 'NET' in cve:
         body = f"""# Remediar exposición de puertos en {ep}
 if command -v ufw >/dev/null 2>&1; then
     echo '🛡️ Aplicando perfil de firewall UFW...'
@@ -244,6 +406,28 @@ echo '✅ Verificación y hardening de {cve} finalizado.'
     return header + body + footer
 
 
+def heuristic_can_automate(vuln):
+    """
+    Whether the heuristic fallback script actually performs a real fix vs. only reporting/
+    guiding. Kept in sync with generate_heuristic_script's own branches so can_automate in the
+    DB reflects reality instead of being hardcoded True regardless of what happened.
+    """
+    cve = str(vuln.get('cve_id', '')).upper()
+    atype = str(vuln.get('asset_type', '')).upper()
+    desc = str(vuln.get('description', '')).lower()
+
+    if cve.startswith('ZAP-'):
+        return generate_zap_header_fix(vuln) is not None
+    if cve in ('SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT') or any(
+        p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido')
+    ):
+        return False
+    if atype == 'GITLAB-REPO':
+        # Only the deterministic patch categories Sentinel's GitLab pipeline actually handles.
+        return cve in ('DOCKER-MISSING-NON-ROOT-USER', 'DOCKER-ROOT-USER') or cve.startswith('SCA-CVE-')
+    return True
+
+
 def correlate_vulnerability(vuln):
     """
     Use AI to correlate vulnerability data and suggest remediation.
@@ -252,10 +436,53 @@ def correlate_vulnerability(vuln):
         return None
         
     print(f"🤖 [Centinela-AI] Senior Audit analysis for {vuln['cve_id']} on {vuln['asset_name']}...")
-    
-    prompt_text = f"""
-        Actúa como el Auditor Senior de Ciberseguridad de CASMARTS, experto en infraestructura crítica, 
-        entornos Linux, seguridad en la nube y servidores de aplicaciones / middleware (WildFly, Tomcat, Nginx, JBoss). 
+
+    is_repo_finding = str(vuln.get('asset_type', '')).upper() == 'GITLAB-REPO'
+
+    if is_repo_finding:
+        # A bash "remediation_script" makes no sense here -- there's no live host to SSH into
+        # and run hardening commands against; the file it needs to fix is inside the repo this
+        # finding came from. Ask for a real unified diff instead, which Sentinel's GitLab
+        # auto-fixer (remediation/gitlab_autofix.py) applies with `git apply` and pushes as a
+        # Merge Request -- the same mechanism used for the deterministic Docker/SCA patches.
+        prompt_text = f"""
+        Actúa como un Ingeniero Senior de AppSec de CASMARTS revisando un hallazgo de análisis
+        estático de código (SAST/SCA) en un repositorio real.
+
+        HALLAZGO A CORREGIR:
+        - Regla: {vuln['cve_id']}
+        - Repositorio: {vuln['asset_name']}
+        - Ubicación (archivo:línea): {vuln.get('url_path', 'desconocida')}
+        - Severidad: {vuln['severity']}
+        - Detalle (incluye el fragmento de código real detectado): {vuln.get('description', 'Sin descripción')}
+
+        REGLAS:
+        1. Propón el cambio de código MÍNIMO y CORRECTO que soluciona específicamente este hallazgo
+           en la línea/archivo indicados -- no reescribas el archivo completo ni refactorices nada
+           no relacionado.
+        2. El campo 'fix_patch' DEBE ser un diff unificado válido (formato `git diff`, aplicable
+           con `git apply`), con encabezados `--- a/<ruta>` / `+++ b/<ruta>` usando la ruta relativa
+           exacta de 'Ubicación'.
+        3. Si el fragmento de código disponible es insuficiente para generar un parche seguro y
+           correcto (por ejemplo, no se conoce el contexto completo de la función), NO inventes
+           un parche: deja 'fix_patch' vacío y pon can_automate en false.
+        4. INTEGRIDAD: no inventes rutas de archivo ni asumas frameworks no mencionados en el hallazgo.
+
+        FORMATO DE SALIDA (JSON ESTRICTO):
+        {{
+            "riesgo_detectado": "Nombre técnico de la vulnerabilidad",
+            "nivel_severidad": "Bajo/Medio/Alto/Crítico",
+            "evidencia_tecnica": "Extracto del código afectado",
+            "impacto_negocio": "Descripción del riesgo para la operación de CASMARTS",
+            "accion_remediacion": "Qué cambia el parche, en una frase, para un desarrollador que va a revisar el Merge Request",
+            "fix_patch": "Diff unificado real, o cadena vacía si no es seguro generar uno",
+            "can_automate": true/false
+        }}
+        """
+    else:
+        prompt_text = f"""
+        Actúa como el Auditor Senior de Ciberseguridad de CASMARTS, experto en infraestructura crítica,
+        entornos Linux, seguridad en la nube y servidores de aplicaciones / middleware (WildFly, Tomcat, Nginx, JBoss).
         Tu objetivo es realizar un análisis exhaustivo de la vulnerabilidad detectada.
 
         VULNERABILIDAD A ANALIZAR:
@@ -323,15 +550,20 @@ def correlate_vulnerability(vuln):
             sev = vuln.get('severity', 'Medium')
             
             script_code = generate_heuristic_script(vuln)
-            
+            can_automate = heuristic_can_automate(vuln)
+
             content = json.dumps({
                 "riesgo_detectado": f"Exposición de Seguridad - {cve}",
                 "nivel_severidad": sev,
                 "evidencia_tecnica": f"Hallazgo reportado en {ep} ({atype}). {vuln.get('description', 'Parámetros o puertos no endurecidos.')}",
                 "impacto_negocio": f"Riesgo potencial de reconocimiento de infraestructura o vector de acceso no autorizado en {asset}.",
-                "accion_remediacion": f"1. Aplicar reglas de hardening específicas e inhabilitar componentes no seguros en {ep}.\n2. Realizar hardening de servicios y habilitar monitoreo continuo con Agente Wazuh.",
+                "accion_remediacion": (
+                    f"1. Aplicar reglas de hardening específicas e inhabilitar componentes no seguros en {ep}.\n2. Realizar hardening de servicios y habilitar monitoreo continuo con Agente Wazuh."
+                    if can_automate else
+                    "Este hallazgo no tiene una corrección determinística automatizable -- ver el script/descripción para la acción manual específica requerida."
+                ),
                 "remediation_script": script_code,
-                "can_automate": True
+                "can_automate": can_automate
             })
         
         import re
@@ -373,9 +605,11 @@ def correlate_vulnerability(vuln):
                             default='Sin pasos de remediación disponibles.')
             script   = pick(analysis, 'remediation_script', 'script', 'bash_script',
                             default='# Sin script de remediación')
+            fix_patch = pick(analysis, 'fix_patch', 'patch', 'diff', default='')
+            can_automate_raw = analysis.get('can_automate') if isinstance(analysis, dict) else None
 
-            if not riesgo and script == '# Sin script de remediación':
-                print("⚠️ [Centinela-AI] AI response has no valid risk or remediation script.")
+            if not riesgo and script == '# Sin script de remediación' and not fix_patch:
+                print("⚠️ [Centinela-AI] AI response has no valid risk, script, or patch.")
                 return None
 
         except json.JSONDecodeError:
@@ -401,6 +635,9 @@ def correlate_vulnerability(vuln):
             # Extract bash script from code fences
             script_m  = re.search(r'```(?:bash|sh)?\s*(.*?)```', raw, re.DOTALL)
             script    = script_m.group(1).strip() if script_m else '# Sin script de remediación'
+            diff_m    = re.search(r'```(?:diff|patch)?\s*(---\s*a/.*?)```', raw, re.DOTALL)
+            fix_patch = diff_m.group(1).strip() if diff_m else ''
+            can_automate_raw = None
 
             print(f"⚠️ [Centinela-AI] Parsed prose response (non-JSON) successfully.")
 
@@ -415,12 +652,25 @@ def correlate_vulnerability(vuln):
         exec_summary = '\n\n'.join(exec_parts) if exec_parts else \
             'Análisis de IA completado. Revise los detalles técnicos.'
 
+        # Respect what the LLM actually said about automatability rather than discarding it --
+        # but never claim True if we ended up with neither a real script nor a real patch, and
+        # for GitLab-Repo findings only trust a "true" if a patch was actually produced (a bash
+        # remediation_script alone can't be applied to a repo finding).
+        has_real_output = bool(fix_patch.strip()) or (script and script != '# Sin script de remediación')
+        if is_repo_finding:
+            can_automate = bool(fix_patch.strip())
+        elif can_automate_raw is not None:
+            can_automate = bool(can_automate_raw) and has_real_output
+        else:
+            can_automate = has_real_output
+
         return {
             "executive_summary": exec_summary,
             "business_impact": impacto if impacto and impacto != 'Sin análisis de impacto disponible.' else f"Riesgo evaluado para la infraestructura {vuln.get('asset_name')}. Se recomienda aislar el puerto o aplicar parches de seguridad.",
             "developer_steps": pasos if pasos and pasos != 'Sin pasos de remediación disponibles.' else f"1. Verificar la configuración del servicio en {vuln.get('endpoint')}.\n2. Aplicar parches de actualización y cerrar servicios no autorizados.",
             "remediation_script": script,
-            "can_automate": False
+            "fix_patch": fix_patch,
+            "can_automate": can_automate
         }
 
     except Exception as e:
@@ -718,23 +968,38 @@ def main_loop():
                         if analysis:
                             script_path = f"/app/data/remediation/{vuln['cve_id']}_{vuln['id']}.sh"
                             os.makedirs(os.path.dirname(script_path), exist_ok=True)
-                            remediation_content = analysis.get('remediation_script', '# No script provided')
-                            
+                            fix_patch = analysis.get('fix_patch', '') or ''
+
+                            if fix_patch.strip():
+                                # GitLab-Repo finding with a real AI-generated diff: record it as
+                                # the human-readable artifact too, but the actual application
+                                # happens via `git apply` in remediation/gitlab_autofix.py, not
+                                # by executing this file as a shell script.
+                                remediation_content = (
+                                    f"# Parche generado por IA para {vuln['cve_id']} -- aplicado automáticamente\n"
+                                    f"# vía Merge Request por Sentinel (remediation/gitlab_autofix.py), no ejecutado como script.\n\n"
+                                    f"{fix_patch}"
+                                )
+                            else:
+                                remediation_content = analysis.get('remediation_script', '# No script provided')
+
                             with open(script_path, "w") as f:
                                 f.write(str(remediation_content))
-                            
+
                             with db_manager.get_db_cursor() as write_cur:
                                 write_cur.execute("""
-                                    UPDATE vulnerability_log 
-                                    SET status = 'CORRELATED', 
+                                    UPDATE vulnerability_log
+                                    SET status = 'CORRELATED',
                                         executive_summary = %s,
                                         business_impact = %s,
-                                        developer_steps = %s
+                                        developer_steps = %s,
+                                        fix_patch = %s
                                     WHERE id = %s
                                 """, (
                                     analysis.get('executive_summary', 'No summary available'),
                                     analysis.get('business_impact', 'No impact analysis available'),
                                     analysis.get('developer_steps', 'No steps provided'),
+                                    fix_patch if fix_patch.strip() else None,
                                     vuln['id']
                                 ))
                                 
