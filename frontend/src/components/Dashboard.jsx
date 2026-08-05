@@ -567,6 +567,18 @@ export default function Dashboard() {
     )
   }
 
+  const handleSelectAsset = (assetName) => {
+    setShowReportModal(false)
+    setShowInvestigateModal(false)
+    setShowScriptModal(false)
+    setShowManualModal(false)
+    setShowVaultModal(false)
+    setSelectedRemediation(null)
+    setInvestigationData(null)
+    setAssetFilter(assetName)
+    setCurrentView('soar')
+  }
+
   const filteredAlerts = Array.isArray(alerts) ? alerts.filter(a => {
     const matchSeverity = severityFilter ? a.priority === severityFilter : true;
     const matchAsset = assetFilter ? a.asset_name === assetFilter : true;
@@ -574,7 +586,13 @@ export default function Dashboard() {
   }) : [];
 
   const filteredRemediations = Array.isArray(remediationLog) ? remediationLog.filter(r => {
-    const matchAsset = assetFilter ? r.asset_name?.toLowerCase().trim() === assetFilter.toLowerCase().trim() : true;
+    const targetAsset = assetFilter ? assetFilter.toLowerCase().trim() : '';
+    const logAsset = r.asset_name ? r.asset_name.toLowerCase().trim() : '';
+    const matchAsset = assetFilter ? (
+      logAsset === targetAsset ||
+      logAsset.includes(targetAsset) ||
+      targetAsset.includes(logAsset)
+    ) : true;
     const matchSeverity = soarSeverityFilter && soarSeverityFilter !== 'ALL' ? r.severity === soarSeverityFilter : true;
     const matchStatus = soarStatusFilter && soarStatusFilter !== 'ALL' ? (
       soarStatusFilter === 'REMEDIADO' ? r.executed_bool === true :
@@ -1494,6 +1512,24 @@ export default function Dashboard() {
                         <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Gestión consolidada de infraestructura y endpoints</p>
                     </div>
                     <div className="flex flex-wrap gap-3">
+                        {/* Filtro por Tipo de Activo */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all">
+                            <Filter size={14} className="text-[#06B6D4]" />
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Tipo:</span>
+                            <select 
+                                value={inventoryTypeFilter}
+                                onChange={(e) => setInventoryTypeFilter(e.target.value)}
+                                className="bg-transparent border-none text-[10px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-2"
+                            >
+                                <option value="" className="bg-[#0F172A] text-slate-300">TODOS LOS TIPOS</option>
+                                {Array.from(new Set(inventory.map(i => i.asset_type).filter(Boolean))).sort().map(type => (
+                                    <option key={type} value={type} className="bg-[#0F172A] text-[#06B6D4]">
+                                        {type}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
                         <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all">
                             <Search size={16} className="text-slate-500" />
                             <input 
@@ -1637,7 +1673,7 @@ export default function Dashboard() {
 
                                 <div className="space-y-2 mb-6">
                                     {group.interfaces.map((inf, i) => (
-                                        <div key={i} className="flex items-center justify-between text-[10px] bg-slate-800/30 p-2 rounded-xl border border-white/5 group/inf hover:bg-[#06B6D4]/10 transition-all cursor-pointer" onClick={() => { setAssetFilter(inf.asset_name); setCurrentView('soar'); }}>
+                                        <div key={i} className="flex items-center justify-between text-[10px] bg-slate-800/30 p-2 rounded-xl border border-white/5 group/inf hover:bg-[#06B6D4]/10 transition-all cursor-pointer" onClick={() => handleSelectAsset(inf.asset_name)}>
                                             <div className="flex items-center gap-2">
                                                 <div className="w-1.5 h-1.5 rounded-full bg-[#06B6D4]" />
                                                 <span className="text-slate-400 font-bold uppercase tracking-tighter">{inf.asset_type}</span>
@@ -1650,7 +1686,7 @@ export default function Dashboard() {
 
                                 <div className="flex gap-2">
                                     <button 
-                                        onClick={() => { setAssetFilter(group.name); setCurrentView('soar'); }}
+                                        onClick={() => handleSelectAsset(group.name)}
                                         className="flex-1 py-3 bg-slate-800 hover:bg-[#06B6D4] text-slate-400 hover:text-[#0F172A] font-black uppercase text-[9px] tracking-[0.2em] rounded-xl transition-all flex items-center justify-center gap-2"
                                     >
                                         Ver Análisis Completo
