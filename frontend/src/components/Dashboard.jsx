@@ -1225,12 +1225,30 @@ export default function Dashboard() {
                                                              log.executed_bool ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
                                                         </div>
                                                         <div>
-                                                            <p className="text-white font-bold text-sm">
-                                                                {log.cve_id === 'SCAN-AUDIT' ? 'Auditoría de Activo' : log.cve_id}
-                                                            </p>
-                                                            <p className="text-[9px] text-slate-500 font-bold truncate max-w-[150px]">
-                                                                {log.cve_id === 'SCAN-AUDIT' ? 'Resultado de escaneo pasivo' : log.script_path || 'Análisis SOAR'}
-                                                            </p>
+                                                            <div className="flex items-center gap-2">
+                                                                <p className="text-white font-bold text-sm">
+                                                                    {log.cve_id === 'SCAN-AUDIT' ? 'Auditoría de Activo' : log.cve_id}
+                                                                </p>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 mt-1">
+                                                                <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                                                                    CRS {log.risk_score ? log.risk_score : '—'}
+                                                                </span>
+                                                                {log.is_cisa_kev && (
+                                                                    <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
+                                                                        🚨 CISA KEV
+                                                                    </span>
+                                                                )}
+                                                                {log.is_sla_breached ? (
+                                                                    <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
+                                                                        SLA VENCIDO
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                                                                        SLA OK
+                                                                    </span>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </td>
