@@ -109,8 +109,11 @@ Cada motor cubre una capa distinta de la superficie de ataque. La columna `scan_
 | **SQLmap** | — | Web | Inyección SQL activa |
 | **ffuf / Kiterunner** | `ffuf` / `kiterunner` | APIs | Rutas y endpoints ocultos vía fuzzing |
 | **SpiderFoot** | `spiderfoot` | OSINT | Subdominios, WHOIS, huella digital de tecnología |
-| **BloodHound / Neo4j** | `bloodhound` | Active Directory | Rutas de escalamiento de privilegios hacia Domain Admins — motor real y verificado, en espera de datos reales de un dominio AD (ver detalle abajo) |
+| **BloodHound / Neo4j** | `bloodhound` | Active Directory | Rutas de escalamiento de privilegios hacia Domain Admins |
 | **CIS Benchmarks (propio)** | `cis-benchmark` | Hardening de SO | Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH, bajo demanda por activo |
+
+> [!NOTE]
+> **Grafo de rutas de ataque AD — activo pero latente por diseño.** La consulta Cypher (ruta más corta de cualquier usuario a Domain Admins) es real y funciona contra **cualquier** dominio — antes estaba fijada al nombre ficticio `INTERNAL.LOCAL`, un bug real que habría hecho que nunca encontrara nada ni con datos reales cargados; corregido y verificado contra un grafo Neo4j sintético desechable. El grafo en sí no tiene datos de Active Directory todavía (requiere ejecutar SharpHound/AzureHound contra el dominio real, con credenciales que no están disponibles en este entorno). Se mantiene corriendo cada 10 minutos contra el grafo vacío — sin costo real — en vez de desactivarse, para que el día que haya un dominio real solo haga falta importar los datos, no re-verificar el código.
 
 ---
 

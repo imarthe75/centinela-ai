@@ -385,6 +385,7 @@
       <li><a href="#cumplimiento">Cumplimiento normativo</a></li>
       <li><a href="#omni-xdr">Visión Omni-XDR 2.0</a></li>
       <li><a href="#otros">Otros componentes</a></li>
+      <li><a href="#salud">Salud del ecosistema y reportes</a></li>
     </ol>
   </nav>
 
@@ -473,11 +474,12 @@
             <tr><td>TruffleHog</td><td>—</td><td>Secretos</td><td>Credenciales y llaves filtradas en el historial de Git</td></tr>
             <tr><td>Prowler</td><td><code>prowler</code></td><td>Nube (CSPM)</td><td>Configuración insegura en AWS/GCP/Azure</td></tr>
             <tr><td>Checkov</td><td>—</td><td>Infraestructura como código</td><td>Terraform, Kubernetes, Helm charts</td></tr>
-            <tr><td>Medusa</td><td>—</td><td>IA/agentes</td><td>Prompt injection y patrones inseguros específicos de aplicaciones con LLM</td></tr>
+            <tr><td>Medusa (<code>medusa-security</code>)</td><td><code>medusa</code></td><td>SAST asistido por IA</td><td>~45 analizadores propios más una sub-ejecución de <code>trivy fs</code> (vulnerabilidades, secretos, misconfiguraciones), orientado a patrones inseguros en aplicaciones con componentes GenAI. No es el Medusa clásico de fuerza bruta de contraseñas — son dos herramientas distintas que comparten nombre.</td></tr>
             <tr><td>SQLmap</td><td>—</td><td>Web</td><td>Inyección SQL activa</td></tr>
             <tr><td>ffuf / Kiterunner</td><td><code>ffuf</code> / <code>kiterunner</code></td><td>APIs</td><td>Rutas y endpoints ocultos vía fuzzing</td></tr>
-            <tr><td>SpiderFoot</td><td>—</td><td>OSINT</td><td>Subdominios, WHOIS, huella digital de tecnología</td></tr>
-            <tr><td>BloodHound / Neo4j</td><td>—</td><td>Active Directory</td><td>Rutas de escalamiento de privilegios en el dominio</td></tr>
+            <tr><td>SpiderFoot</td><td><code>spiderfoot</code></td><td>OSINT</td><td>Subdominios, WHOIS, huella digital de tecnología</td></tr>
+            <tr><td>BloodHound / Neo4j</td><td><code>bloodhound</code></td><td>Active Directory</td><td>Rutas de escalamiento de privilegios en el dominio — motor real, en espera de datos reales (ver Omni-XDR más abajo)</td></tr>
+            <tr><td>CIS Benchmarks (propio)</td><td><code>cis-benchmark</code></td><td>Hardening de SO</td><td>Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH, bajo demanda por activo</td></tr>
           </tbody>
         </table>
       </div>
@@ -556,6 +558,9 @@
 
       <h3>Motor de respaldo (sin IA disponible)</h3>
       <p>Si ningún proveedor responde (cuota agotada, sin conexión), Centinela no deja el hallazgo sin analizar: un motor heurístico determinístico genera texto y — cuando es un caso conocido y seguro — un script real específico por categoría (hardening SSH, cabeceras nginx para ZAP, USER no-root en Dockerfile, etc.). Cuando no hay una regla determinística para ese caso, lo indica honestamente en vez de simular una corrección.</p>
+
+      <h3>Validación de respuestas de IA de baja calidad</h3>
+      <p>Un LLM que sí responde no garantiza una respuesta útil: se detectaron casos reales donde el modelo devolvía texto de relleno en <code>remediation_script</code> (p. ej. <code>"... (script proporcionado)"</code>) en vez de un script real, y ese texto se guardaba tal cual — en algunos casos incluso marcado como automatizable. Centinela ahora valida el contenido antes de aceptarlo: si es solo una elipsis con una nota de relleno, o es demasiado corto para ser un script real, se descarta y se usa el motor heurístico determinístico en su lugar, igual que si la IA nunca hubiera respondido.</p>
     </section>
 
     <section id="soar">
@@ -573,7 +578,8 @@
     </section>
 
     <section id="wazuh">
-      <h2>Wazuh EDR</h2>
+      <h2>Wazuh EDR y Zeek NDR</h2>
+      <h3>Wazuh Manager (EDR)</h3>
       <p>Wazuh Manager corre como servicio propio del stack, con tres puertos publicados en este despliegue:</p>
       <div class="table-wrap">
         <table>
@@ -586,6 +592,9 @@
         </table>
       </div>
       <p class="dim">Wazuh define otros puertos en su arquitectura general (514 syslog, 9200 indexer, 5601 dashboard) que no están desplegados en este entorno — este stack corre solo el Manager, sin Indexer ni Dashboard propios de Wazuh.</p>
+
+      <h3>Zeek (NDR)</h3>
+      <p>Zeek observa el tráfico de red en vivo y escribe dos tipos de log distintos: <code>notice.log</code> (solo eventos que la política interna de Zeek considera dignos de nota — vacío en este despliegue, porque el tráfico normal no dispara ninguna) y <code>conn.log</code> (registro continuo de cada conexión, siempre activo). Centinela procesa <code>conn.log</code> en tiempo real: cruza la IP de origen y destino de cada conexión contra el feed de inteligencia de amenazas (ver Omni-XDR), y — para que la salud del sistema refleje actividad real y no solo "algo malo en las últimas 24h" — emite un latido honesto cada 5 minutos con el número real de conexiones observadas.</p>
     </section>
 
     <section id="cumplimiento">
@@ -658,8 +667,8 @@
             </tr>
             <tr>
               <td><b>Grafo de rutas de ataque (Active Directory)</b></td>
-              <td><span class="chip info">🚧 Bloqueado</span></td>
-              <td>La consulta de análisis de rutas de escalamiento a Domain Admins es real y correcta, pero no hay datos reales de Active Directory cargados en el grafo todavía — requiere ejecutar una herramienta de recolección (SharpHound) contra el dominio real, un paso que necesita acceso y credenciales del dominio que no están disponibles en este momento.</td>
+              <td><span class="chip info">🕒 Latente (por diseño)</span></td>
+              <td>La consulta de rutas de escalamiento hacia Domain Admins es real y ahora coincide con <b>cualquier</b> dominio (antes estaba fijada al nombre de dominio ficticio <code>INTERNAL.LOCAL</code>, un error real que habría hecho que nunca encontrara nada incluso con datos reales cargados — corregido y verificado contra un grafo Neo4j sintético desechable). El grafo no tiene datos reales de Active Directory todavía — requiere ejecutar una herramienta de recolección (SharpHound/AzureHound) contra el dominio real, con credenciales de dominio que no están disponibles en este momento. Se mantiene activo en segundo plano (una consulta cada 10 minutos contra un grafo vacío, sin costo real) en vez de desactivarse, para que el día que exista un dominio AD real no haga falta re-verificar nada: solo importar los datos.</td>
             </tr>
           </tbody>
         </table>
@@ -670,8 +679,17 @@
       <h2>Otros componentes</h2>
       <ul>
         <li><b>HashiCorp Vault</b> — único lugar donde viven las credenciales de Ansible (llaves SSH, contraseñas sudo) por activo. Nunca se guardan en la base de datos ni en el código.</li>
-        <li><b>Neo4j / BloodHound</b> — modela el dominio de Active Directory como grafo para encontrar rutas de escalamiento hacia cuentas privilegiadas.</li>
-        <li><b>Zeek</b> — sensor de red que observa tráfico en vivo, complementario a los escaneos activos.</li>
+        <li><b>Neo4j / BloodHound</b> — modela el dominio de Active Directory como grafo para encontrar rutas de escalamiento hacia cuentas privilegiadas (ver detalle en Wazuh/Zeek y en Omni-XDR).</li>
+      </ul>
+    </section>
+
+    <section id="salud">
+      <h2>Salud del ecosistema y reportes</h2>
+      <p>El dashboard tiene una vista de "Salud del Ecosistema" (<code>GET /api/health</code>) que reporta el estado real de cada motor y servicio — no valores fijos. Para los bucles que corren en segundo plano (feed CTI, revalidación de EPSS/KEV, latido de Zeek), el estado se infiere de evidencia real reciente en la base de datos, no de si el módulo simplemente se pudo importar. Para capacidades que solo se ejecutan bajo demanda (CIS Benchmarks, contención de emergencia), se reporta honestamente como <i>"Disponible (bajo demanda, aún sin ejecutar)"</i> en vez de un falso "Online" antes de haberse usado — ese estado se muestra en color ámbar en el dashboard, no en rojo como una falla real ni en verde como si ya hubiera corrido.</p>
+      <p>Dos reportes PDF están disponibles desde el dashboard:</p>
+      <ul>
+        <li><b>Reporte Ejecutivo</b> (<code>/api/reports/executive</code>) — nivel de riesgo global calculado a partir del Centinela Risk Score real (no solo un conteo de severidades), conteo de hallazgos con CISA KEV confirmado, incumplimientos de SLA, y las 5 técnicas MITRE ATT&CK más frecuentes.</li>
+        <li><b>Reporte de Cobertura</b> (<code>/api/reports/coverage</code>) — para cada activo, qué motores corrieron y con qué resultado (aprobado, con hallazgos, o sin analizar todavía).</li>
       </ul>
     </section>
 
