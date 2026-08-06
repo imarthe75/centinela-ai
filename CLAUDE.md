@@ -97,19 +97,54 @@ kept current here as each piece is actually built/changed, not aspirationally.
    were both genuinely off. Fixed by always emitting an unambiguous `RESULT:ACTIVE`/
    `RESULT:INACTIVE` ourselves rather than trusting the tool's own raw stdout; the real grade on
    that host dropped from a falsely-inflated C (54.5%) to an honest F (36.4%).
-7. **Neo4j Attack Path Graphing** — **⚠️ code is real, but has no real data to run against**.
+7. **Neo4j Attack Path Graphing** — **⚠️ code is real and kept warm, but has no real data to run
+   against yet (deliberate — decided 2026-08-06, see below)**.
    `process_bloodhound_paths()` in `centinela.py` runs a real, standard BloodHound Cypher query
-   (shortest path from any non-admin user to Domain Admins) — this part was already correct.
-   But the Neo4j graph has zero `:User`/`:Group` nodes (confirmed live: `MATCH (u:User) RETURN
-   count(u)` returns 0) because nothing in this codebase ever imports real AD collector output
-   (SharpHound/AzureHound) into it — the query has in all likelihood never once found real data
-   to analyze. That ingestion step needs to run against the actual CASMARTS AD domain with
-   domain credentials, which is outside what this environment (Ansible/SSH to already-known
-   hosts) has access to — flagged as blocked on infrastructure access, not attempted. Also fixed
-   two real bugs found alongside this: the insert used the same no-op `ON CONFLICT DO NOTHING`
-   as other tables (replaced with the shared dedup logger), and asset attribution used to fall
-   back to an arbitrary `SERVER`-type asset when no asset was literally named "Active
-   Directory", misattributing a real attack-path finding to an unrelated host.
+   (shortest path from any non-admin user to Domain Admins) every 10 minutes. The Neo4j graph
+   has zero `:User`/`:Group` nodes today (confirmed live: `MATCH (u:User) RETURN count(u)`
+   returns 0) because nothing in this codebase ever imports real AD collector output
+   (SharpHound/AzureHound) into it — the loop correctly detects this (`user_count == 0`) and
+   skips the query rather than silently running against an empty graph. This is a real,
+   fail-safe idle state, not a masked failure. Also fixed two real bugs found alongside this:
+   the insert used the same no-op `ON CONFLICT DO NOTHING` as other tables (replaced with the
+   shared dedup logger), and asset attribution used to fall back to an arbitrary `SERVER`-type
+   asset when no asset was literally named "Active Directory", misattributing a real attack-path
+   finding to an unrelated host.
+   **A third real bug found and fixed 2026-08-06**: the Cypher query itself was hardcoded to
+   `g.name = 'DOMAIN ADMINS@INTERNAL.LOCAL'` — BloodHound suffixes every node name with the
+   real AD domain's actual FQDN, so this would only ever have matched a domain literally named
+   `INTERNAL.LOCAL`, silently finding nothing against CASMARTS' real domain (whatever it turns
+   out to be) even after real data is imported. Confirmed live against a disposable synthetic
+   Neo4j dataset (`DOMAIN ADMINS@TESTDOMAIN.LOCAL`): the old hardcoded query returned zero rows,
+   a `WHERE g.name STARTS WITH 'DOMAIN ADMINS@'` version correctly found the path. Fixed to
+   match by prefix so it works against whatever domain gets imported later with no code change
+   needed; test nodes cleaned up afterward.
+   **Decision (2026-08-06): keep this wired and dormant rather than disable it.** It costs
+   nothing while idle (one query every 10 minutes against an empty graph, already confirmed to
+   skip cleanly), and privilege-escalation path analysis is a real, high-value question for an
+   AD environment the moment one exists to point it at — commenting it out would just mean
+   re-verifying all of this again later. Revisit only if a real AD domain is confirmed to be
+   permanently out of scope for CASMARTS.
+   **Import recipe for when a real AD domain becomes available** (not yet run against real
+   data — this environment has no domain credentials or domain-joined host to collect from):
+   1. Collect from a domain-joined Windows host (or any host with valid domain creds) using
+      SharpHound (on-prem AD) or AzureHound (Entra ID/Azure AD) with `-CollectionMethod All` —
+      produces a timestamped `<domain>_bloodhound.zip` of JSON files (users, groups, computers,
+      ous, domains, gpos, containers).
+   2. This stack has no BloodHound GUI, only raw `centinela-neo4j` — import the zip directly via
+      Bolt with the community `bloodhound-import` CLI (`pip install bloodhound-import`), no GUI
+      needed:
+      `bloodhound-import --username neo4j --password <NEO4J_PASSWORD> --uri bolt://<host running centinela-neo4j>:7687 <path-to-zip-or-extracted-json>`
+      (`NEO4J_PASSWORD` / `NEO4J_URI` are already the env vars `centinela-ai`/`centinela-backend`
+      read — see the per-container env var gotcha below.)
+   3. Verify the import landed: `MATCH (u:User) RETURN count(u)` should return a real non-zero
+      count — this is the exact same query `process_bloodhound_paths()` already runs to decide
+      whether to skip, so a successful import is immediately picked up on its next 10-minute
+      cycle with no restart needed.
+   4. Register the AD domain itself as an asset in `infra_inventory` (`asset_name` containing
+      "active directory" or `asset_type` containing "domain") — required for a found attack path
+      to be attributed to a real asset instead of being logged with a warning and dropped (see
+      the asset-attribution bug fixed above).
 8. **CTI/IoC feed ingestion** — **✅ real**. `core/cti_feed.py` queries abuse.ch's Feodo
    Tracker (free, public, no auth) for currently-active C2 server IPs, cached hourly.
    `run_cti_correlation_loop()` in `centinela.py` cross-references two real sources: registered
@@ -243,6 +278,57 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
    moved, not just check the moved file's own new location works.
 
 ## Known open issues (as of 2026-08-04, updated 2026-08-06)
+
+- ~~Some AI-generated ZAP remediation scripts contained no real content~~ — **resolved
+  2026-08-06**, in response to a real user report ("para algunos zap no estaba generando
+  scripts de remediación"). Confirmed by reading the actual script files on disk: some
+  contained the raw internal placeholder default `# Sin script de remediación`, others
+  contained literal LLM laziness like `#!/bin/bash ... (script proporcionado)` or
+  `... (contenido del script)` — the LLM described providing a script instead of actually
+  writing one, and nothing validated the output before writing it to `script_path` and, in
+  some cases, marking `can_automate=true` (the SOAR UI would have offered to auto-execute a
+  file with no real commands in it). Root cause: `correlate_vulnerability()`'s `pick()` helper
+  only checked for emptiness/null-like strings, not whether the content was actually usable.
+  Fixed by adding `is_placeholder_text()` (rejects content that, after stripping a shebang, is
+  just an ellipsis with an optional placeholder parenthetical, or under 15 chars) and falling
+  through to the same deterministic heuristic generator used when the LLM never responds at
+  all, instead of accepting garbage. Confirmed live: 19/1806 script files on disk matched this
+  pattern (not ZAP-only — also hit `CODE-INJECTION-EVAL`, `SCA-CVE-*`, `STD-ISO25010-*`,
+  `DOCKER-MISSING-NON-ROOT-USER`, `HEURISTIC-SECURITY-DEBT`), plus a separate, related issue:
+  207 `scan_engine='zap'` rows were still showing the old generic `"Exposición de Seguridad -
+  <cve_id>"` risk name from before an earlier `generate_heuristic_analysis()` fix, never
+  backfilled because `correlate_vulnerability()` only ever processes `PENDING`/`NEW`/
+  `AI_FAILED`/`AI_ERROR` rows and permanently skips anything already `CORRELATED`. Both sets
+  (226 rows total) were reprocessed with a one-time backfill script through the now-fixed
+  logic — 226/226 succeeded (0 failed), verified live: all 4 originally-inspected broken script
+  files now contain either real remediation commands or an honest "no deterministic rule
+  available for this finding type" message, and both the placeholder-script and stale-template
+  DB queries now return 0 rows. (Backfill ran mostly against Groq's exhausted daily token quota
+  — expected and already documented elsewhere in this file — so most rows landed on the honest
+  heuristic engine rather than a fresh LLM analysis; that's correct behavior, not a shortcut.)
+- ~~`/api/health` and the PDF reports didn't reflect anything built this session~~ — **resolved
+  2026-08-06**, in response to a direct user request to verify dashboard/report completeness.
+  `/api/health`'s `services` list (the array the frontend's "Salud del Ecosistema" view actually
+  renders — a separate `scan_modules` dict existed in the same response but nothing in the
+  frontend ever read it) had no entry at all for Risk Intel (EPSS/KEV), CTI feed, MITRE ATT&CK
+  mapping, CIS Benchmarks, GitLab Auto-Fix, or Host Containment — every capability added earlier
+  this session was invisible in the UI. Added real, evidence-based checks for each (DB evidence
+  of recent activity for the background loops — e.g. CTI feed liveness is inferred from the Zeek
+  conn-log heartbeat rather than requiring an actual C2 match, since "no malicious traffic seen"
+  is the hoped-for-normal state, not a health signal; on-demand-only capabilities like CIS
+  Benchmarks honestly report "Available (On-Demand, Not Yet Run)" instead of a fake "Online"
+  before ever being exercised). The frontend's status-dot logic previously only recognized
+  exactly `'Online'`/`'Active'` as green and treated everything else — including these new
+  honest "available but idle" strings — as the same red as a genuine outage, and separately
+  always rendered the status *text* in green regardless of the dot color (a pre-existing,
+  unrelated inconsistency). Added a three-tier `healthStatusTier()` (ok/warn/fail) so idle
+  on-demand capabilities render amber, not a false red alarm next to real failures, and made the
+  text color match the dot. The executive PDF report (`/api/reports/executive`) previously
+  computed its own crude `"ALTO" if critical>0 else...` risk bucket instead of using the real
+  Centinela Risk Score already computed by every finding — replaced with a bucket driven by the
+  real max CRS and CISA KEV-exploited count, and added real KPI cards (CISA KEV count, SLA
+  breaches, max CRS, CTI/IoC matches) plus a top-5 MITRE ATT&CK techniques table, all from live
+  queries verified against the real PDF output (`pdftotext`), not mocked data.
 
 - ~~`/api/health` showed Wazuh Manager "Unreachable" and Zeek "No Recent Data" despite both
   being genuinely healthy~~ — **resolved 2026-08-06**. Two unrelated causes:

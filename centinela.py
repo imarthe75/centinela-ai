@@ -853,6 +853,27 @@ def correlate_vulnerability(vuln):
                     return str(v).strip()
             return default
 
+        # Some LLM responses pass `pick()`'s non-empty check but are lazy/truncated
+        # placeholders instead of real content -- confirmed live on real production data,
+        # e.g. remediation_script literally containing "... (script proporcionado)" or
+        # "... (contenido del script)". pick() only checks for emptiness/null-like strings,
+        # so this garbage was silently accepted as a real script and written to disk,
+        # sometimes even with can_automate=true (the SOAR UI would offer to auto-execute
+        # a file with no real commands in it). Reject anything that, after stripping a
+        # leading shebang, is just an ellipsis (optionally with a placeholder parenthetical)
+        # or otherwise too short to plausibly be real content.
+        def is_placeholder_text(text):
+            if not text:
+                return True
+            body = re.sub(r'^#!.*(\n|$)', '', text.strip(), count=1).strip()
+            if not body:
+                return True
+            if re.fullmatch(r'\.{3,}(\s*\([^)]*\))?', body):
+                return True
+            if len(body) < 15:
+                return True
+            return False
+
         try:
             # strict=False allows raw control characters (e.g. literal newlines) inside JSON
             # string values — LLMs routinely write multi-line bash into "remediation_script"
@@ -907,6 +928,23 @@ def correlate_vulnerability(vuln):
             can_automate_raw = None
 
             print(f"⚠️ [Centinela-AI] Parsed prose response (non-JSON) successfully.")
+
+        # Reject lazy/placeholder LLM output instead of accepting it as real remediation
+        # content (see is_placeholder_text above) -- fall back to the same deterministic
+        # heuristic generator used when the LLM never responds at all, rather than writing
+        # garbage to script_path or claiming can_automate=true on an empty script.
+        if is_repo_finding:
+            if is_placeholder_text(fix_patch):
+                if fix_patch:
+                    print(f"⚠️ [Centinela-AI] Discarding placeholder fix_patch for {vuln['cve_id']}: {fix_patch[:80]!r}")
+                fix_patch = ''
+        else:
+            if is_placeholder_text(script):
+                if script and script != '# Sin script de remediación':
+                    print(f"⚠️ [Centinela-AI] Discarding placeholder remediation_script for {vuln['cve_id']}: {script[:80]!r}")
+                script = generate_heuristic_script(vuln)
+                if can_automate_raw is None:
+                    can_automate_raw = heuristic_can_automate(vuln)
 
         # ── Build executive summary ──
         exec_parts = []
@@ -1259,10 +1297,19 @@ def process_bloodhound_paths():
                     time.sleep(600)
                     continue
 
-                # Query shortest path from any non-admin user to Domain Admins group
+                # Query shortest path from any non-admin user to the Domain Admins group.
+                # Was previously hardcoded to the literal group name
+                # 'DOMAIN ADMINS@INTERNAL.LOCAL' -- BloodHound suffixes every node name with
+                # the real AD domain's FQDN, so this only ever matched a domain literally
+                # named INTERNAL.LOCAL and would have silently found nothing against any real
+                # domain (verified live against a disposable synthetic Neo4j dataset: the old
+                # hardcoded query returned zero rows against a DOMAIN ADMINS@TESTDOMAIN.LOCAL
+                # group, the STARTS WITH version below found the path correctly). Matching by
+                # prefix instead of the full name makes this work against whatever domain gets
+                # imported later without needing a code change.
                 query = """
-                MATCH p=shortestPath((u:User)-[*1..10]->(g:Group {name: 'DOMAIN ADMINS@INTERNAL.LOCAL'}))
-                WHERE NOT u.name STARTS WITH 'Administrator'
+                MATCH p=shortestPath((u:User)-[*1..10]->(g:Group))
+                WHERE g.name STARTS WITH 'DOMAIN ADMINS@' AND NOT u.name STARTS WITH 'Administrator'
                 RETURN p LIMIT 1
                 """
                 result = session.run(query)

@@ -879,6 +879,55 @@ async def get_system_health():
             except Exception:
                 return "Unreachable"
 
+        def check_mitre_mapping():
+            # standards is COALESCE'd in by log_finding_deduplicated() whenever
+            # core/mitre_attack.py's map_finding() recognizes a cve_id -- real DB evidence
+            # that the mapping is actually being applied, not just importable.
+            try:
+                with db_manager.get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE standards IS NOT NULL AND standards != ''")
+                    return "Online" if cur.fetchone()[0] > 0 else "No Data Yet"
+            except Exception:
+                return "Unreachable"
+
+        def check_threat_intel():
+            # run_threat_intel_enrichment_loop() re-checks every row every 24h -- 48h window
+            # gives slack for a slow cycle without ever masking a genuinely stalled loop.
+            try:
+                with db_manager.get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE threat_intel_checked_at > NOW() - INTERVAL '48 hours'")
+                    return "Online" if cur.fetchone()[0] > 0 else "No Recent Data"
+            except Exception:
+                return "Unreachable"
+
+        def check_cti_feed():
+            # process_zeek_conn_log() checks every connection against cti_feed's IP set and
+            # logs a heartbeat every 5 minutes regardless of whether a match occurred -- a real
+            # C2 match (CTI-IOC-MATCH-RUNTIME) is a hoped-for-empty result, not a health signal,
+            # so liveness has to come from the heartbeat, same reasoning as the Zeek fix.
+            try:
+                with db_manager.get_db_cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM public.runtime_alerts
+                        WHERE rule_name ILIKE '%%ZEEK-CONN-HEARTBEAT%%' AND detected_at > NOW() - INTERVAL '1 hour'
+                    """)
+                    return "Online" if cur.fetchone()[0] > 0 else "No Recent Data"
+            except Exception:
+                return "Unreachable"
+
+        def check_cis_benchmarks():
+            # On-demand (SSH-triggered per asset via /api/cis-benchmark/check/{asset_name}),
+            # no background loop -- "Online" would be a lie before it's ever been run against
+            # anything, so report that honestly instead of defaulting to a fake positive.
+            if check_module("auditors.auditor_cis_benchmarks") != "Online":
+                return "Not Installed"
+            try:
+                with db_manager.get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE scan_engine='cis-benchmark'")
+                    return "Online" if cur.fetchone()[0] > 0 else "Available (On-Demand, Not Yet Run)"
+            except Exception:
+                return "Unreachable"
+
         db_status = check_db()
         zap_status = "Online" if check_tool("docker") == "Online" and check_module("auditors.auditor_zap") == "Online" else "Not Found"
         medusa_status = check_tool("medusa")
@@ -905,6 +954,12 @@ async def get_system_health():
                 # at 3s. The manager was never actually down; the check was just too impatient.
                 {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000", timeout=12), "latency": "N/A"},
                 {"name": "Identity (Authentik)", "status": check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal")), "latency": "N/A"},
+                {"name": "Risk Intel (EPSS/CISA KEV)", "status": check_threat_intel(), "latency": "N/A"},
+                {"name": "CTI Feed (C2/IOC Matching)", "status": check_cti_feed(), "latency": "N/A"},
+                {"name": "MITRE ATT&CK Mapping", "status": check_mitre_mapping(), "latency": "N/A"},
+                {"name": "CIS Benchmarks (Hardening Audit)", "status": check_cis_benchmarks(), "latency": "N/A"},
+                {"name": "GitLab Auto-Fix (MR Patcher)", "status": check_module("remediation.gitlab_autofix"), "latency": "N/A"},
+                {"name": "Host Containment (Emergency Response)", "status": "Available (On-Demand)", "latency": "N/A"},
             ],
             "scan_modules": {
                 "nuclei": check_tool("nuclei"),
@@ -915,6 +970,12 @@ async def get_system_health():
                 "trivy": check_tool("trivy"),
                 "nmap": check_tool("nmap"),
                 "sqlmap": check_tool("sqlmap"),
+                "cis_benchmarks": check_cis_benchmarks(),
+                "mitre_attack_mapping": check_mitre_mapping(),
+                "threat_intel_epss_kev": check_threat_intel(),
+                "cti_feed_c2": check_cti_feed(),
+                "gitlab_autofix": check_module("remediation.gitlab_autofix"),
+                "host_containment": "Available (On-Demand)",
             },
             "last_check": datetime.now().isoformat()
         }
@@ -1355,10 +1416,43 @@ async def download_executive_report():
             """)
             top_vulns = cur.fetchall()
 
+            # Real Omni-XDR signals -- Centinela Risk Score (CVSS+EPSS+KEV+criticality),
+            # CISA KEV exploited-in-the-wild findings, SLA breaches, and MITRE ATT&CK coverage.
+            # All computed live from real data (core/deduplication_engine.py, core/threat_intel.py,
+            # core/mitre_attack.py), not placeholders -- see CLAUDE.md Omni-XDR status.
+            cur.execute("SELECT MAX(risk_score) as mx, AVG(risk_score) as avg FROM public.vulnerability_log WHERE status != 'RESOLVED'")
+            crs_row = cur.fetchone()
+            max_crs = float(crs_row["mx"] or 0)
+            avg_crs = float(crs_row["avg"] or 0)
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE is_cisa_kev = true AND status != 'RESOLVED'")
+            kev_count = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE sla_due_date < NOW() AND status NOT IN ('RESOLVED')")
+            sla_breached = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE cve_id ILIKE 'CTI-IOC-MATCH%%'")
+            cti_matches = cur.fetchone()["c"]
+            cur.execute("""
+                SELECT standards, COUNT(*) as c FROM public.vulnerability_log
+                WHERE standards IS NOT NULL AND status != 'RESOLVED'
+                GROUP BY standards ORDER BY c DESC LIMIT 5
+            """)
+            top_mitre = cur.fetchall()
+
         gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
         resolved_pct = round((resolved / total * 100) if total else 0)
-        risk_score = "ALTO" if critical > 0 else ("MEDIO" if high > 0 else "BAJO")
-        risk_color = "#dc2626" if critical > 0 else ("#d97706" if high > 0 else "#16a34a")
+        # Risk bucket driven by the real Centinela Risk Score (worst-case, not average-diluted)
+        # and CISA KEV exploited-in-the-wild status, instead of a naive "any critical severity" flag.
+        if kev_count > 0 or max_crs >= 70:
+            risk_score, risk_color = "ALTO", "#dc2626"
+        elif max_crs >= 40 or critical > 0:
+            risk_score, risk_color = "MEDIO", "#d97706"
+        else:
+            risk_score, risk_color = "BAJO", "#16a34a"
+
+        mitre_rows = "".join([
+            f"<tr><td>{m['standards'].replace('MITRE ATT&CK: ', '')}</td>"
+            f"<td style='text-align:center;font-weight:600'>{m['c']}</td></tr>"
+            for m in top_mitre
+        ])
 
         assets_rows = "".join([
             f"<tr><td>{a['asset_name']}</td><td>{a['asset_type']}</td>"
@@ -1398,6 +1492,13 @@ async def download_executive_report():
   <div class='kpi-card'><div class='kpi-num'>{alerts}</div><div class='kpi-label'>Alertas Runtime</div></div>
 </div>
 
+<div class='kpi-grid'>
+  <div class='kpi-card kpi-crit'><div class='kpi-num'>{kev_count}</div><div class='kpi-label'>Explotados (CISA KEV)</div></div>
+  <div class='kpi-card kpi-high'><div class='kpi-num'>{sla_breached}</div><div class='kpi-label'>SLA Incumplido</div></div>
+  <div class='kpi-card'><div class='kpi-num'>{max_crs:.1f}</div><div class='kpi-label'>Centinela Risk Score (máx.)</div></div>
+  <div class='kpi-card'><div class='kpi-num'>{cti_matches}</div><div class='kpi-label'>Coincidencias CTI (C2/IoC)</div></div>
+</div>
+
 <hr class='divider'>
 
 <div class='card card-tech'>
@@ -1405,6 +1506,14 @@ async def download_executive_report():
   <table style='margin-top:8px;'>
     <tr><th>Activo</th><th>Severidad</th><th style='text-align:center;'>Hallazgos</th></tr>
     {top_rows if top_rows else "<tr><td colspan='3' style='text-align:center;color:#16a34a;'>Sin hallazgos activos ✓</td></tr>"}
+  </table>
+</div>
+
+<div class='card card-tech'>
+  <span class='section-label label-tech'>Técnicas MITRE ATT&amp;CK más frecuentes</span>
+  <table style='margin-top:8px;'>
+    <tr><th>Técnica</th><th style='text-align:center;'>Hallazgos</th></tr>
+    {mitre_rows if mitre_rows else "<tr><td colspan='2' style='text-align:center;color:#64748b;'>Sin hallazgos mapeados a MITRE ATT&CK</td></tr>"}
   </table>
 </div>
 
@@ -1560,6 +1669,8 @@ def _infer_scan_engine_label(cve_id: str, scan_engine: Optional[str]) -> str:
         "kiterunner": "API Discovery (Kiterunner)",
         "standards-audit": "Estándares (STRIDE / ISO 25010)",
         "bloodhound": "Rutas de Ataque AD (BloodHound)",
+        "cis-benchmark": "Hardening (CIS Benchmarks)",
+        "medusa": "SAST con IA (Medusa)",
     }
     if scan_engine and scan_engine in engine_labels:
         return engine_labels[scan_engine]
