@@ -215,6 +215,56 @@ def audit_package_json(file_path: str, content: str) -> List[Dict[str, Any]]:
     return _findings_from_osv(deps_with_lines, "npm", "package.json", file_path)
 
 
+def check_reachability(target_dir: str, package: str, manifest: str) -> str:
+    """
+    Real (if simplified) reachability check: is this dependency actually imported anywhere in
+    the source tree, or only declared in the manifest? A package can be listed in
+    requirements.txt/package.json but never actually imported (leftover from a refactor,
+    installed for a script that was since removed, a transitive dependency someone pinned
+    directly) -- in that case, the vulnerable code path can never execute here regardless of
+    the CVE's severity.
+
+    This is import-statement matching, not true call-graph/taint analysis into the specific
+    vulnerable function (which would need per-CVE "this exact symbol is unsafe" metadata that
+    isn't reliably available across ecosystems) -- a real, honest, coarser signal: "is this
+    package's code reachable at all" rather than "is the specific vulnerable line reachable".
+    Returns 'REACHABLE' or 'UNREACHABLE'.
+    """
+    if manifest == "requirements.txt":
+        # Python import names sometimes differ from the PyPI package name (e.g. package
+        # "pyyaml" imports as "yaml") -- match on the package name itself, which covers the
+        # common case where they're identical or the import uses a prefix of the package name.
+        patterns = [
+            re.compile(rf'^\s*import\s+{re.escape(package)}\b', re.MULTILINE),
+            re.compile(rf'^\s*from\s+{re.escape(package)}\b', re.MULTILINE),
+        ]
+        extensions = (".py",)
+    elif manifest == "package.json":
+        patterns = [
+            re.compile(rf'require\(["\']({re.escape(package)})(/[^"\']*)?["\']\)'),
+            re.compile(rf'from\s+["\']({re.escape(package)})(/[^"\']*)?["\']'),
+            re.compile(rf'import\s+["\']({re.escape(package)})(/[^"\']*)?["\']'),
+        ]
+        extensions = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+    else:
+        return "REACHABLE"  # unknown manifest type -- don't claim unreachable without real evidence
+
+    for root, _, files in os.walk(target_dir):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+            continue
+        for file in files:
+            if not file.endswith(extensions):
+                continue
+            try:
+                with open(os.path.join(root, file), "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                if any(p.search(content) for p in patterns):
+                    return "REACHABLE"
+            except Exception:
+                continue
+    return "UNREACHABLE"
+
+
 def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
     """Scans target directory for package manifests and audits open-source dependencies."""
     all_findings = []
@@ -248,18 +298,31 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
                 location = f"{rel_path}:{item.get('line', 0)}"
+
+                # Reachability: is the package actually imported anywhere, or only declared in
+                # the manifest? See check_reachability()'s own docstring for exactly what this
+                # does and doesn't prove -- import-based, not per-CVE call-graph analysis.
+                reachability = check_reachability(target_dir, item["package"], item["manifest"])
+                reachability_note = (
+                    "⚠️ **No se encontró ningún `import`/`require` de este paquete en el código -- "
+                    "puede ser una dependencia sin uso real.**\n\n"
+                    if reachability == "UNREACHABLE" else ""
+                )
                 description = (
+                    f"{reachability_note}"
                     f"**Archivo:** `{rel_path}`\n"
                     f"**Paquete:** {item['package']}\n"
                     f"**Versión instalada:** {item['installed_version']}\n"
                     f"**Versión segura:** {item['fixed_version']}\n"
                     f"**Manifiesto:** {item['manifest']}\n"
+                    f"**Alcanzabilidad:** {reachability}\n"
                     f"{item['description']}"
                 )
 
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
-                    "sca-native", url_path=location, open_status="OPEN"
+                    "sca-native", url_path=location, open_status="OPEN",
+                    reachability_status=reachability
                 )
     except Exception as db_err:
         print(f"⚠️ [SCA-Auditor] Could not log findings to DB: {db_err}")

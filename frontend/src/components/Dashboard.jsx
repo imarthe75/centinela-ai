@@ -1239,6 +1239,16 @@ export default function Dashboard() {
                                                                         🚨 CISA KEV
                                                                     </span>
                                                                 )}
+                                                                {log.reachability_status === 'UNREACHABLE' && (
+                                                                    <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700" title="Dependencia declarada pero nunca importada en el código">
+                                                                        SIN USO REAL
+                                                                    </span>
+                                                                )}
+                                                                {log.mitre_technique && (
+                                                                    <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20" title={log.mitre_technique}>
+                                                                        {log.mitre_technique.match(/T\d+(\.\d+)?/)?.[0] || 'ATT&CK'}
+                                                                    </span>
+                                                                )}
                                                                 {log.is_sla_breached ? (
                                                                     <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
                                                                         SLA VENCIDO

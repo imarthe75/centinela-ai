@@ -60,7 +60,8 @@ def is_sla_breached(sla_due_date: Optional[datetime]) -> bool:
 
 def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, description: str,
                               scan_engine: str, url_path: Optional[str] = None,
-                              open_status: str = "OPEN") -> "tuple[str, int]":
+                              open_status: str = "OPEN",
+                              reachability_status: Optional[str] = None) -> "tuple[str, int]":
     """
     Central, cross-tool-aware finding logger. calculate_fingerprint() existed since this
     module's original commit but nothing ever called it -- fingerprint_hash was empty on every
@@ -86,10 +87,13 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
 
     Returns (action, row_id) where action is 'updated' | 'merged' | 'inserted'.
     """
-    from core import threat_intel
+    from core import threat_intel, mitre_attack
 
     fingerprint = calculate_fingerprint(asset_id, cve_id, url_path or description)
     real_cve = threat_intel.extract_cve(cve_id)
+
+    mitre = mitre_attack.map_finding(cve_id, description)
+    standards_value = f"MITRE ATT&CK: {mitre[0]} - {mitre[1]} ({mitre[2]})" if mitre else None
 
     # Tier 1: exact same finding (same fingerprint), any engine.
     cur.execute("""
@@ -100,9 +104,11 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     if existing:
         cur.execute("""
             UPDATE public.vulnerability_log
-            SET severity = %s, description = %s, detected_at = NOW(), status = %s
+            SET severity = %s, description = %s, detected_at = NOW(), status = %s,
+                reachability_status = COALESCE(%s, reachability_status),
+                standards = COALESCE(%s, standards)
             WHERE id = %s
-        """, (severity, description, open_status, existing[0]))
+        """, (severity, description, open_status, reachability_status, standards_value, existing[0]))
         return "updated", existing[0]
 
     # Tier 2: same real CVE, already open, from a genuinely different engine -> cross-tool merge.
@@ -130,9 +136,9 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     # Tier 3: genuinely new.
     cur.execute("""
         INSERT INTO public.vulnerability_log
-        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s)
+        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards)
+        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s)
         RETURNING id
-    """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint))
+    """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value))
     new_id = cur.fetchone()[0]
     return "inserted", new_id
