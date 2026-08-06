@@ -63,6 +63,16 @@ import MapChart from './MapChart'
 // Using relative path to utilize the Nginx proxy at /centinela/api/
 const API_BASE = "/api"
 
+// /api/health reports honest intermediate states for on-demand/idle capabilities (e.g.
+// "Available (On-Demand, Not Yet Run)", "No Data Yet") instead of faking "Online" -- these
+// are not failures and must not render as red alongside genuine outages ("Unreachable",
+// "Not Installed", "Offline").
+function healthStatusTier(status) {
+  if (status === 'Online' || status === 'Active') return 'ok'
+  if (typeof status === 'string' && /^(Available|No Data|No Recent Data)/.test(status)) return 'warn'
+  return 'fail'
+}
+
 export default function Dashboard() {
   const auth = useAuth()
   const [currentView, setCurrentView] = useState('dashboard')
@@ -1762,19 +1772,23 @@ export default function Dashboard() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {Array.isArray(healthStatus?.services) && healthStatus.services.map((service, idx) => (
+                    {Array.isArray(healthStatus?.services) && healthStatus.services.map((service, idx) => {
+                        const tier = healthStatusTier(service.status)
+                        const dotClass = tier === 'ok' ? 'bg-emerald-500' : tier === 'warn' ? 'bg-amber-500' : 'bg-red-500'
+                        const textClass = tier === 'ok' ? 'text-emerald-400' : tier === 'warn' ? 'text-amber-400' : 'text-red-400'
+                        return (
                         <div key={idx} className="bg-[#1E293B] p-8 rounded-[32px] border border-slate-800 relative overflow-hidden group">
                             <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-all">
                                 <Cpu size={64} className="text-[#06B6D4]" />
                             </div>
                             <div className="flex items-center gap-4 mb-6">
-                                <div className={`w-3 h-3 rounded-full animate-pulse ${service.status === 'Online' || service.status === 'Active' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                <div className={`w-3 h-3 rounded-full animate-pulse ${dotClass}`} />
                                 <h4 className="text-white font-bold text-lg">{service.name}</h4>
                             </div>
                             <div className="flex justify-between items-end">
                                 <div>
                                     <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Estado</p>
-                                    <p className="text-emerald-400 font-bold text-sm">{service.status}</p>
+                                    <p className={`${textClass} font-bold text-sm`}>{service.status}</p>
                                 </div>
                                 <div className="text-right">
                                     <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Latencia</p>
@@ -1782,7 +1796,8 @@ export default function Dashboard() {
                                 </div>
                             </div>
                         </div>
-                    ))}
+                        )
+                    })}
                 </div>
             </div>
           )}
