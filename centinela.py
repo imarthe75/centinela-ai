@@ -336,6 +336,90 @@ exit 1
 """
 
 
+def generate_ip_block_virtual_patch(vuln, malicious_ip: str, reason: str):
+    """
+    Real virtual patch for a CTI-IOC-MATCH finding: blocks a specific confirmed-malicious IP
+    (from core/cti_feed.py's live Feodo Tracker match) at the reverse-proxy layer via `deny`,
+    without touching application code or restarting the service. Reuses the exact same
+    nginx-detection pattern already verified for generate_zap_header_fix() (system nginx vs.
+    containerized, writable vs. read-only-bind-mounted conf.d).
+
+    `deny <ip>;` is deliberately used instead of a per-URL `location` block: unlike
+    add_header/proxy_hide_header/deny, a `location` block can only be safely added inside the
+    correct existing server{} block for the target vhost -- blind-inserting one into a separate
+    conf.d snippet either does nothing (wrong context) or requires editing the existing vhost
+    file directly, which is not purely additive and risks breaking it. `deny` at the http
+    context level applies to every server block via nginx's normal directive inheritance, the
+    same mechanism the header fix already relies on -- genuinely safe to add blindly.
+    """
+    asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
+    ep = str(vuln.get('endpoint', '0.0.0.0'))
+    cve = str(vuln.get('cve_id', 'CTI-IOC-MATCH'))
+    directive = f"deny {malicious_ip};"
+
+    return f"""#!/bin/bash
+# Script de Remediación Automática - Centinela AI (Parcheo Virtual)
+# Host: {asset} ({ep})
+# Vulnerabilidad / Regla: {cve}
+# Motivo: {reason}
+set -e
+echo '🛡️ Aplicando bloqueo de IP maliciosa confirmada ({malicious_ip}) en {asset} ({ep})...'
+
+SNIPPET_REL=/etc/nginx/conf.d/98-centinela-ip-blocklist.conf
+DIRECTIVE='{directive}'
+
+if command -v nginx >/dev/null 2>&1; then
+    sudo mkdir -p /etc/nginx/conf.d
+    sudo touch "$SNIPPET_REL"
+    if sudo grep -qF "$DIRECTIVE" "$SNIPPET_REL" 2>/dev/null; then
+        echo "ℹ️ La IP ya estaba bloqueada (idempotente, nada que hacer)."
+    else
+        echo "$DIRECTIVE" | sudo tee -a "$SNIPPET_REL" > /dev/null
+        echo "✏️ IP maliciosa bloqueada: $DIRECTIVE"
+    fi
+    sudo nginx -t
+    sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
+    echo '✅ Bloqueo aplicado -- ningún reinicio de la aplicación fue necesario.'
+    exit 0
+fi
+
+if command -v docker >/dev/null 2>&1; then
+    NGINX_CONTAINER=$(sudo docker ps --format '{{{{.Names}}}} {{{{.Image}}}}' 2>/dev/null | grep -i nginx | head -1 | awk '{{print $1}}')
+    if [ -n "$NGINX_CONTAINER" ]; then
+        if sudo docker exec "$NGINX_CONTAINER" sh -c "touch $SNIPPET_REL" 2>/dev/null; then
+            if sudo docker exec "$NGINX_CONTAINER" grep -qF "$DIRECTIVE" "$SNIPPET_REL" 2>/dev/null; then
+                echo "ℹ️ La IP ya estaba bloqueada (idempotente, nada que hacer)."
+            else
+                sudo docker exec -i "$NGINX_CONTAINER" sh -c "echo '$DIRECTIVE' >> $SNIPPET_REL"
+                echo "✏️ IP maliciosa bloqueada dentro del contenedor: $DIRECTIVE"
+            fi
+        else
+            HOST_CONFD=$(sudo docker inspect "$NGINX_CONTAINER" --format '{{{{range .Mounts}}}}{{{{if eq .Destination "/etc/nginx/conf.d"}}}}{{{{.Source}}}}{{{{end}}}}{{{{end}}}}')
+            if [ -z "$HOST_CONFD" ]; then
+                echo "⚠️ No se pudo determinar la ruta real de conf.d en el host. Acción manual requerida."
+                exit 1
+            fi
+            HOST_SNIPPET="$HOST_CONFD/98-centinela-ip-blocklist.conf"
+            sudo touch "$HOST_SNIPPET"
+            if sudo grep -qF "$DIRECTIVE" "$HOST_SNIPPET" 2>/dev/null; then
+                echo "ℹ️ La IP ya estaba bloqueada (idempotente, nada que hacer)."
+            else
+                echo "$DIRECTIVE" | sudo tee -a "$HOST_SNIPPET" > /dev/null
+                echo "✏️ IP maliciosa bloqueada (ruta real en el host): $DIRECTIVE"
+            fi
+        fi
+        sudo docker exec "$NGINX_CONTAINER" nginx -t
+        sudo docker exec "$NGINX_CONTAINER" nginx -s reload
+        echo '✅ Bloqueo aplicado -- ningún reinicio de la aplicación fue necesario.'
+        exit 0
+    fi
+fi
+
+echo "⚠️ No se encontró nginx en el host ni en un contenedor Docker. Acción manual requerida: bloquear {malicious_ip} en el firewall o reverse proxy correspondiente."
+exit 1
+"""
+
+
 def generate_heuristic_script(vuln):
     cve = str(vuln.get('cve_id', 'SECURITY-FINDING')).upper()
     asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
@@ -344,6 +428,49 @@ def generate_heuristic_script(vuln):
     desc = str(vuln.get('description', '')).lower()
 
     header = f"#!/bin/bash\n# Script de Remediación Automática - Centinela AI\n# Host: {asset} ({ep})\n# Vulnerabilidad / Regla: {cve}\nset -e\necho '🔒 Ejecutando hardening y remediación de seguridad en {asset} ({ep})...'\n"
+
+    if cve.startswith('CTI-IOC-MATCH'):
+        malicious_ip = str(vuln.get('url_path', '')).split('-')[-1]  # url_path is the raw IP, or "alert-{id}-{ip}"
+        return generate_ip_block_virtual_patch(vuln, malicious_ip, "IP confirmada como C2 activo en Feodo Tracker (abuse.ch)")
+
+    if cve == 'HOST-CONTAINMENT-REQUEST':
+        return f"""#!/bin/bash
+# Script de Remediación Automática - Centinela AI (CONTENCIÓN DE EMERGENCIA)
+# Host: {asset} ({ep})
+# ADVERTENCIA: esto corta el tráfico de red entrante del host casi por completo.
+set -e
+echo '🚨 CONTENCIÓN DE EMERGENCIA -- aislando {asset} ({ep})...'
+
+BACKUP_FILE="/tmp/centinela_firewall_backup_$(date +%s).rules"
+
+if command -v ufw >/dev/null 2>&1; then
+    echo "📋 Respaldando reglas UFW actuales en $BACKUP_FILE (para revertir manualmente después)..."
+    sudo ufw status verbose | sudo tee "$BACKUP_FILE" > /dev/null
+    sudo ufw --force reset
+    sudo ufw default deny incoming
+    sudo ufw default deny outgoing
+    sudo ufw allow out 53/udp comment 'DNS'
+    sudo ufw allow out 123/udp comment 'NTP'
+    echo "ℹ️ Solo se permite DNS/NTP saliente. Todo el tráfico entrante está bloqueado."
+    sudo ufw --force enable
+elif command -v iptables >/dev/null 2>&1; then
+    echo "📋 Respaldando reglas iptables actuales en $BACKUP_FILE..."
+    sudo iptables-save | sudo tee "$BACKUP_FILE" > /dev/null
+    sudo iptables -P INPUT DROP
+    sudo iptables -P OUTPUT DROP
+    sudo iptables -P FORWARD DROP
+    sudo iptables -A INPUT -i lo -j ACCEPT
+    sudo iptables -A OUTPUT -o lo -j ACCEPT
+    sudo iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+else
+    echo "❌ No se encontró ufw ni iptables -- no se puede aplicar contención de red."
+    exit 1
+fi
+
+echo "✅ Host aislado. Respaldo de reglas guardado en $BACKUP_FILE en el propio host."
+echo "⚠️ Para revertir: restaurar $BACKUP_FILE manualmente vía SSH/consola -- este script no incluye reversión automática por diseño (una contención de emergencia no debe deshacerse sola)."
+"""
 
     if cve.startswith('ZAP-'):
         zap_fix = generate_zap_header_fix(vuln)
@@ -451,6 +578,8 @@ def heuristic_can_automate(vuln):
     atype = str(vuln.get('asset_type', '')).upper()
     desc = str(vuln.get('description', '')).lower()
 
+    if cve.startswith('CTI-IOC-MATCH') or cve == 'HOST-CONTAINMENT-REQUEST':
+        return True
     if cve.startswith('ZAP-'):
         return generate_zap_header_fix(vuln) is not None
     if cve in ('SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT') or any(
@@ -479,6 +608,20 @@ def generate_heuristic_analysis(vuln):
     ep = str(vuln.get('endpoint', '0.0.0.0'))
     desc = str(vuln.get('description', '')).lower()
     location = str(vuln.get('url_path', '')) or 'ver descripción'
+
+    if cve_u.startswith('CTI-IOC-MATCH'):
+        return (
+            "IP confirmada como servidor C2 activo (Feodo Tracker / abuse.ch)",
+            f"Esta IP está siendo usada activamente para comando y control de malware -- si {asset} se está comunicando con ella, es indicio real de compromiso o de tráfico entrante malicioso confirmado, no una sospecha.",
+            f"Se aplica un parche virtual bloqueando la IP a nivel del reverse-proxy (`deny`) en {asset} ({ep}), sin tocar el código de la aplicación ni reiniciar el servicio."
+        )
+
+    if cve_u == 'HOST-CONTAINMENT-REQUEST':
+        return (
+            f"Solicitud de contención de emergencia para {asset}",
+            f"Acción disruptiva deliberada: aísla {asset} ({ep}) de la red (excepto DNS/NTP salientes) para detener una amenaza activa a costa de disponibilidad. Requiere aprobación humana explícita como cualquier otra remediación -- no se ejecuta automáticamente.",
+            f"Al aprobar, se respaldan las reglas de firewall actuales en el propio host y se aplica una política de denegación total entrante/saliente salvo DNS/NTP. La reversión es manual y deliberada -- una contención de emergencia no debe deshacerse sola."
+        )
 
     if cve_u.startswith('ZAP-'):
         entry = match_zap_header_entry(vuln)
@@ -975,11 +1118,28 @@ def process_bloodhound_paths():
     user = os.getenv("NEO4J_USER", "neo4j")
     password = os.getenv("NEO4J_PASSWORD", "password")
 
+    from core import deduplication_engine
+
     while True:
         try:
             print("🩸 [Centinela-AI] BloodHound Graph Analyzer querying attack paths...")
             driver = GraphDatabase.driver(uri, auth=(user, password))
             with driver.session() as session:
+                # Distinguish "no data has ever been imported" from "data exists and genuinely
+                # shows no attack path" -- these previously looked identical (both produced no
+                # log line at all), which silently masked the fact this query has likely never
+                # found real data to run against (see the CLAUDE.md Attack-Path-Graphing entry:
+                # SharpHound/AzureHound collector output is never ingested anywhere in this repo).
+                node_count = session.run("MATCH (u:User) RETURN count(u) AS c").single()
+                user_count = node_count["c"] if node_count else 0
+                if user_count == 0:
+                    print("ℹ️ [Centinela-AI] BloodHound graph has no :User nodes -- no collector "
+                          "data (SharpHound/AzureHound) has ever been imported into Neo4j. "
+                          "Query skipped; nothing to analyze until real AD data is loaded.")
+                    driver.close()
+                    time.sleep(600)
+                    continue
+
                 # Query shortest path from any non-admin user to Domain Admins group
                 query = """
                 MATCH p=shortestPath((u:User)-[*1..10]->(g:Group {name: 'DOMAIN ADMINS@INTERNAL.LOCAL'}))
@@ -990,28 +1150,38 @@ def process_bloodhound_paths():
                 record = result.single()
                 if record:
                     path = record.get("p")
-                    # Attack path exists!
-                    desc = f"BloodHound detectó una ruta de ataque de escalada de privilegios hacia el grupo Domain Admins."
                     nodes = [n.get("name") for n in path.nodes]
-                    desc += f" Ruta: {' -> '.join(nodes)}"
-                    
+                    desc = (
+                        "BloodHound detectó una ruta de ataque de escalada de privilegios hacia "
+                        f"el grupo Domain Admins. Ruta: {' -> '.join(nodes)}"
+                    )
+
                     with db_manager.get_db_cursor() as cur:
-                        # Find Active Directory asset
-                        cur.execute("SELECT id FROM infra_inventory WHERE asset_name LIKE '%Active Directory%' OR asset_type = 'SERVER' LIMIT 1")
+                        # Real AD domain asset only -- the old fallback ("...OR asset_type =
+                        # 'SERVER' LIMIT 1") attributed this to an arbitrary, unrelated SERVER
+                        # asset whenever no asset was literally named "Active Directory",
+                        # misrepresenting which host the finding is actually about.
+                        cur.execute("""
+                            SELECT id FROM infra_inventory
+                            WHERE asset_name ILIKE '%active directory%' OR asset_type ILIKE '%domain%'
+                            LIMIT 1
+                        """)
                         res = cur.fetchone()
-                        asset_id = res[0] if res else None
-                        
-                        if asset_id:
-                            cur.execute("""
-                                INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status, scan_engine)
-                                VALUES (%s, 'BLOODHOUND-PATH-AD', 'CRITICAL', %s, 'PENDING', 'bloodhound')
-                                ON CONFLICT DO NOTHING
-                            """, (asset_id, desc))
+                        if res:
+                            deduplication_engine.log_finding_deduplicated(
+                                cur, res[0], "BLOODHOUND-PATH-AD", "CRITICAL", desc,
+                                "bloodhound", open_status="PENDING"
+                            )
                             print("🚨 [Centinela-AI] Critical Attack Path logged in DB!")
+                        else:
+                            print("⚠️ [Centinela-AI] Attack path found but no Active Directory "
+                                  "asset is registered in infra_inventory to attribute it to -- "
+                                  "not logging against an unrelated asset. Register the AD "
+                                  "domain as an asset to enable this.")
             driver.close()
         except Exception as e:
             print(f"⚠️ [Centinela-AI] BloodHound/Neo4j query failed: {e}")
-        
+
         # Check every 10 minutes
         time.sleep(600)
 
@@ -1120,6 +1290,78 @@ def run_threat_intel_enrichment_loop():
             time.sleep(60)
 
 
+def run_cti_correlation_loop():
+    """
+    Real CTI/IoC correlation against abuse.ch's Feodo Tracker (live, active C2 server IPs).
+    Checks two real data sources this codebase already has: registered asset IPs
+    (infra_inventory), and IPs mentioned in runtime_alerts (Falco/Zeek output already ingested
+    by process_falco_alerts()/process_zeek_alerts()). A hit on the first means one of our own
+    hosts' IPs is a known-malicious C2 server; a hit on the second means a runtime alert
+    involved a connection to/from one.
+    """
+    from core import cti_feed, deduplication_engine
+
+    while True:
+        try:
+            malicious_ips = cti_feed.get_malicious_ips()
+            if not malicious_ips:
+                time.sleep(3600)
+                continue
+
+            hits = 0
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                # Source 1: our own registered asset IPs.
+                cur.execute("SELECT id, asset_name, endpoint FROM infra_inventory")
+                for asset in cur.fetchall():
+                    for ip in cti_feed.extract_ips(asset.get("endpoint") or ""):
+                        if ip in malicious_ips:
+                            ioc = malicious_ips[ip]
+                            desc = (
+                                f"**IP del activo `{asset['asset_name']}` ({ip}) aparece en Feodo Tracker "
+                                f"(abuse.ch) como servidor C2 activo.**\n\n"
+                                f"**Malware asociado:** {ioc.get('malware', 'desconocido')}\n"
+                                f"**Primera vez visto:** {ioc.get('first_seen', 'desconocido')}\n"
+                                f"**Estado:** {ioc.get('status', 'desconocido')}"
+                            )
+                            deduplication_engine.log_finding_deduplicated(
+                                cur, asset["id"], "CTI-IOC-MATCH-ASSET", "CRITICAL", desc,
+                                "cti-feed", url_path=ip, open_status="PENDING"
+                            )
+                            hits += 1
+
+                # Source 2: IPs seen in real runtime alerts (Falco/Zeek), checked against the
+                # same live feed -- empty today (no runtime_alerts have fired yet in this
+                # deployment), but the mechanism is real and starts working the moment they do.
+                cur.execute("""
+                    SELECT id, asset_id, alert_text, output_fields, rule_name
+                    FROM runtime_alerts
+                    WHERE detected_at > NOW() - INTERVAL '1 hour'
+                """)
+                for alert in cur.fetchall():
+                    text = f"{alert.get('alert_text') or ''} {alert.get('output_fields') or ''}"
+                    for ip in cti_feed.extract_ips(text):
+                        if ip in malicious_ips and alert.get("asset_id"):
+                            ioc = malicious_ips[ip]
+                            desc = (
+                                f"**Alerta runtime `{alert['rule_name']}` involucra la IP {ip}, "
+                                f"presente en Feodo Tracker (abuse.ch) como servidor C2 activo.**\n\n"
+                                f"**Malware asociado:** {ioc.get('malware', 'desconocido')}"
+                            )
+                            deduplication_engine.log_finding_deduplicated(
+                                cur, alert["asset_id"], "CTI-IOC-MATCH-RUNTIME", "CRITICAL", desc,
+                                "cti-feed", url_path=f"alert-{alert['id']}-{ip}", open_status="PENDING"
+                            )
+                            hits += 1
+
+            if hits:
+                print(f"🚨 [Centinela-AI] CTI correlation found {hits} real IoC match(es) against Feodo Tracker.")
+
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error in CTI correlation loop: {e}")
+
+        time.sleep(1800)  # 30 min -- feed itself only refreshes hourly
+
+
 def main_loop():
     print("🚀 [Centinela-AI] Aura-Guard v2026.4.2 active.")
     
@@ -1140,7 +1382,11 @@ def main_loop():
     # Real EPSS/CISA KEV threat-intel enrichment (backfills real risk scores)
     threat_intel_thread = threading.Thread(target=run_threat_intel_enrichment_loop, daemon=True)
     threat_intel_thread.start()
-    
+
+    # Real CTI/IoC correlation (Feodo Tracker C2 IPs)
+    cti_thread = threading.Thread(target=run_cti_correlation_loop, daemon=True)
+    cti_thread.start()
+
     # External Auditor Thread
     from auditors import auditor_ext
     threading.Thread(target=auditor_ext.main, daemon=True).start()
