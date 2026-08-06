@@ -27,23 +27,20 @@ Análisis de manifiestos y librerías de terceros contra bases de datos globales
 - **Ecosistema Node.js / JavaScript (`package.json`, `package-lock.json`)**: Identificación de paquetes vulnerables a **Prototype Pollution**, **ReDoS (Regex Denial of Service)** y **Remote Code Execution (RCE)**.
 - **Detección de Licencias Incompatibles**: Alertas sobre dependencias con licencias altamente restrictivas (GPL v3 en entornos corporativos cerrados).
 
-### 3. 🐳 Hardening de Contenedores e Infraestructura como Código (IaC & CIS Benchmarks)
-Evaluación estática y dinámica de la postura de infraestructura contra los **CIS Benchmarks v8**:
+### 3. 🐳 Hardening de Contenedores e Infraestructura como Código (IaC)
+Evaluación estática de la postura de infraestructura vía **Checkov** (Terraform, Kubernetes, Helm charts) y el auditor SAST propio para Dockerfiles:
 - **Hardening de Dockerfiles**:
-  - Detección y bloqueo del antipatrón de ejecución con usuario `root` (`USER root` implícito o explícito). Debe declararse `USER appuser` o usuario sin privilegios.
+  - Detección y bloqueo del antipatrón de ejecución con usuario `root` (`USER root` implícito o explícito). Debe declararse `USER appuser` o usuario sin privilegios — con **parche automático real**: el motor de Auto-Fix de GitLab puede añadir/corregir la directiva `USER` sin intervención de un LLM (ver sección de SOAR).
   - Prohibición de imágenes base con tags flotantes (`:latest`). Obligatoriedad de versiones fijas o hashes SHA256.
   - Verificación de políticas de limpieza de temporales (`apt-get clean && rm -rf /var/lib/apt/lists/*`) para reducir superficie de ataque.
   - Inexistencia de llaves o secrets expuestos mediante instrucciones `ENV` o `ARG`.
-- **Manifiestos de Kubernetes (`.yaml`, Helm Charts)**:
-  - Detección de contenedores configurados con `privileged: true` o `allowPrivilegeEscalation: true`.
-  - Inexistencia de límites de recursos (`resources.limits.cpu`, `resources.limits.memory`) que expongan el clúster a ataques de Denegación de Servicio (DoS).
-  - Montajes inseguros de volúmenes de host (`hostPath: /`).
-- **Infraestructura Cloud / Terraform (`.tf`)**:
-  - Detección de buckets de almacenamiento S3/GCS configurados con acceso público (`public-read`, `public-read-write`).
-  - Grupos de Seguridad (Security Groups) abriendo puertos administrativos (22 SSH, 3389 RDP, 5432 Postgres) hacia la internet global (`0.0.0.0/0`).
+- **Manifiestos de Kubernetes (`.yaml`, Helm Charts) y Terraform (`.tf`)**: vía Checkov — contenedores `privileged: true`, ausencia de límites de recursos, montajes inseguros de `hostPath`, buckets S3/GCS públicos, Security Groups abriendo puertos administrativos a `0.0.0.0/0`.
+
+> [!NOTE]
+> **Alcance real de `auditor_cis_benchmarks.py`** (distinto de lo anterior): ejecuta en vivo, por SSH, un subconjunto defendible de **~11 verificaciones CIS Level 1 para Linux** (login root por SSH, autenticación por contraseña, permisos de `/etc/passwd`/`/etc/shadow`, longitud mínima de contraseña, firewall activo, cuentas sin contraseña, `auditd`, IP forwarding, core dumps, sincronización horaria) contra un activo concreto vía `POST /api/cis-benchmark/check/{asset_name}`, con calificación A-F. **No es el CIS Benchmark oficial completo** (cientos de controles, específico por versión de distro) — es un subconjunto real y honesto, no una implementación exhaustiva.
 
 ### 4. 🤖 Gobernanza de Inteligencia Artificial y Modelos LLM (OWASP LLM Top 10)
-Auditoría y control de seguridad específico para aplicaciones que consumen LLMs (Gemini, NVIDIA NIM, Ollama):
+Auditoría y control de seguridad específico para aplicaciones que consumen LLMs:
 - **Inyección de Prompts (OWASP LLM01)**: Evaluación de vectores donde entradas de usuario no saneadas pueden alterar las instrucciones del sistema o manipular el comportamiento del bot.
 - **Fuga de Datos Sensibles y PII (OWASP LLM02)**: Detección de presencia de información de identificación personal (PII), credenciales o secretos dentro de las respuestas o prompts enviados a modelos de IA.
 - **Ejecución de Código sin Guardrails (OWASP LLM06)**: Bloqueo de interpretadores de código o agentes autónomos que ejecuten comandos generados por el LLM sin entornos sandbox o aprobación explícita.
@@ -72,18 +69,62 @@ Cada hallazgo detectado en el ecosistema es mapeado de forma automática hacia c
 Centinela-AI integra un flujo **DevSecOps Bidireccional** con servidores GitLab (`http://10.4.3.10`):
 
 1. **Descubrimiento de Repositorios**: Consulta automáticamente la API REST v4 (`/api/v4/projects`) para listar todos los proyectos de la organización.
-2. **Clonado y Auditoría**: Clona o actualiza los repositorios en entornos aislados de análisis (`/tmp/centinela_gitlab_scans`) y ejecuta el escaneo Omni-Vulnerabilidades completo.
-3. **Generación de Parche Asistido por IA (Gemini 1.5 Flash)**: Cuando se confirma una vulnerabilidad (ej. SQLi o falta de usuario non-root en Dockerfile), el motor de IA analiza el contexto completo del archivo y genera el parche de código corregido.
-4. **Creación Automática de Merge Request (MR)**: Centinela genera una rama de remediación (`centinela-autofix/vuln-{id}`) y somete un **Merge Request formal en GitLab** con la explicación técnica de la corrección y las referencias normativas asociadas.
+2. **Clonado y Auditoría**: Clona o actualiza los repositorios en entornos aislados de análisis y ejecuta el escaneo Omni-Vulnerabilidades completo.
+3. **Generación del parche — dos vías, según el tipo de hallazgo**:
+   - **Parchadores determinísticos (sin LLM)**: para patrones mecánicos y seguros — añadir/corregir la directiva `USER` no-root en un Dockerfile, o subir la versión de un paquete vulnerable a la versión mínima conocida como corregida en `requirements.txt`/`package.json`.
+   - **Parche asistido por IA**: para hallazgos que requieren entender el código (inyección, secretos hardcodeados, SSRF), la IA recibe el archivo/línea/fragmento real y devuelve un **diff unificado** (`fix_patch`), aplicado con `git apply` — nunca una reescritura libre del archivo completo.
+   - En ambos casos, el contenido generado se valida antes de aplicarse: una respuesta de IA vaga o de relleno (p. ej. un script que solo dice "script provisto" sin contenido real) se rechaza y se reemplaza por un mensaje honesto de "sin corrección automática disponible", en vez de abrirse como un cambio falso.
+4. **Creación Automática de Merge Request (MR)**: Centinela genera una rama de remediación (`centinela-fix/*`) — nunca hace push directo a la rama por defecto — y somete un **Merge Request formal en GitLab** con la explicación técnica de la corrección y las referencias normativas asociadas.
 
 ---
 
-## 🖥️ Monitoreo Continuo de Servidores Físicos y Virtuales
+## 🖥️ Monitoreo Continuo de Servidores Físicos y Virtuales (EDR / NDR)
 
 Centinela-AI audita servidores físicos y máquinas virtuales (Linux/Windows) en tiempo real:
-- **Auto-Instalación de Agentes Wazuh**: Al registrar una nueva dirección IP o servidor en el inventario, el orquestador dispara un Playbook de Ansible que instala y configura automáticamente el agente de Wazuh.
-- **Escaneo de Red Perimetral**: Integración con **Nuclei** (plantillas de vulnerabilidades perimetrales), **Nmap** (descubrimiento de puertos y servicios) y **Medusa** (auditoría de contraseñas débiles en SSH, RDP, Postgres).
+- **EDR — Wazuh Manager**: Al registrar una nueva dirección IP o servidor en el inventario, el orquestador dispara un Playbook de Ansible que instala y configura automáticamente el agente de Wazuh. El Manager corre como servicio propio del stack (`wazuh-manager`), con enrolamiento remoto de agentes vía los puertos 1514/1515 y consulta de estado vía la API 55000.
+- **NDR — Zeek**: sensor de red que observa tráfico en vivo. Además del log de eventos notables propio de Zeek (`notice.log`), Centinela procesa en tiempo real su log de conexiones (`conn.log`), cruzando cada conexión observada contra el feed de inteligencia de amenazas (ver más abajo) y emitiendo un latido de actividad real cada 5 minutos — no una señal simulada.
+- **Escaneo de Red Perimetral**: Integración con **Nuclei** (plantillas de vulnerabilidades perimetrales) y **Nmap** (descubrimiento de puertos y servicios).
 - **Seguridad Runtime (Falco / Wazuh Syslog)**: Captura de eventos del kernel en caliente para detectar ejecuciones sospechosas de shell, modificación de binarios del sistema o accesos no autorizados.
+- **Contención de Emergencia**: desde el dashboard, un operador puede solicitar el aislamiento de red de un activo comprometido (`POST /api/host-containment/{asset_name}`). La solicitud pasa por el mismo flujo de aprobación humana que cualquier otra remediación — **nunca se ejecuta automáticamente** — y el script generado bloquea todo el tráfico salvo DNS/NTP, sin rollback automático (una contención de emergencia no debe poder deshacerse sola).
+
+---
+
+## 🕵️ Motores de Escaneo Multi-Capa (Cobertura Completa)
+
+Cada motor cubre una capa distinta de la superficie de ataque. La columna `scan_engine` es el valor real que queda registrado junto a cada hallazgo en la base de datos.
+
+| Motor | `scan_engine` | Capa | Detecta |
+| :--- | :--- | :--- | :--- |
+| **OWASP ZAP** | `zap` | DAST — app en ejecución | Cabeceras de seguridad ausentes, XSS, fugas de información en URL, configuración insegura de sesión |
+| **Nuclei** | — | Web / red | CVEs conocidos y malas configuraciones vía plantillas comunitarias |
+| **Semgrep** | `semgrep` | SAST — código fuente | Patrones de código inseguro, multi-lenguaje |
+| **Motor SAST propio** | `sast-native` | SAST — código fuente | `eval()` peligroso, inyección SQL/comandos, SSRF, secretos hardcodeados, complejidad cognitiva |
+| **Motor SCA propio** | `sca-native` | Dependencias | Paquetes npm/pip vulnerables — consulta [OSV.dev](https://osv.dev) en vivo por cada paquete y versión exacta, con análisis de **alcanzabilidad** (`REACHABLE`/`UNREACHABLE`: si el paquete realmente se importa en el código o solo está declarado sin usarse) |
+| **Motor de estándares propio** | `standards-audit` | Calidad y arquitectura | ISO/IEC 25010 (mantenibilidad) y modelo de amenazas STRIDE |
+| **Trivy / Grype / Syft** | `grype` | Contenedores / SBOM | CVEs en imágenes Docker y sus capas de dependencias |
+| **TruffleHog** | `secrets` | Secretos | Credenciales y llaves filtradas en el historial de Git, con deduplicación real por archivo:línea (no solo por tipo de secreto) |
+| **Prowler** | `prowler` | Nube (CSPM) | Configuración insegura en AWS/GCP/Azure |
+| **Checkov** | — | Infraestructura como código | Terraform, Kubernetes, Helm charts |
+| **Medusa (`medusa-security`)** | `medusa` | SAST asistido por IA | ~45 analizadores propios más una sub-ejecución de `trivy fs` (vulnerabilidades, secretos, misconfiguraciones), orientado a patrones inseguros en aplicaciones con componentes GenAI |
+| **SQLmap** | — | Web | Inyección SQL activa |
+| **ffuf / Kiterunner** | `ffuf` / `kiterunner` | APIs | Rutas y endpoints ocultos vía fuzzing |
+| **SpiderFoot** | `spiderfoot` | OSINT | Subdominios, WHOIS, huella digital de tecnología |
+| **BloodHound / Neo4j** | `bloodhound` | Active Directory | Rutas de escalamiento de privilegios hacia Domain Admins — motor real y verificado, en espera de datos reales de un dominio AD (ver detalle abajo) |
+| **CIS Benchmarks (propio)** | `cis-benchmark` | Hardening de SO | Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH, bajo demanda por activo |
+
+---
+
+## 🎯 Puntuación de Riesgo, Inteligencia de Amenazas y MITRE ATT&CK
+
+Más allá de detectar, Centinela-AI **correlaciona** cada hallazgo con contexto de amenaza real:
+
+- **Centinela Risk Score (CRS)**: puntuación 0-100 por hallazgo, combinando severidad (CVSS aproximado por el bucket de severidad que ya asigna el escáner), **EPSS real** (probabilidad de explotación, consultado en vivo contra la API pública de [FIRST.org](https://www.first.org/epss/)), **estado real de CISA KEV** (catálogo público de vulnerabilidades explotadas confirmadas en el mundo real) y criticidad del activo. Se recalcula en segundo plano y se revalida cada 24h.
+- **Feed de Inteligencia de Amenazas (CTI/IoC)**: cruce en vivo contra [Feodo Tracker](https://feodotracker.abuse.ch/) (abuse.ch) — IPs de servidores de comando-y-control activos, confirmadas — tanto contra los activos registrados en el inventario como contra el tráfico de red observado en tiempo real por Zeek.
+- **Matriz MITRE ATT&CK®**: los hallazgos con una técnica de ataque real y verificable se mapean a su ID oficial de ATT&CK. Los hallazgos de calidad de código (no son técnicas de ataque en sí) se dejan intencionalmente sin mapear en vez de forzar una clasificación falsa.
+- **Deduplicación cross-tool por huella (fingerprint)**: si dos motores distintos detectan el mismo CVE real en el mismo activo de forma independiente, se fusiona en un solo hallazgo con una nota de detección adicional, en vez de abrir un segundo ticket duplicado.
+- **Control de SLA por severidad**: plazos de remediación automáticos — Crítico 24h, Alto 7 días, Medio 30 días, Bajo 90 días — con indicador de incumplimiento visible en el dashboard y en el reporte ejecutivo.
+- **Quality Gates**: evaluación de umbrales de calidad (vulnerabilidades críticas/altas, violaciones ISO 25010) con resultado pass/fail y grado A-F, consultable vía API (`/api/quality-gates/check`) para integrarse a un pipeline CI/CD.
+- **Parcheo virtual**: cuando una IP confirmada como C2 activo coincide con uno de nuestros activos, se bloquea a nivel de reverse-proxy (`deny` en nginx) sin tocar el código de la aplicación ni reiniciar el servicio.
 
 ---
 
@@ -93,34 +134,44 @@ Centinela-AI audita servidores físicos y máquinas virtuales (Linux/Windows) en
 flowchart TB
     subgraph Fuentes de Datos & Descubrimiento
         GitLab[Servidores GitLab / Git Repos] -->|API REST v4| OmniBE(FastAPI Backend Engine)
-        Wazuh[Agentes Wazuh / OS Telemetry] -->|Syslog / Webhooks| OmniBE
+        Wazuh[Agentes Wazuh / EDR] -->|Enrolamiento / Estado| OmniBE
+        Zeek[Zeek / conn.log en vivo] -->|Latido de actividad real| OmniBE
         Falco[Falco Container Telemetry] -->|Alertas Runtime| OmniBE
-        Scan[Nuclei / Nmap / Trivy / Medusa] -->|Resultados Escaneo| OmniBE
+        Scan[ZAP / Nuclei / Nmap / Trivy / Medusa / SpiderFoot / TruffleHog] -->|Resultados Escaneo| OmniBE
     end
 
     subgraph Motores de Auditoría Nativa Omni
         OmniBE --> SAST[SAST & AST Code Auditor]
         OmniBE --> SCA[SCA & Dependency Vulnerabilities]
-        OmniBE --> IaC[IaC & Docker CIS Hardening]
+        OmniBE --> IaC[IaC / CIS Benchmarks / Docker Hardening]
         OmniBE --> LLMGov[OWASP LLM & AI Governance]
         OmniBE --> ShadowAPI[Shadow API & OpenAPI Drift]
         OmniBE --> Standards[ISO 27001 / STRIDE / NIST Mapper]
     end
 
+    subgraph Correlación de Riesgo
+        OmniBE --> RiskEngine[Centinela Risk Score: CVSS + EPSS + CISA KEV]
+        OmniBE --> CTI[Feed CTI/IoC: C2 activos]
+        OmniBE --> Mitre[Mapeo MITRE ATT&CK®]
+        OmniBE --> Neo4j[Neo4j / BloodHound: rutas AD]
+    end
+
     subgraph Inteligencia Generativa & SOAR
-        OmniBE --> Gemini[Google Gemini 1.5 Flash / NIM]
-        Gemini -->|Auto-Patching Code| AutoMR[GitLab Auto Merge Request]
-        Gemini -->|Playbooks Ansible| Ansible[Ansible Orchestration]
+        OmniBE --> LLM[Groq / cadena de proveedores IA]
+        LLM -->|Auto-Patching Code| AutoMR[GitLab Auto Merge Request]
+        LLM -->|Playbooks Ansible| Ansible[Ansible Orchestration]
         Ansible -->|SSH / WinRM| TargetHost[Servidor Físico / Virtual]
+        RiskEngine -.->|Contexto de riesgo| LLM
+        CTI -.->|IP C2 confirmada| VirtualPatch[Parcheo Virtual / Contención]
     end
 
     subgraph Interfaz de Mando (Frontend)
         OmniBE -->|WebSockets Alerts| WebUI[React + Vite Dashboard]
-        WebUI -->|Omni-Audit Matrix Tab| OmniBE
+        WebUI -->|Omni-Audit Matrix + Salud del Ecosistema| OmniBE
     end
 
     classDef tech fill:#1E293B,stroke:#38BDF8,stroke-width:1px,color:#fff;
-    class GitLab,Wazuh,Falco,Scan,OmniBE,SAST,SCA,IaC,LLMGov,ShadowAPI,Standards,Gemini,AutoMR,Ansible,TargetHost,WebUI tech;
+    class GitLab,Wazuh,Zeek,Falco,Scan,OmniBE,SAST,SCA,IaC,LLMGov,ShadowAPI,Standards,RiskEngine,CTI,Mitre,Neo4j,LLM,AutoMR,Ansible,TargetHost,VirtualPatch,WebUI tech;
 ```
 
 ---
@@ -130,12 +181,18 @@ flowchart TB
 | Método | Endpoint | Descripción |
 | :--- | :--- | :--- |
 | `POST` | `/api/gitlab/scan` | Inicia el escaneo y descubrimiento completo de todos los proyectos de GitLab. |
-| `POST` | `/api/gitlab/autofix/{vuln_id}` | Genera parche asistido por IA y abre un Merge Request en GitLab. |
+| `POST` | `/api/gitlab/autofix/{vuln_id}` | Genera parche (determinístico o asistido por IA) y abre un Merge Request en GitLab. |
 | `GET` | `/api/audit/full-spectrum` | Ejecuta el análisis Omni (SAST, SCA, IaC y Estándares de Auditoría). |
 | `GET` | `/api/audit/shadow-api` | Audita APIs fantasma y desviaciones del esquema OpenAPI. |
 | `GET` | `/api/audit/llm-governance` | Revisa el cumplimiento de OWASP Top 10 for LLMs y fugas de PII en IA. |
 | `GET` | `/api/audit/iac-k8s` | Audita manifiestos de Kubernetes, Helm Charts y Terraform. |
 | `GET` | `/api/audit/compliance-mapping` | Retorna la matriz de cumplimiento normativo (ISO 27001, NIST, PCI, SOC2, GDPR). |
+| `POST` | `/api/cis-benchmark/check/{asset_name}` | Ejecuta en vivo el subconjunto de hardening CIS Level 1 vía SSH contra un activo. |
+| `POST` | `/api/host-containment/{asset_name}` | Solicita el aislamiento de red de emergencia de un activo (requiere aprobación humana). |
+| `GET` | `/api/quality-gates/check` | Evalúa los umbrales de calidad reales (críticos/altos, ISO 25010) con grado A-F. |
+| `GET` | `/api/health` | Estado real de cada motor y servicio del ecosistema, con evidencia verificable (no valores fijos). |
+| `GET` | `/api/reports/executive` | Reporte ejecutivo PDF con Centinela Risk Score real, KEV, SLA y top-5 técnicas MITRE ATT&CK. |
+| `GET` | `/api/reports/coverage` | Reporte PDF de cobertura: qué motores corrieron sobre cada activo y con qué resultado. |
 
 ---
 
@@ -143,17 +200,22 @@ flowchart TB
 
 | Componente | Herramientas | Propósito |
 | :--- | :--- | :--- |
-| **Cerebro Generativo** | Google Gemini 1.5 Flash, NVIDIA NIM | Correlación de amenazas, generación de reportes y parches de código. |
+| **Cerebro Generativo** | Groq (proveedor primario configurado), con cadena de respaldo NVIDIA NIM → OpenRouter → Google GenAI → Ollama (local) | Correlación de amenazas, generación de reportes y parches de código. Si ningún proveedor responde, un motor heurístico determinístico genera el análisis y — cuando aplica — un script real, en vez de dejar el hallazgo sin procesar. |
 | **Gobernanza de IA** | Auditor Nativo OWASP LLM | Detección de Prompt Injection, fuga de PII y guardrails de modelo. |
-| **Runtime Security** | Falco, Wazuh | Monitoreo continuo de servidores físicos y virtuales Linux/Windows. |
-| **Escaneo de Red** | Nuclei, Nmap, Medusa | Detección perimetral de vulnerabilidades y fuerza bruta en puertos. |
-| **Análisis Estático (SAST)** | Auditor Nativo AST | Detección de SQLi, Command Injection, BOLA/BFLA y Complejidad Cognitiva. |
-| **Composición de Software (SCA)** | Auditor Nativo SCA | Detección de dependencias vulnerables en `requirements.txt` y `package.json`. |
-| **Hardening IaC & Docker** | Auditor Nativo CIS Benchmarks | Verificación de ejecuciones non-root, Dockerfiles y manifiestos K8s. |
-| **Mapeo de Cumplimiento** | Compliance Mapper | Mapeo directo a ISO 27001, NIST SP 800-53, PCI-DSS v4.0, SOC 2 y GDPR. |
-| **Integración Git** | GitLab REST API v4, Git CLI, Maven | Clonación automatizada, builds y generación de Merge Requests con parches. |
-| **Orquestación SOAR** | Ansible (Playbooks), Docker SDK | Remediación autónoma e instalación automática de agentes. |
-| **Frontend & Gateway** | React, Vite, Tailwind CSS, Nginx | Dashboard dinámico con visualización de matriz Omni-Audit y WebSockets. |
+| **EDR / NDR** | Wazuh Manager, Zeek | Telemetría de endpoint (agentes) y de red (conn.log en vivo) sobre servidores físicos y virtuales Linux/Windows. |
+| **Grafo de Ataques AD** | Neo4j / BloodHound | Rutas de escalamiento de privilegios hacia Domain Admins — motor real, en espera de datos de un dominio AD real. |
+| **Inteligencia de Amenazas** | FIRST.org (EPSS), CISA KEV, Feodo Tracker (abuse.ch) | Fuentes públicas en vivo para el Centinela Risk Score y el feed de IPs C2/IoC. |
+| **DAST** | OWASP ZAP | Escaneo dinámico de aplicaciones en ejecución (cabeceras, XSS, fugas de información). |
+| **OSINT** | SpiderFoot | Subdominios, WHOIS, huella digital de tecnología expuesta. |
+| **Secretos** | TruffleHog | Credenciales y llaves filtradas en historial de Git. |
+| **Escaneo de Red** | Nuclei, Nmap | Detección perimetral de vulnerabilidades y descubrimiento de puertos/servicios. |
+| **Análisis Estático (SAST)** | Auditor Nativo AST, Semgrep, Medusa (`medusa-security`) | Detección de SQLi, Command Injection, secretos hardcodeados, complejidad cognitiva y patrones inseguros en apps con componentes GenAI. |
+| **Composición de Software (SCA)** | Auditor Nativo SCA (OSV.dev en vivo), Trivy / Grype / Syft | Dependencias vulnerables en `requirements.txt`/`package.json` y CVEs en imágenes de contenedor, con análisis de alcanzabilidad real. |
+| **Hardening de Sistema y Contenedores** | Auditor Nativo CIS Benchmarks (SSH), Checkov (IaC) | Subconjunto real de CIS Level 1 Linux bajo demanda; Terraform/Kubernetes/Helm vía Checkov. |
+| **Mapeo de Cumplimiento** | Compliance Mapper, MITRE ATT&CK® | Mapeo directo a ISO 27001, NIST SP 800-53, PCI-DSS v4.0, SOC 2, GDPR y técnicas ATT&CK reales por hallazgo. |
+| **Integración Git** | GitLab REST API v4, Git CLI | Clonación automatizada, escaneo y generación de Merge Requests con parches determinísticos o asistidos por IA. |
+| **Orquestación SOAR** | Ansible (Playbooks), Docker SDK, HashiCorp Vault | Remediación autónoma con aprobación humana, instalación automática de agentes, y credenciales por activo nunca almacenadas en la base de datos. |
+| **Frontend & Gateway** | React, Vite, Tailwind CSS, Nginx | Dashboard dinámico con visualización de matriz Omni-Audit, salud del ecosistema y WebSockets. |
 | **Backend & API** | FastAPI, Python 3.12, WebSockets | Microservicios de alto rendimiento y endpoints de auditoría omnidireccional. |
 
 ---
