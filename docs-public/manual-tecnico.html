@@ -628,18 +628,38 @@
             </tr>
             <tr>
               <td><b>Análisis de alcanzabilidad de código</b></td>
-              <td><span class="chip info">🚧 Roadmap</span></td>
-              <td>Determinar si una dependencia vulnerable es realmente invocada por el código (vs. importada pero nunca usada), para reducir falsos positivos. No implementado todavía.</td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Para dependencias vulnerables: verifica si el paquete realmente se importa en el código (vs. solo declarado en el manifiesto y nunca usado), etiquetando cada hallazgo como <code>REACHABLE</code> o <code>UNREACHABLE</code> para reducir falsos positivos.</td>
             </tr>
             <tr>
-              <td><b>Parcheo virtual / autónomo</b></td>
-              <td><span class="chip info">🚧 Roadmap</span></td>
-              <td>Mitigación temporal (reglas de firewall/proxy) sin reiniciar el servicio, mientras se aplica el parche real. No implementado todavía.</td>
+              <td><b>Parcheo virtual</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Cuando una IP confirmada como servidor de comando-y-control activo (fuente pública en vivo) coincide con uno de nuestros activos, se bloquea a nivel de reverse-proxy sin tocar el código de la aplicación ni reiniciar el servicio.</td>
             </tr>
             <tr>
-              <td><b>Matriz MITRE ATT&CK, grafo de rutas de ataque, feeds de inteligencia de amenazas, aislamiento de host</b></td>
-              <td><span class="chip info">🚧 Roadmap</span></td>
-              <td>Ninguna de estas capacidades tiene código implementado todavía.</td>
+              <td><b>Matriz MITRE ATT&CK®</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Los hallazgos con una técnica de ataque real y verificable se mapean a su ID oficial de ATT&CK. Los hallazgos de calidad de código (no son técnicas de ataque) se dejan intencionalmente sin mapear en vez de forzar una clasificación falsa.</td>
+            </tr>
+            <tr>
+              <td><b>Auditoría de hardening CIS</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Subconjunto de ~11 verificaciones reales (SSH, permisos de archivos críticos, firewall, cuentas sin contraseña, auditoría, sincronización de tiempo) ejecutadas en vivo por SSH sobre el activo, con grado A-F. No es el benchmark oficial completo de CIS.</td>
+            </tr>
+            <tr>
+              <td><b>Feeds de inteligencia de amenazas (CTI/IoC)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Cruce en vivo contra una fuente pública de IPs de servidores de comando-y-control activos, tanto contra los activos registrados como contra alertas de red en tiempo real.</td>
+            </tr>
+            <tr>
+              <td><b>Aislamiento de host (contención de emergencia)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Solicitud de aislamiento de red de un activo comprometido, disponible desde el dashboard. Como cualquier otra remediación, requiere aprobación humana explícita antes de ejecutarse — nunca se dispara automáticamente.</td>
+            </tr>
+            <tr>
+              <td><b>Grafo de rutas de ataque (Active Directory)</b></td>
+              <td><span class="chip info">🚧 Bloqueado</span></td>
+              <td>La consulta de análisis de rutas de escalamiento a Domain Admins es real y correcta, pero no hay datos reales de Active Directory cargados en el grafo todavía — requiere ejecutar una herramienta de recolección (SharpHound) contra el dominio real, un paso que necesita acceso y credenciales del dominio que no están disponibles en este momento.</td>
             </tr>
           </tbody>
         </table>

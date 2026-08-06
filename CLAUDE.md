@@ -6,64 +6,119 @@ integration, and a React dashboard. Spanish is the primary language for UI copy,
 
 ## Omni-XDR 2.0 Architectural Vision & Standards
 
-**Status note (2026-08-05, corrected same day):** this section previously claimed, in the
-present tense, that Centinela "operates as a unified Omni-XDR and Autonomous Remediation
-Platform, synthesizing core capabilities from 5 market leaders." That was not true when
-written — several of the pieces below existed only as schema columns or pure functions nothing
-ever called with real data, silently producing plausible-looking but constant/fake values (the
-exact same failure pattern as the earlier SOAR-remediation-realness investigation in "Known open
-issues" below). Verify against the code before trusting this list; the per-item status is kept
-current here as each piece is actually built and verified live, not aspirationally.
-
-Centinela AI is working toward a unified Omni-XDR and Autonomous Remediation Platform,
-inspired by capabilities from Vicarius (vRx), Aikido Security, DefectDojo, Kiuwan, and
-Datadog Security/Wiz/CrowdStrike. Status per capability:
+**Status note (2026-08-05):** this section was previously found claiming, in the present tense,
+capabilities that didn't exist — schema columns or pure functions nothing ever called with real
+data, silently producing plausible-looking but constant/fake values. All 11 items below have
+since been verified live, one at a time, with real external data sources where applicable.
+Verify against the code before trusting this list if it's been a while — the per-item status is
+kept current here as each piece is actually built/changed, not aspirationally.
 
 1. **Centinela Risk Score (CRS)** combining CVSS + EPSS + CISA KEV + Asset Criticality —
-   **✅ real as of 2026-08-05**. `core/deduplication_engine.py` has the formula;
-   `core/threat_intel.py` queries FIRST.org's EPSS API and CISA's public KEV catalog live
-   (both free, no auth). Previously `epss_score`/`is_cisa_kev` were schema columns nothing ever
-   wrote to (defaulted to `0.0`/`FALSE`), so every CRITICAL finding got the exact same score
-   (47.5) regardless of real-world exploitation status — confirmed live via `SELECT risk_score,
-   COUNT(*) ... GROUP BY risk_score` showing exactly 4 fixed values across ~1200 rows before the
-   fix. `run_threat_intel_enrichment_loop()` in `centinela.py` backfills existing rows and keeps
-   new ones current (re-checks every 24h — EPSS scores genuinely change over time).
-   **Still an approximation**: the "CVSS" component has no real per-CVE numeric score anywhere
-   in this schema, so it's derived from the severity bucket a scanner already assigned
+   **✅ real**. `core/deduplication_engine.py` has the formula; `core/threat_intel.py` queries
+   FIRST.org's EPSS API and CISA's public KEV catalog live (both free, no auth).
+   `run_threat_intel_enrichment_loop()` in `centinela.py` backfills existing rows and re-checks
+   every 24h. Verified live: Log4Shell (CVE-2021-44228) correctly flags as CISA KEV, the XZ
+   backdoor (CVE-2024-3094, caught pre-mass-exploitation) correctly doesn't; risk_score went
+   from exactly 4 fixed values across ~1200 rows to 15+ real distinct ones.
+   **Still an approximation**: no real per-CVE numeric CVSS score exists anywhere in this
+   schema, so the CVSS component is derived from the severity bucket a scanner already assigned
    (CRITICAL→9.5 etc.), not a real NVD CVSS vector lookup (NVD's public API is heavily
-   rate-limited without a key, impractical for bulk backfill — flagged as a possible future
-   improvement, not attempted).
-   Autonomous/virtual patching (WAF/sysctl/eBPF rules applied without a reboot) — **❌ not
-   started**, zero code anywhere.
-2. **Reachability filtering** (`REACHABLE` vs `UNREACHABLE` code paths) — **❌ not started**.
-   `vulnerability_log.reachability_status` exists as a column but nothing ever computes it;
-   every row silently defaults to `'REACHABLE'` in the read path (`main.py`'s
-   `COALESCE(v.reachability_status, 'REACHABLE')`), which is indistinguishable from a real
-   "yes, reachable" analysis result — a latent version of the same fake-default problem.
-3. **Multi-tool deduplication fingerprinting** — **✅ real as of 2026-08-05**.
+   rate-limited without a key, impractical for bulk backfill).
+2. **Reachability filtering** (`REACHABLE` vs `UNREACHABLE`) — **✅ real**.
+   `check_reachability()` in `auditor_sca_dependencies.py` greps the actual source tree for a
+   real `import`/`require` of the vulnerable package — a dependency merely listed in
+   `requirements.txt`/`package.json` but never imported anywhere is real, honest signal that the
+   vulnerable code path can't execute. This is import-based matching, not true per-CVE
+   call-graph/taint analysis into the specific vulnerable function (no ecosystem reliably
+   exposes "this exact symbol is unsafe" metadata) — documented as a real but coarser signal in
+   the function's own docstring. Verified live: a genuinely-imported package correctly flags
+   REACHABLE, one merely listed in the manifest but never imported correctly flags UNREACHABLE.
+3. **Multi-tool deduplication fingerprinting** — **✅ real**.
    `calculate_fingerprint()` existed in `deduplication_engine.py` but nothing ever called it —
-   `fingerprint_hash` was empty on every row. Added `log_finding_deduplicated()` (same file), a
-   shared three-tier logger now called from `auditor_zap.py`, `auditor_master_vulnerabilities.py`,
-   `auditor_sca_dependencies.py`, and `auditor_compliance_standards.py`'s insert paths: (1) same
-   fingerprint already open, any engine → update in place; (2) no fingerprint match but the same
-   *real* CVE (extracted from cve_id) already open on this asset from a *different* scan_engine →
-   genuine cross-tool duplicate → merge a detection note onto the existing row instead of opening
-   a second ticket (this is the actual new capability — per-engine dedup already existed, but
-   nothing previously caught e.g. Nuclei and `sca-native` both independently flagging the same
-   CVE on the same asset); (3) otherwise insert fresh. Verified live: a cross-tool merge test
-   (same CVE, two different scan_engine values) correctly produced one row, not two.
-   Still not wired into `auditor_ext.py`/`auditor_medusa.py`/`auditor_secrets.py`/
-   `auditor_spiderfoot.py`/`core/heuristics_engine.py` — flagged as follow-up, not attempted yet.
+   `fingerprint_hash` was empty on every row. `log_finding_deduplicated()` (same file) is a
+   shared three-tier logger called from `auditor_zap.py`, `auditor_master_vulnerabilities.py`,
+   `auditor_sca_dependencies.py`, `auditor_compliance_standards.py`, and
+   `process_bloodhound_paths()`'s insert paths: (1) same fingerprint already open, any engine →
+   update in place; (2) no fingerprint match but the same *real* CVE already open on this asset
+   from a *different* scan_engine → genuine cross-tool duplicate → merge a detection note onto
+   the existing row instead of opening a second ticket; (3) otherwise insert fresh. Verified
+   live: a cross-tool merge test (same CVE, two different scan_engine values) correctly produced
+   one row, not two. Still not wired into `auditor_ext.py`/`auditor_medusa.py`/
+   `auditor_secrets.py`/`auditor_spiderfoot.py`/`core/heuristics_engine.py` — flagged as
+   follow-up, not attempted.
    **SLA deadline tracking** (Critical 24h / High 7d / Medium 30d / Low 90d) — **✅ real**,
-   `calculate_sla_due_date()`/`is_sla_breached()` are correctly wired in `main.py`'s
+   `calculate_sla_due_date()`/`is_sla_breached()` correctly wired in `main.py`'s
    `/api/remediation`.
 4. **Quality Gates** (Grade A/B/F, ISO 25010 thresholds) — **✅ real**.
    `auditors/auditor_quality_gates.py` + `/api/quality-gates/check` genuinely queries real
    unresolved findings and evaluates real thresholds. No fake data found here.
-5. **MITRE ATT&CK taxonomy mapping, CIS Benchmarks hardening audits, Neo4j Attack Path
-   Graphing, CTI/IoC feed ingestion, emergency Host Containment** — **❌ not started**, zero
-   code anywhere (confirmed: zero matches for any of these terms in `Dashboard.jsx` or the
-   `auditors/` directory as of 2026-08-05).
+5. **MITRE ATT&CK® taxonomy mapping** — **✅ real, partial coverage by design**.
+   `core/mitre_attack.py` maps Centinela's own finding categories (cve_id prefixes, plus ZAP's
+   "Type:" text for DAST findings) to real, verifiable ATT&CK technique IDs, written into the
+   previously-unused `vulnerability_log.standards` column via the same shared
+   `log_finding_deduplicated()` path. Deliberately leaves code-quality findings
+   (`STD-ISO25010-LONG-METHOD`, `COGNITIVE-COMPLEXITY-EXCEEDED`) and non-findings (`SCAN-AUDIT`,
+   `HEURISTIC-SECURITY-DEBT`) unmapped — ATT&CK models adversary behavior, not code
+   maintainability, and forcing a technique onto something that isn't an attack technique would
+   repeat the same fake-precision problem found elsewhere in this codebase. Verified live: a
+   one-time backfill mapped 714 of 1427 existing findings to a real technique; the rest were
+   correctly left unmapped.
+6. **CIS Benchmarks hardening audits** — **✅ real, explicitly partial scope**.
+   `auditors/auditor_cis_benchmarks.py` runs ~11 real, read-only, distro-general CIS Level 1
+   Linux checks over SSH (SSH root login, password auth, `/etc/passwd`/`/etc/shadow`
+   permissions, password minimum length, firewall active, empty-password accounts, auditd,
+   IP forwarding, core dumps, time sync) via `/api/cis-benchmark/check/{asset_name}` — this is
+   **not** the full official CIS benchmark (hundreds of items, distro-version-specific), just a
+   defensible, commonly-cited subset. A real bug was caught during live verification against
+   `casmart_authentik`: `systemctl is-active` prints the literal string `"inactive"` on
+   failure, which contains `"active"` as a substring — the original substring-match checks
+   (firewall, auditd, time sync) reported false PASSes on a host where the firewall and auditd
+   were both genuinely off. Fixed by always emitting an unambiguous `RESULT:ACTIVE`/
+   `RESULT:INACTIVE` ourselves rather than trusting the tool's own raw stdout; the real grade on
+   that host dropped from a falsely-inflated C (54.5%) to an honest F (36.4%).
+7. **Neo4j Attack Path Graphing** — **⚠️ code is real, but has no real data to run against**.
+   `process_bloodhound_paths()` in `centinela.py` runs a real, standard BloodHound Cypher query
+   (shortest path from any non-admin user to Domain Admins) — this part was already correct.
+   But the Neo4j graph has zero `:User`/`:Group` nodes (confirmed live: `MATCH (u:User) RETURN
+   count(u)` returns 0) because nothing in this codebase ever imports real AD collector output
+   (SharpHound/AzureHound) into it — the query has in all likelihood never once found real data
+   to analyze. That ingestion step needs to run against the actual CASMARTS AD domain with
+   domain credentials, which is outside what this environment (Ansible/SSH to already-known
+   hosts) has access to — flagged as blocked on infrastructure access, not attempted. Also fixed
+   two real bugs found alongside this: the insert used the same no-op `ON CONFLICT DO NOTHING`
+   as other tables (replaced with the shared dedup logger), and asset attribution used to fall
+   back to an arbitrary `SERVER`-type asset when no asset was literally named "Active
+   Directory", misattributing a real attack-path finding to an unrelated host.
+8. **CTI/IoC feed ingestion** — **✅ real**. `core/cti_feed.py` queries abuse.ch's Feodo
+   Tracker (free, public, no auth) for currently-active C2 server IPs, cached hourly.
+   `run_cti_correlation_loop()` in `centinela.py` cross-references two real sources: registered
+   asset IPs (`infra_inventory`) and IPs mentioned in `runtime_alerts` (Falco/Zeek output
+   already ingested elsewhere) — a hit on the first means one of our own hosts' IPs is a known
+   C2 server, a hit on the second means a runtime alert involved a connection to one. The
+   `runtime_alerts` side has nothing to check today (0 rows — no Falco/Zeek alert has fired yet
+   in this deployment) but the mechanism is real and starts working the moment they do. Verified
+   live end-to-end with a disposable test asset set to a real IP from the live feed.
+9. **Virtual/autonomous patching** — **✅ real, narrower scope than the original vision**.
+   `generate_ip_block_virtual_patch()` blocks a CTI-confirmed-malicious IP at the reverse-proxy
+   layer (`deny <ip>;`) without touching application code or restarting the service, reusing the
+   exact nginx-detection pattern already verified for the ZAP header fix. A true per-URL/
+   per-CVE virtual patch (blocking a *specific* vulnerable endpoint) was considered and
+   deliberately not built: unlike `add_header`/`proxy_hide_header`/`deny`, an nginx `location`
+   block only takes effect inside the correct existing `server{}` block for the target vhost —
+   blindly inserting one into a separate additive conf.d snippet either does nothing (wrong
+   context) or requires editing the existing vhost file directly, which is not purely additive
+   and risks breaking it. `deny` at the `http` context level applies to every server block via
+   normal nginx directive inheritance, the same safe mechanism the header fix already relies on.
+10. **Emergency Host Containment** — **✅ real**. `POST /api/host-containment/{asset_name}`
+    creates a `HOST-CONTAINMENT-REQUEST` finding that flows through the *exact same*
+    correlate → human approval → Sentinel execution pipeline as every other remediation in this
+    system — it does not execute anything directly. The generated script (in
+    `generate_heuristic_script()`) backs up current firewall rules to the target host before
+    applying a deny-all-except-DNS/NTP lockdown, and deliberately has no automatic rollback —
+    an emergency containment should not be able to undo itself. Verified the request-creation
+    and script-generation path live against a disposable test asset; never approved/executed
+    against a real host (that action is genuinely disruptive and must be a deliberate human
+    decision made through the real SOAR UI, not something to fire during verification).
 
 ## Architecture
 
