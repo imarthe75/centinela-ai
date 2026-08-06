@@ -177,34 +177,22 @@ def run_master_vulnerability_scan(target_dir: str = "/opt/centinela-ai", asset_i
     # 2. "ON CONFLICT DO NOTHING" with no conflict target only suppresses inserts that violate
     #    an actual unique constraint -- vulnerability_log has none beyond its own id, so this
     #    was a complete no-op and every re-scan re-inserted every finding as brand new (the same
-    #    failure mode CLAUDE.md already documents for this table). Replaced with an explicit
-    #    SELECT-then-UPDATE/INSERT dedupe by (asset_id, cve_id, url_path), the same pattern
-    #    already working in auditor_zap.py's log_zap_findings().
+    #    failure mode CLAUDE.md already documents for this table). Replaced with
+    #    deduplication_engine.log_finding_deduplicated(), which also merges cross-tool (e.g. the
+    #    same real CVE independently flagged by sca-native/Nuclei on this asset collapses into
+    #    one ticket instead of creating a second one).
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
                 location = f"{rel_path}:{item.get('line', 0)}"
                 description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
 
-                cur.execute("""
-                    SELECT id FROM public.vulnerability_log
-                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
-                """, (asset_id, item["cve_id"], location))
-                existing = cur.fetchone()
-
-                if existing:
-                    cur.execute("""
-                        UPDATE public.vulnerability_log
-                        SET severity = %s, description = %s, detected_at = NOW(), status = 'OPEN'
-                        WHERE id = %s
-                    """, (item["severity"], description, existing[0]))
-                else:
-                    cur.execute("""
-                        INSERT INTO public.vulnerability_log
-                        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path)
-                        VALUES (%s, %s, %s, %s, 'OPEN', 'sast-native', NOW(), %s)
-                    """, (asset_id, item["cve_id"], item["severity"], description, location))
+                deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, item["cve_id"], item["severity"], description,
+                    "sast-native", url_path=location, open_status="OPEN"
+                )
     except Exception as db_err:
         print(f"⚠️ [Master-Auditor] Could not log findings to DB: {db_err}")
 
