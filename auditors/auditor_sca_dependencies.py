@@ -235,13 +235,15 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
             except Exception as e:
                 print(f"⚠️ [SCA-Auditor] Could not read {full_path}: {e}")
 
-    # Persist findings to database. Same two fixes as auditor_master_vulnerabilities.py: the
-    # file location was never stored anywhere (url_path), and the bare "ON CONFLICT DO NOTHING"
-    # had no matching unique constraint to trigger on, so it silently re-inserted every finding
-    # as brand new on every scan. Also embeds package/installed/fixed_version/manifest into the
-    # description in a parseable form so a real "bump to fixed_version in manifest" patch can be
-    # generated later without re-deriving this from KNOWN_VULNERABLE_PACKAGES again.
+    # Persist findings to database. Same fixes as auditor_master_vulnerabilities.py: file
+    # location stored in url_path, and deduplication_engine.log_finding_deduplicated() replaces
+    # the old no-op "ON CONFLICT DO NOTHING" -- also merges cross-tool (e.g. the same real CVE
+    # independently flagged by Nuclei/sast-native on this asset collapses into one ticket).
+    # Description embeds package/installed/fixed_version/manifest in a parseable form so a real
+    # "bump to fixed_version in manifest" patch can be generated later without re-deriving this
+    # from KNOWN_VULNERABLE_PACKAGES/OSV again.
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
@@ -255,24 +257,10 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
                     f"{item['description']}"
                 )
 
-                cur.execute("""
-                    SELECT id FROM public.vulnerability_log
-                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
-                """, (asset_id, item["cve_id"], location))
-                existing = cur.fetchone()
-
-                if existing:
-                    cur.execute("""
-                        UPDATE public.vulnerability_log
-                        SET severity = %s, description = %s, detected_at = NOW(), status = 'OPEN'
-                        WHERE id = %s
-                    """, (item["severity"], description, existing[0]))
-                else:
-                    cur.execute("""
-                        INSERT INTO public.vulnerability_log
-                        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path)
-                        VALUES (%s, %s, %s, %s, 'OPEN', 'sca-native', NOW(), %s)
-                    """, (asset_id, item["cve_id"], item["severity"], description, location))
+                deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, item["cve_id"], item["severity"], description,
+                    "sca-native", url_path=location, open_status="OPEN"
+                )
     except Exception as db_err:
         print(f"⚠️ [SCA-Auditor] Could not log findings to DB: {db_err}")
 

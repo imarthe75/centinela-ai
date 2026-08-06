@@ -20,7 +20,7 @@ import requests
 import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
-from core import db_manager
+from core import db_manager, deduplication_engine
 import random
 import string
 
@@ -451,29 +451,18 @@ def log_zap_findings(asset_id: int, target_url: str, findings: List[Dict], scan_
                 if finding['evidence']:
                     description += f"**Evidence:** ```\\n{finding['evidence']}\\n```\\n\\n"
 
-                # Check if this exact finding already exists (deduplication)
-                cur.execute("""
-                    SELECT id FROM vulnerability_log
-                    WHERE asset_id = %s AND cve_id = %s AND url_path = %s
-                """, (asset_id, cve_id, finding['url']))
-
-                existing = cur.fetchone()
-
-                if existing:
-                    # Update existing
-                    cur.execute("""
-                        UPDATE vulnerability_log
-                        SET severity = %s, description = %s, detected_at = NOW(), status = 'NEW'
-                        WHERE id = %s
-                    """, (severity, description, existing[0]))
+                # Deduplicates within ZAP's own prior findings AND cross-tool (e.g. the same
+                # real CVE already flagged by Nuclei/sca-native on this asset gets merged
+                # instead of opening a second ticket) via the shared fingerprint-based logger.
+                action, row_id = deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, cve_id, severity, description, "zap",
+                    url_path=finding['url'], open_status="NEW"
+                )
+                if action == "updated":
                     print(f"  🔄 Updated ZAP finding: [{severity}] {cve_id} on {finding['url']}")
+                elif action == "merged":
+                    print(f"  🔗 Merged ZAP finding into existing cross-tool ticket: [{severity}] {cve_id}")
                 else:
-                    # Insert new
-                    cur.execute("""
-                        INSERT INTO vulnerability_log
-                        (asset_id, cve_id, severity, description, status, detected_at, scan_engine, url_path)
-                        VALUES (%s, %s, %s, %s, 'NEW', NOW(), 'zap', %s)
-                    """, (asset_id, cve_id, severity, description, finding['url']))
                     print(f"  📝 Logged ZAP finding: [{severity}] {cve_id}")
 
         print(f"✅ Logged {len(findings)} ZAP findings for asset {asset_id}")
