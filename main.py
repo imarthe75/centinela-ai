@@ -898,7 +898,12 @@ async def get_system_health():
                 {"name": "NDR (Zeek)", "status": check_zeek_ingestion(), "latency": "N/A"},
                 {"name": "ITDR (Neo4j/BloodHound)", "status": check_neo4j(), "latency": "N/A"},
                 {"name": "Secrets Backend (Vault)", "status": check_vault(), "latency": "N/A"},
-                {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000"), "latency": "N/A"},
+                # Wazuh's API genuinely takes longer than the default 3s to respond even to an
+                # unauthenticated request -- confirmed live: it reliably answers (401, meaning
+                # it's actually up, just requires auth -- check_http() doesn't inspect status
+                # codes, so this was never about the response itself) within ~15s but times out
+                # at 3s. The manager was never actually down; the check was just too impatient.
+                {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000", timeout=12), "latency": "N/A"},
                 {"name": "Identity (Authentik)", "status": check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal")), "latency": "N/A"},
             ],
             "scan_modules": {

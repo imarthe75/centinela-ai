@@ -64,30 +64,22 @@ def get_recent_vulnerabilities(minutes=30):
 def log_heuristic_alert(asset_id, heuristic_cve, severity, description):
     """Logs the heuristic finding into vulnerability_log."""
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
-            # Check if this exact heuristic CVE already exists for this asset
-            cur.execute("""
-                SELECT id, status FROM vulnerability_log 
-                WHERE asset_id = %s AND cve_id = %s
-            """, (asset_id, heuristic_cve))
-            exists = cur.fetchone()
-            
-            if exists:
-                # Update description, severity, reset status if resolved
-                status = exists[1]
-                new_status = 'REOPENED' if status == 'RESOLVED' else status
-                cur.execute("""
-                    UPDATE vulnerability_log 
-                    SET severity = %s, description = %s, detected_at = NOW(), status = %s
-                    WHERE id = %s
-                """, (severity, description, new_status, exists[0]))
+            # description varies between calls (e.g. HEURISTIC-SECURITY-DEBT lists whichever
+            # underlying CVEs happened to be accumulated this time), so heuristic_cve itself is
+            # passed as url_path to keep the fingerprint stable across re-runs instead of
+            # falling back to the varying description. preserve_status=True keeps the original
+            # RESOLVED->REOPENED nuance (and leaves any other status untouched).
+            action, _ = deduplication_engine.log_finding_deduplicated(
+                cur, asset_id, heuristic_cve, severity, description, "heuristics-engine",
+                url_path=heuristic_cve, open_status="NEW", preserve_status=True
+            )
+            if action == "updated":
                 print(f"  🔄 Updated Heuristic Alert in DB: [{severity}] {heuristic_cve}")
+            elif action == "merged":
+                print(f"  🔗 Merged Heuristic Alert into existing cross-tool ticket: [{severity}] {heuristic_cve}")
             else:
-                # Insert new heuristic alert
-                cur.execute("""
-                    INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status, detected_at)
-                    VALUES (%s, %s, %s, %s, 'NEW', NOW())
-                """, (asset_id, heuristic_cve, severity, description))
                 print(f"  📝 Logged Heuristic Alert in DB: [{severity}] {heuristic_cve}")
     except Exception as e:
         print(f"❌ [Heuristics-Engine] Error logging alert: {e}")

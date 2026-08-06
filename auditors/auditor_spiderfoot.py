@@ -308,16 +308,23 @@ def query_alienvault_otx(ip_or_domain: str) -> Dict:
 # ─────────────────────────────────────────────
 
 def log_osint_finding(asset_id: int, cve_id: str, severity: str, description: str):
-    """Stores OSINT finding in vulnerability_log."""
+    """
+    Stores OSINT finding in vulnerability_log. Previously used
+    `ON CONFLICT (asset_id, cve_id) DO UPDATE`, which requires a real unique constraint on
+    exactly those columns to exist -- confirmed live it never did (only the id primary key and
+    some plain, non-unique indexes exist on this table), so every single call here was silently
+    throwing a real database error, caught by the broad except below and logged, but never
+    actually persisted. Confirmed live: 0 spiderfoot-sourced rows existed in production despite
+    this function having been called routinely -- every OSINT finding this engine ever produced
+    was silently lost.
+    """
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
-            cur.execute("""
-                INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status, detected_at, scan_engine)
-                VALUES (%s, %s, %s, %s, 'NEW', NOW(), 'spiderfoot')
-                ON CONFLICT (asset_id, cve_id) DO UPDATE SET
-                    description = EXCLUDED.description,
-                    detected_at = NOW()
-            """, (asset_id, cve_id, severity, description))
+            deduplication_engine.log_finding_deduplicated(
+                cur, asset_id, cve_id, severity, description, "spiderfoot",
+                url_path=cve_id, open_status="NEW"
+            )
     except Exception as e:
         logger.error(f"Error logging OSINT finding: {e}")
 

@@ -218,9 +218,16 @@ def log_secrets(asset_id: int, repo_path: str, findings: List[Dict], scan_phase:
         return
 
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
             for finding in findings:
+                # cve_id was previously built ONLY from the secret type ("SECRETS-API_KEY-
+                # PHASE1"), with no file/line -- a real bug, not just duplicate spam: two
+                # distinct hardcoded secrets of the same type in two different files shared the
+                # same dedup key and silently overwrote each other on every scan, meaning only
+                # the last one scanned was ever visible. location now disambiguates by file+line.
                 cve_id = f"SECRETS-{finding['type'].upper()}-PHASE{scan_phase}"
+                location = f"{finding.get('file', 'unknown')}:{finding.get('line', 0)}"
                 severity = finding.get("severity", "HIGH")
 
                 description = (
@@ -242,29 +249,16 @@ def log_secrets(asset_id: int, repo_path: str, findings: List[Dict], scan_phase:
                     f"4. Add to .gitignore and/or .centinela-secrets-whitelist.json if false positive\\n"
                 )
 
-                # Check if already exists
-                cur.execute("""
-                    SELECT id FROM vulnerability_log
-                    WHERE asset_id = %s AND cve_id = %s
-                    LIMIT 1
-                """, (asset_id, cve_id))
-
-                if cur.fetchone():
-                    # Update existing
-                    cur.execute("""
-                        UPDATE vulnerability_log
-                        SET description = %s, detected_at = NOW()
-                        WHERE asset_id = %s AND cve_id = %s
-                    """, (description, asset_id, cve_id))
-                    print(f"  🔄 Updated secrets finding: [{severity}] {cve_id}")
+                action, _ = deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, cve_id, severity, description, "secrets",
+                    url_path=location, open_status="NEW"
+                )
+                if action == "updated":
+                    print(f"  🔄 Updated secrets finding: [{severity}] {cve_id} @ {location}")
+                elif action == "merged":
+                    print(f"  🔗 Merged secrets finding into existing cross-tool ticket: [{severity}] {cve_id}")
                 else:
-                    # Insert new
-                    cur.execute("""
-                        INSERT INTO vulnerability_log
-                        (asset_id, cve_id, severity, description, status, detected_at, scan_engine)
-                        VALUES (%s, %s, %s, %s, 'NEW', NOW(), 'secrets')
-                    """, (asset_id, cve_id, severity, description))
-                    print(f"  📝 Logged secret: [{severity}] {cve_id}")
+                    print(f"  📝 Logged secret: [{severity}] {cve_id} @ {location}")
 
         print(f"✅ Logged {len(findings)} secrets for asset {asset_id}")
 

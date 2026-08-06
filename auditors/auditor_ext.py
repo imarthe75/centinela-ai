@@ -281,23 +281,20 @@ def scan_cache(asset_id, endpoint):
 
 def log_vulnerability(asset_id, cve_id, severity, description):
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
-            cur.execute("""
-                SELECT id FROM vulnerability_log WHERE asset_id = %s AND cve_id = %s LIMIT 1
-            """, (asset_id, cve_id))
-            exists = cur.fetchone()
-            if exists:
-                cur.execute("""
-                    UPDATE vulnerability_log
-                    SET severity = %s, description = %s,
-                        status = CASE WHEN status = 'RESOLVED' THEN 'REOPENED' ELSE status END
-                    WHERE id = %s
-                """, (severity, description, exists[0]))
-            else:
-                cur.execute("""
-                    INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status)
-                    VALUES (%s, %s, %s, %s, 'NEW')
-                """, (asset_id, cve_id, severity, description))
+            # Dedup key here is deliberately just (asset_id, cve_id), matching the original
+            # behavior -- description is NOT usable as a fingerprint location component for
+            # this engine (many call sites embed raw, run-to-run-variable tool output, e.g. the
+            # nmap port scan's full stdout), so cve_id itself is passed as url_path to keep the
+            # fingerprint stable across re-scans instead of falling back to the varying
+            # description. preserve_status=True keeps the original RESOLVED->REOPENED nuance
+            # (and leaves any other existing status untouched) rather than forcing 'NEW' onto a
+            # finding that might already be PENDING/CORRELATED/etc.
+            deduplication_engine.log_finding_deduplicated(
+                cur, asset_id, cve_id, severity, description, "nuclei-ext",
+                url_path=cve_id, open_status="NEW", preserve_status=True
+            )
     except Exception as e:
         print(f"❌ Error logging vuln: {e}")
 

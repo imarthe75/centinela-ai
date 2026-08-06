@@ -9,28 +9,21 @@ from core import db_manager
 def log_vulnerability(asset_id, cve_id, severity, description):
     """Logs the vulnerability in vulnerability_log database table."""
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
-            # Check if this vulnerability already exists for this asset and CVE
-            cur.execute("""
-                SELECT id FROM vulnerability_log 
-                WHERE asset_id = %s AND cve_id = %s
-            """, (asset_id, cve_id))
-            exists = cur.fetchone()
-            
-            if exists:
-                # Update it
-                cur.execute("""
-                    UPDATE vulnerability_log 
-                    SET severity = %s, description = %s, detected_at = NOW()
-                    WHERE id = %s
-                """, (severity, description, exists[0]))
+            # cve_id here already encodes file+line via a stable hash suffix (see
+            # run_medusa_scan below), so it's already a unique, stable per-finding identifier --
+            # passed as url_path to keep the fingerprint keyed the same way the original
+            # (asset_id, cve_id) dedup was, just with fingerprint_hash/MITRE mapping added.
+            action, _ = deduplication_engine.log_finding_deduplicated(
+                cur, asset_id, cve_id, severity, description, "medusa",
+                url_path=cve_id, open_status="NEW"
+            )
+            if action == "updated":
                 print(f"  🔄 Updated Medusa finding in DB: [{severity}] {cve_id}")
+            elif action == "merged":
+                print(f"  🔗 Merged Medusa finding into existing cross-tool ticket: [{severity}] {cve_id}")
             else:
-                # Insert it
-                cur.execute("""
-                    INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status, detected_at)
-                    VALUES (%s, %s, %s, %s, 'NEW', NOW())
-                """, (asset_id, cve_id, severity, description))
                 print(f"  📝 Logged Medusa finding in DB: [{severity}] {cve_id}")
     except Exception as e:
         print(f"❌ [Auditor-Medusa] Error logging to DB: {e}")
