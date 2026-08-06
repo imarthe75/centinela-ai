@@ -515,6 +515,7 @@ async def get_remediation_history(asset: Optional[str] = None):
                        COALESCE(v.epss_score, 0.15) as epss_score,
                        COALESCE(v.is_cisa_kev, FALSE) as is_cisa_kev,
                        COALESCE(v.risk_score, 0.0) as risk_score,
+                       v.standards as mitre_technique,
                        COALESCE(cs.badge_class, 'bg-slate-500/20 text-slate-400 border border-slate-500/30') as severity_badge_class,
                        COALESCE(cs.label, UPPER(v.severity)) as severity_label,
                        CASE 
@@ -618,6 +619,61 @@ async def check_quality_gates(asset: Optional[str] = None):
             cur.execute(query, params)
             vulns = cur.fetchall()
             return evaluate_asset_quality_gate(vulns)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/cis-benchmark/check/{asset_name}")
+async def run_cis_benchmark_check(asset_name: str, log_findings: bool = True):
+    """
+    Runs the real CIS Level 1 hardening check subset (auditors/auditor_cis_benchmarks.py) live
+    over SSH against the named asset -- read-only commands only, nothing is modified on the
+    target host. Optionally persists failed checks as real findings (default True).
+    """
+    try:
+        from auditors.auditor_cis_benchmarks import run_cis_audit, log_cis_findings
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, endpoint FROM public.infra_inventory WHERE asset_name = %s", (asset_name,))
+            asset = cur.fetchone()
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset '{asset_name}' not found")
+
+        result = run_cis_audit(asset_name, asset["endpoint"])
+        if log_findings:
+            log_cis_findings(asset["id"], result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/host-containment/{asset_name}")
+async def request_host_containment(asset_name: str, reason: str = "Solicitud manual desde el dashboard"):
+    """
+    Creates a HOST-CONTAINMENT-REQUEST finding for the named asset. Deliberately does NOT
+    execute anything directly -- this flows through the exact same correlate -> human approval
+    -> Sentinel execution pipeline as every other remediation in this system. Emergency
+    containment is disruptive (cuts off nearly all network access to the host) and must never
+    fire without an explicit human approval in the SOAR UI, the same safety net every other
+    action in this system already has.
+    """
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, endpoint FROM public.infra_inventory WHERE asset_name = %s", (asset_name,))
+            asset = cur.fetchone()
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset '{asset_name}' not found")
+
+        from core import deduplication_engine
+        description = f"**Solicitud de contención de emergencia**\n\n**Motivo:** {reason}"
+        with db_manager.get_db_cursor() as cur:
+            action, vuln_id = deduplication_engine.log_finding_deduplicated(
+                cur, asset["id"], "HOST-CONTAINMENT-REQUEST", "CRITICAL", description,
+                "manual-containment", open_status="PENDING"
+            )
+        return {"status": "requested", "vuln_id": vuln_id, "action": action,
+                "message": "Solicitud creada. Requiere aprobación en el SOAR para ejecutarse."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
