@@ -33,19 +33,40 @@ kept current here as each piece is actually built/changed, not aspirationally.
    exposes "this exact symbol is unsafe" metadata) — documented as a real but coarser signal in
    the function's own docstring. Verified live: a genuinely-imported package correctly flags
    REACHABLE, one merely listed in the manifest but never imported correctly flags UNREACHABLE.
-3. **Multi-tool deduplication fingerprinting** — **✅ real**.
+3. **Multi-tool deduplication fingerprinting** — **✅ real, wired into every auditor**.
    `calculate_fingerprint()` existed in `deduplication_engine.py` but nothing ever called it —
    `fingerprint_hash` was empty on every row. `log_finding_deduplicated()` (same file) is a
-   shared three-tier logger called from `auditor_zap.py`, `auditor_master_vulnerabilities.py`,
-   `auditor_sca_dependencies.py`, `auditor_compliance_standards.py`, and
-   `process_bloodhound_paths()`'s insert paths: (1) same fingerprint already open, any engine →
-   update in place; (2) no fingerprint match but the same *real* CVE already open on this asset
-   from a *different* scan_engine → genuine cross-tool duplicate → merge a detection note onto
-   the existing row instead of opening a second ticket; (3) otherwise insert fresh. Verified
-   live: a cross-tool merge test (same CVE, two different scan_engine values) correctly produced
-   one row, not two. Still not wired into `auditor_ext.py`/`auditor_medusa.py`/
-   `auditor_secrets.py`/`auditor_spiderfoot.py`/`core/heuristics_engine.py` — flagged as
-   follow-up, not attempted.
+   shared three-tier logger, now called from every module that writes to `vulnerability_log`:
+   `auditor_zap.py`, `auditor_master_vulnerabilities.py`, `auditor_sca_dependencies.py`,
+   `auditor_compliance_standards.py`, `auditor_ext.py`, `auditor_medusa.py`,
+   `auditor_secrets.py`, `auditor_spiderfoot.py`, `core/heuristics_engine.py`, and
+   `process_bloodhound_paths()`: (1) same fingerprint already open, any engine → update in
+   place; (2) no fingerprint match but the same *real* CVE already open on this asset from a
+   *different* scan_engine → genuine cross-tool duplicate → merge a detection note onto the
+   existing row instead of opening a second ticket; (3) otherwise insert fresh. Verified live: a
+   cross-tool merge test (same CVE, two different scan_engine values) correctly produced one
+   row, not two.
+   A `preserve_status` option was added to support `auditor_ext.py`/`core/heuristics_engine.py`'s
+   original (and genuinely good) nuance: a re-detected finding that was previously `RESOLVED`
+   becomes `REOPENED` rather than silently duplicated or silently treated as still-resolved;
+   any other status is left untouched rather than forced back to `NEW`/`OPEN`. Verified live.
+   **Two real, previously-hidden bugs found while wiring this in, unrelated to fingerprinting
+   itself:**
+   - `auditor_spiderfoot.py` used `ON CONFLICT (asset_id, cve_id) DO UPDATE` — a named conflict
+     target that requires a matching unique constraint to exist. Confirmed live: no such
+     constraint has ever existed on this table (only the `id` primary key and plain,
+     non-unique indexes). Every single call to `log_osint_finding()` was silently throwing a
+     real database error, caught by the function's own broad `except` and logged, but never
+     persisted — confirmed live with 0 `scan_engine='spiderfoot'` rows in production despite
+     this function being called routinely. Every OSINT finding this engine ever produced had
+     been silently lost since the function was written.
+   - `auditor_secrets.py` built `cve_id` from only the secret *type* (e.g.
+     `SECRETS-API_KEY-PHASE1`), with no file/line — not just duplicate spam but real, silent
+     data loss: two distinct hardcoded secrets of the same type in two different files shared
+     the exact same dedup key and silently overwrote each other on every scan, so only the last
+     one scanned was ever visible. Now disambiguated by `file:line` via `url_path`, verified
+     live with two distinct secrets of the same type producing two distinct rows.
+
    **SLA deadline tracking** (Critical 24h / High 7d / Medium 30d / Low 90d) — **✅ real**,
    `calculate_sla_due_date()`/`is_sla_breached()` correctly wired in `main.py`'s
    `/api/remediation`.
@@ -221,7 +242,27 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
    logs it and moves on. After a reorg, grep the whole tree for the old paths of anything that
    moved, not just check the moved file's own new location works.
 
-## Known open issues (as of 2026-08-04, updated same day)
+## Known open issues (as of 2026-08-04, updated 2026-08-06)
+
+- ~~`/api/health` showed Wazuh Manager "Unreachable" and Zeek "No Recent Data" despite both
+  being genuinely healthy~~ — **resolved 2026-08-06**. Two unrelated causes:
+  1. Wazuh's API genuinely takes longer than the health check's 3s timeout to respond, even to
+     an unauthenticated request — confirmed live it reliably answers (401, meaning it's
+     actually up, the check doesn't inspect status codes) within ~15s. The manager was never
+     actually down; the check was just too impatient. Bumped to 12s.
+  2. Zeek itself was completely healthy and actively writing real connection data to
+     `conn.log` (confirmed live: 108KB, updated seconds before being checked) via a correctly
+     working, correctly mounted read-only volume (`zeek-logs:/app/logs/zeek`) — but
+     `process_zeek_alerts()` only ever watched `notice.log`, which Zeek only writes when
+     something already looks notice-worthy by its own built-in policy, and never existed in
+     this deployment. The rich per-connection data was completely unused. Added
+     `process_zeek_conn_log()` (`centinela.py`): tails `conn.log` in real time, checks every
+     connection's source/destination IP against the live CTI feed (see the Omni-XDR section's
+     CTI item above), and logs a real, honest activity heartbeat every 5 minutes (an actual
+     count of connections observed, not a fake ping) so the health check reflects genuine
+     pipeline activity rather than only "was something bad found in the last 24h". Verified
+     live end-to-end: a real heartbeat fired after 5 minutes with a real connection count, and
+     the health check flipped to Online.
 
 - ~~AI remediation reports/scripts were generic instead of detailed~~ — **resolved same day**:
   `correlate_vulnerability()` in `centinela.py` only ever tried `genai_client` (Google, failing)
