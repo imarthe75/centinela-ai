@@ -383,6 +383,7 @@
       <li><a href="#soar">SOAR y remediación</a></li>
       <li><a href="#wazuh">Wazuh EDR</a></li>
       <li><a href="#cumplimiento">Cumplimiento normativo</a></li>
+      <li><a href="#omni-xdr">Visión Omni-XDR 2.0</a></li>
       <li><a href="#otros">Otros componentes</a></li>
     </ol>
   </nav>
@@ -592,6 +593,57 @@
       <p>Un módulo separado (<code>compliance_mapper.py</code>) no detecta nada por sí mismo — toma los hallazgos que ya existen y los mapea contra los controles de los marcos regulatorios más comunes:</p>
       <p><span class="chip info">ISO 27001:2022</span> <span class="chip info">NIST SP 800-53</span> <span class="chip info">PCI-DSS v4.0</span> <span class="chip info">SOC 2</span> <span class="chip info">GDPR</span></p>
       <p class="dim">Sirve para responder "¿qué controles regulatorios están en riesgo?" sin re-escanear nada — es una capa de reporte sobre los hallazgos ya recolectados.</p>
+    </section>
+
+    <section id="omni-xdr">
+      <h2>Visión Omni-XDR 2.0</h2>
+      <p>Centinela-AI está evolucionando hacia una plataforma Omni-XDR unificada. Estado real por
+      capacidad — solo se documenta aquí lo verificado en vivo, no lo planeado:</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Capacidad</th><th>Estado</th><th>Detalle</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Centinela Risk Score (CRS)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Puntuación 0-100 combinando severidad, EPSS real (probabilidad de explotación, FIRST.org) y estado real de CISA KEV (explotación confirmada en el mundo real) más criticidad del activo. Se recalcula en segundo plano y se revalida cada 24h.</td>
+            </tr>
+            <tr>
+              <td><b>Deduplicación cross-tool</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Si dos motores distintos (ej. Nuclei y el motor SCA) detectan la misma vulnerabilidad real de forma independiente, se fusiona en un solo hallazgo en vez de duplicar el ticket.</td>
+            </tr>
+            <tr>
+              <td><b>Control de SLA por severidad</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Plazos de remediación automáticos: Crítico 24h, Alto 7 días, Medio 30 días, Bajo 90 días, con indicador de vencimiento.</td>
+            </tr>
+            <tr>
+              <td><b>Quality Gates</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Evaluación de umbrales de calidad (vulnerabilidades críticas/altas, violaciones ISO 25010) con resultado pass/fail y grado A/B/F, consultable vía API para integrarse a un pipeline CI/CD.</td>
+            </tr>
+            <tr>
+              <td><b>Análisis de alcanzabilidad de código</b></td>
+              <td><span class="chip info">🚧 Roadmap</span></td>
+              <td>Determinar si una dependencia vulnerable es realmente invocada por el código (vs. importada pero nunca usada), para reducir falsos positivos. No implementado todavía.</td>
+            </tr>
+            <tr>
+              <td><b>Parcheo virtual / autónomo</b></td>
+              <td><span class="chip info">🚧 Roadmap</span></td>
+              <td>Mitigación temporal (reglas de firewall/proxy) sin reiniciar el servicio, mientras se aplica el parche real. No implementado todavía.</td>
+            </tr>
+            <tr>
+              <td><b>Matriz MITRE ATT&CK, grafo de rutas de ataque, feeds de inteligencia de amenazas, aislamiento de host</b></td>
+              <td><span class="chip info">🚧 Roadmap</span></td>
+              <td>Ninguna de estas capacidades tiene código implementado todavía.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section id="otros">
