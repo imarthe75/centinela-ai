@@ -61,7 +61,8 @@ def is_sla_breached(sla_due_date: Optional[datetime]) -> bool:
 def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, description: str,
                               scan_engine: str, url_path: Optional[str] = None,
                               open_status: str = "OPEN",
-                              reachability_status: Optional[str] = None) -> "tuple[str, int]":
+                              reachability_status: Optional[str] = None,
+                              preserve_status: bool = False) -> "tuple[str, int]":
     """
     Central, cross-tool-aware finding logger. calculate_fingerprint() existed since this
     module's original commit but nothing ever called it -- fingerprint_hash was empty on every
@@ -85,6 +86,13 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     Takes an already-open cursor (matches the existing pattern where each auditor manages its
     own transaction across a whole batch of findings) rather than opening its own.
 
+    preserve_status: when True, matches auditor_ext.py's original (and genuinely good) nuance --
+    a re-detected finding that was previously RESOLVED becomes REOPENED (not silently ignored,
+    not silently duplicated), while a re-detected finding in any other status keeps that status
+    untouched rather than being forced back to open_status. When False (default, matches every
+    other caller's existing tested behavior), Tier 1 only matches non-RESOLVED rows and always
+    sets status to open_status on update.
+
     Returns (action, row_id) where action is 'updated' | 'merged' | 'inserted'.
     """
     from core import threat_intel, mitre_attack
@@ -96,19 +104,35 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     standards_value = f"MITRE ATT&CK: {mitre[0]} - {mitre[1]} ({mitre[2]})" if mitre else None
 
     # Tier 1: exact same finding (same fingerprint), any engine.
-    cur.execute("""
-        SELECT id FROM public.vulnerability_log
-        WHERE asset_id = %s AND fingerprint_hash = %s AND status != 'RESOLVED'
-    """, (asset_id, fingerprint))
+    if preserve_status:
+        cur.execute("""
+            SELECT id FROM public.vulnerability_log
+            WHERE asset_id = %s AND fingerprint_hash = %s
+        """, (asset_id, fingerprint))
+    else:
+        cur.execute("""
+            SELECT id FROM public.vulnerability_log
+            WHERE asset_id = %s AND fingerprint_hash = %s AND status != 'RESOLVED'
+        """, (asset_id, fingerprint))
     existing = cur.fetchone()
     if existing:
-        cur.execute("""
-            UPDATE public.vulnerability_log
-            SET severity = %s, description = %s, detected_at = NOW(), status = %s,
-                reachability_status = COALESCE(%s, reachability_status),
-                standards = COALESCE(%s, standards)
-            WHERE id = %s
-        """, (severity, description, open_status, reachability_status, standards_value, existing[0]))
+        if preserve_status:
+            cur.execute("""
+                UPDATE public.vulnerability_log
+                SET severity = %s, description = %s, detected_at = NOW(),
+                    status = CASE WHEN status = 'RESOLVED' THEN 'REOPENED' ELSE status END,
+                    reachability_status = COALESCE(%s, reachability_status),
+                    standards = COALESCE(%s, standards)
+                WHERE id = %s
+            """, (severity, description, reachability_status, standards_value, existing[0]))
+        else:
+            cur.execute("""
+                UPDATE public.vulnerability_log
+                SET severity = %s, description = %s, detected_at = NOW(), status = %s,
+                    reachability_status = COALESCE(%s, reachability_status),
+                    standards = COALESCE(%s, standards)
+                WHERE id = %s
+            """, (severity, description, open_status, reachability_status, standards_value, existing[0]))
         return "updated", existing[0]
 
     # Tier 2: same real CVE, already open, from a genuinely different engine -> cross-tool merge.

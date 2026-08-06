@@ -1102,6 +1102,125 @@ def process_zeek_alerts():
 
         time.sleep(1)
 
+
+def process_zeek_conn_log():
+    """
+    Real Zeek conn.log ingestion, cross-referenced live against the CTI feed
+    (core/cti_feed.py). The infrastructure for this was already correct -- centinela-ai has a
+    real, working, read-only mount of Zeek's actual log directory (zeek-logs volume at
+    /app/logs/zeek) -- but process_zeek_alerts() only ever watched notice.log, which Zeek only
+    writes when something already looks notice-worthy by its own built-in policy. conn.log is
+    Zeek's real, continuously-written connection log (confirmed live: 108KB and growing,
+    updated seconds before this was written) and nothing ever read it, so Zeek's rich
+    per-connection data was completely unused despite the working ingestion pipe already being
+    there.
+
+    Every new connection's source/destination IP is checked against the live Feodo Tracker
+    feed in real time -- a match means this host is *currently* talking to a confirmed C2
+    server, not a static/backfilled check. Also logs a periodic real activity heartbeat
+    (distinct from a fake "still alive" ping -- it's an honest count of connections actually
+    observed) so main.py's Zeek health check reflects genuine pipeline activity, not just
+    whether something bad happened to be found in the last 24h.
+    """
+    from core import cti_feed, deduplication_engine
+
+    conn_log_path = "/app/logs/zeek/conn.log"
+    fields = []
+    f = None
+    conn_count = 0
+    last_heartbeat = time.time()
+
+    def open_log():
+        nonlocal f, fields
+        try:
+            f = open(conn_log_path, "r")
+            for line in f:
+                if line.startswith("#fields"):
+                    fields = line.strip().split("\t")[1:]
+                    break
+            f.seek(0, 2)  # only process new connections from here on
+            return True
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] Cannot open Zeek conn.log: {e}")
+            return False
+
+    if not os.path.exists(conn_log_path) or not open_log():
+        print("ℹ️ [Centinela-AI] Zeek conn.log not available -- conn-log ingestion skipped.")
+        return
+
+    print(f"📡 [Centinela-AI] Tailing Zeek conn.log for real-time CTI correlation ({len(fields)} fields detected).")
+
+    while True:
+        try:
+            line = f.readline()
+            if not line:
+                # Detect rotation (file replaced/truncated) -- reopen from the start of the new file.
+                try:
+                    if os.path.exists(conn_log_path) and os.path.getsize(conn_log_path) < f.tell():
+                        f.close()
+                        open_log()
+                except Exception:
+                    pass
+                time.sleep(2)
+
+                # Real, honest activity heartbeat every 5 minutes -- not a fake ping, an actual
+                # count of connections observed since the last one.
+                if time.time() - last_heartbeat > 300:
+                    with db_manager.get_db_cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO runtime_alerts (asset_id, priority, rule_name, alert_text, output_fields)
+                            VALUES (NULL, 'INFO', 'ZEEK-CONN-HEARTBEAT', %s, %s)
+                        """, (
+                            f"Zeek observó {conn_count} conexiones de red en los últimos 5 minutos.",
+                            json.dumps({"connections_observed": conn_count})
+                        ))
+                    conn_count = 0
+                    last_heartbeat = time.time()
+                continue
+
+            if line.startswith("#") or not fields:
+                continue
+            values = line.rstrip("\n").split("\t")
+            if len(values) != len(fields):
+                continue
+            record = dict(zip(fields, values))
+            conn_count += 1
+
+            malicious_ips = cti_feed.get_malicious_ips()
+            for ip_field in ("id.orig_h", "id.resp_h"):
+                ip = record.get(ip_field, "")
+                if ip in malicious_ips:
+                    ioc = malicious_ips[ip]
+                    direction = "hacia" if ip_field == "id.resp_h" else "desde"
+                    desc = (
+                        f"**Zeek observó una conexión de red real {direction} {ip}, confirmada como servidor C2 "
+                        f"activo en Feodo Tracker (abuse.ch).**\n\n"
+                        f"**Malware asociado:** {ioc.get('malware', 'desconocido')}\n"
+                        f"**Conexión:** {record.get('id.orig_h')}:{record.get('id.orig_p')} -> "
+                        f"{record.get('id.resp_h')}:{record.get('id.resp_p')} ({record.get('proto', '?')})"
+                    )
+                    with db_manager.get_db_cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO runtime_alerts (asset_id, priority, rule_name, alert_text, output_fields)
+                            VALUES (NULL, 'CRITICAL', 'ZEEK-CTI-MATCH', %s, %s)
+                        """, (desc, json.dumps(record)))
+                        # Best-effort: attribute to a real asset if the non-malicious side of
+                        # the connection matches a registered IP; otherwise this still lands in
+                        # runtime_alerts for visibility even without a specific asset to pin it to.
+                        other_ip = record.get("id.orig_h") if ip_field == "id.resp_h" else record.get("id.resp_h")
+                        cur.execute("SELECT id FROM infra_inventory WHERE endpoint ILIKE %s LIMIT 1", (f"%{other_ip}%",))
+                        asset = cur.fetchone()
+                        if asset:
+                            deduplication_engine.log_finding_deduplicated(
+                                cur, asset[0], "CTI-IOC-MATCH-RUNTIME", "CRITICAL", desc,
+                                "cti-feed", url_path=f"conn-{record.get('uid', ip)}", open_status="PENDING"
+                            )
+                    print(f"🚨 [Centinela-AI] Zeek+CTI: real connection to confirmed C2 IP {ip} ({ioc.get('malware')}).")
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error processing Zeek conn.log: {e}")
+            time.sleep(5)
+
+
 def process_bloodhound_paths():
     """Query Neo4j for AD attack paths and raise vulnerabilities"""
     try:
@@ -1371,7 +1490,10 @@ def main_loop():
     
     zeek_thread = threading.Thread(target=process_zeek_alerts, daemon=True)
     zeek_thread.start()
-    
+
+    zeek_conn_thread = threading.Thread(target=process_zeek_conn_log, daemon=True)
+    zeek_conn_thread.start()
+
     bloodhound_thread = threading.Thread(target=process_bloodhound_paths, daemon=True)
     bloodhound_thread.start()
     
