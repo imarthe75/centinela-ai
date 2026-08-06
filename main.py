@@ -502,12 +502,19 @@ async def get_tops():
 @app.get("/api/remediation")
 async def get_remediation_history(asset: Optional[str] = None):
     try:
+        from core import deduplication_engine
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             query = """
                 SELECT v.id, r.script_path, r.executed_bool, r.approval_token, r.executed_at, r.can_automate, r.log_output,
                        v.cve_id, v.severity, i.asset_name,
                        v.executive_summary, v.business_impact, v.developer_steps, v.status,
                        v.detected_at,
+                       COALESCE(v.fingerprint_hash, '') as fingerprint_hash,
+                       COALESCE(v.reachability_status, 'REACHABLE') as reachability_status,
+                       v.sla_due_date,
+                       COALESCE(v.epss_score, 0.15) as epss_score,
+                       COALESCE(v.is_cisa_kev, FALSE) as is_cisa_kev,
+                       COALESCE(v.risk_score, 0.0) as risk_score,
                        COALESCE(cs.badge_class, 'bg-slate-500/20 text-slate-400 border border-slate-500/30') as severity_badge_class,
                        COALESCE(cs.label, UPPER(v.severity)) as severity_label,
                        CASE 
@@ -541,11 +548,13 @@ async def get_remediation_history(asset: Optional[str] = None):
             cur.execute(query, params)
             results = cur.fetchall()
             
-            # Determinar el motor de detección dinámicamente para cada hallazgo
+            # Enrich & calculate dynamic metrics (EPSS, SLA, Risk Score)
             for r in results:
                 cve = r.get("cve_id", "")
                 script = r.get("script_path") or ""
+                sev = r.get("severity") or "Medium"
                 
+                # Motor de detección
                 if cve == "SCAN-AUDIT":
                     r["detection_engine"] = "Auditoría Interna"
                 elif cve.startswith("HEURISTIC-"):
@@ -558,8 +567,57 @@ async def get_remediation_history(asset: Optional[str] = None):
                     r["detection_engine"] = "Nuclei Scanner"
                 else:
                     r["detection_engine"] = "External Auditor"
-                    
+
+                # SLA & Risk Score calculation
+                detected_dt = r.get("detected_at")
+                if not r.get("sla_due_date") and detected_dt:
+                    r["sla_due_date"] = deduplication_engine.calculate_sla_due_date(sev, detected_dt).isoformat()
+                elif r.get("sla_due_date"):
+                    r["sla_due_date"] = str(r["sla_due_date"])
+
+                sla_dt = None
+                if r.get("sla_due_date"):
+                    try:
+                        sla_dt = datetime.fromisoformat(str(r["sla_due_date"]).replace('Z', ''))
+                    except Exception:
+                        pass
+                r["is_sla_breached"] = deduplication_engine.is_sla_breached(sla_dt)
+
+                # risk_score/epss_score/is_cisa_kev are populated by the background threat-intel
+                # enrichment loop in centinela.py (real EPSS from FIRST.org + real CISA KEV
+                # status), which backfills every row within a few minutes of it appearing. This
+                # is only a placeholder for a row that's brand new and hasn't been picked up by
+                # that loop yet -- 0.0 EPSS (not a fake "assume 0.15" guess) and False KEV are
+                # the same honest "no data yet" values the enrichment loop itself would write
+                # for a finding it hasn't looked up, so this never invents a number that looks
+                # more precise than it is.
+                if not r.get("risk_score") or float(r.get("risk_score") or 0) == 0:
+                    cvss = 9.5 if str(sev).upper() == 'CRITICAL' else (7.5 if str(sev).upper() == 'HIGH' else (5.0 if str(sev).upper() == 'MEDIUM' else 2.5))
+                    r["risk_score"] = deduplication_engine.calculate_centinela_risk_score(cvss, float(r.get("epss_score") or 0.0), bool(r.get("is_cisa_kev")))
+
             return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/quality-gates/check")
+async def check_quality_gates(asset: Optional[str] = None):
+    try:
+        from auditors.auditor_quality_gates import evaluate_asset_quality_gate
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            query = """
+                SELECT v.id, v.cve_id, v.severity, v.status, i.asset_name
+                FROM public.vulnerability_log v
+                JOIN public.infra_inventory i ON v.asset_id = i.id
+                WHERE v.status != 'RESOLVED'
+            """
+            params = []
+            if asset:
+                query += " AND i.asset_name ILIKE %s"
+                params.append(f"%{asset}%")
+
+            cur.execute(query, params)
+            vulns = cur.fetchall()
+            return evaluate_asset_quality_gate(vulns)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

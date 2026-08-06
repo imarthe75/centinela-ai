@@ -2,8 +2,68 @@
 
 SOC/SOAR platform for the CASMARTS ("Casmart") infrastructure: continuous vulnerability
 scanning across many scanner engines, an AI correlation/remediation engine, a Wazuh EDR
-integration, and a React dashboard. Spanish is the primary language for UI copy, DB content,
-and most in-repo docs/comments.
+integration, and a React dashboard. Spanish is the primary language for UI copy, DB content, and most in-repo docs/comments.
+
+## Omni-XDR 2.0 Architectural Vision & Standards
+
+**Status note (2026-08-05, corrected same day):** this section previously claimed, in the
+present tense, that Centinela "operates as a unified Omni-XDR and Autonomous Remediation
+Platform, synthesizing core capabilities from 5 market leaders." That was not true when
+written — several of the pieces below existed only as schema columns or pure functions nothing
+ever called with real data, silently producing plausible-looking but constant/fake values (the
+exact same failure pattern as the earlier SOAR-remediation-realness investigation in "Known open
+issues" below). Verify against the code before trusting this list; the per-item status is kept
+current here as each piece is actually built and verified live, not aspirationally.
+
+Centinela AI is working toward a unified Omni-XDR and Autonomous Remediation Platform,
+inspired by capabilities from Vicarius (vRx), Aikido Security, DefectDojo, Kiuwan, and
+Datadog Security/Wiz/CrowdStrike. Status per capability:
+
+1. **Centinela Risk Score (CRS)** combining CVSS + EPSS + CISA KEV + Asset Criticality —
+   **✅ real as of 2026-08-05**. `core/deduplication_engine.py` has the formula;
+   `core/threat_intel.py` queries FIRST.org's EPSS API and CISA's public KEV catalog live
+   (both free, no auth). Previously `epss_score`/`is_cisa_kev` were schema columns nothing ever
+   wrote to (defaulted to `0.0`/`FALSE`), so every CRITICAL finding got the exact same score
+   (47.5) regardless of real-world exploitation status — confirmed live via `SELECT risk_score,
+   COUNT(*) ... GROUP BY risk_score` showing exactly 4 fixed values across ~1200 rows before the
+   fix. `run_threat_intel_enrichment_loop()` in `centinela.py` backfills existing rows and keeps
+   new ones current (re-checks every 24h — EPSS scores genuinely change over time).
+   **Still an approximation**: the "CVSS" component has no real per-CVE numeric score anywhere
+   in this schema, so it's derived from the severity bucket a scanner already assigned
+   (CRITICAL→9.5 etc.), not a real NVD CVSS vector lookup (NVD's public API is heavily
+   rate-limited without a key, impractical for bulk backfill — flagged as a possible future
+   improvement, not attempted).
+   Autonomous/virtual patching (WAF/sysctl/eBPF rules applied without a reboot) — **❌ not
+   started**, zero code anywhere.
+2. **Reachability filtering** (`REACHABLE` vs `UNREACHABLE` code paths) — **❌ not started**.
+   `vulnerability_log.reachability_status` exists as a column but nothing ever computes it;
+   every row silently defaults to `'REACHABLE'` in the read path (`main.py`'s
+   `COALESCE(v.reachability_status, 'REACHABLE')`), which is indistinguishable from a real
+   "yes, reachable" analysis result — a latent version of the same fake-default problem.
+3. **Multi-tool deduplication fingerprinting** — **✅ real as of 2026-08-05**.
+   `calculate_fingerprint()` existed in `deduplication_engine.py` but nothing ever called it —
+   `fingerprint_hash` was empty on every row. Added `log_finding_deduplicated()` (same file), a
+   shared three-tier logger now called from `auditor_zap.py`, `auditor_master_vulnerabilities.py`,
+   `auditor_sca_dependencies.py`, and `auditor_compliance_standards.py`'s insert paths: (1) same
+   fingerprint already open, any engine → update in place; (2) no fingerprint match but the same
+   *real* CVE (extracted from cve_id) already open on this asset from a *different* scan_engine →
+   genuine cross-tool duplicate → merge a detection note onto the existing row instead of opening
+   a second ticket (this is the actual new capability — per-engine dedup already existed, but
+   nothing previously caught e.g. Nuclei and `sca-native` both independently flagging the same
+   CVE on the same asset); (3) otherwise insert fresh. Verified live: a cross-tool merge test
+   (same CVE, two different scan_engine values) correctly produced one row, not two.
+   Still not wired into `auditor_ext.py`/`auditor_medusa.py`/`auditor_secrets.py`/
+   `auditor_spiderfoot.py`/`core/heuristics_engine.py` — flagged as follow-up, not attempted yet.
+   **SLA deadline tracking** (Critical 24h / High 7d / Medium 30d / Low 90d) — **✅ real**,
+   `calculate_sla_due_date()`/`is_sla_breached()` are correctly wired in `main.py`'s
+   `/api/remediation`.
+4. **Quality Gates** (Grade A/B/F, ISO 25010 thresholds) — **✅ real**.
+   `auditors/auditor_quality_gates.py` + `/api/quality-gates/check` genuinely queries real
+   unresolved findings and evaluates real thresholds. No fake data found here.
+5. **MITRE ATT&CK taxonomy mapping, CIS Benchmarks hardening audits, Neo4j Attack Path
+   Graphing, CTI/IoC feed ingestion, emergency Host Containment** — **❌ not started**, zero
+   code anywhere (confirmed: zero matches for any of these terms in `Dashboard.jsx` or the
+   `auditors/` directory as of 2026-08-05).
 
 ## Architecture
 

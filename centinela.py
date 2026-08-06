@@ -1025,6 +1025,101 @@ def run_heuristics_loop():
             print(f"❌ [Centinela-AI] Error running heuristics correlation: {e}")
         time.sleep(60)
 
+
+def _criticality_weight(criticality: str) -> float:
+    """Maps infra_inventory.criticality (real text field, values seen: CRITICAL/HIGH/MEDIUM/LOW,
+    mixed case) to the 0.5-2.0 range calculate_centinela_risk_score expects."""
+    c = str(criticality or '').upper()
+    return {"CRITICAL": 2.0, "HIGH": 1.5, "MEDIUM": 1.0, "LOW": 0.5}.get(c, 1.0)
+
+
+def run_threat_intel_enrichment_loop():
+    """
+    Backfills real EPSS exploitation-probability scores and real CISA KEV (confirmed
+    actively-exploited) status onto vulnerability_log rows, and (re)computes a real Centinela
+    Risk Score from them plus the asset's real criticality.
+
+    Previously nothing ever wrote epss_score/is_cisa_kev, so every risk score used a fixed 0.15
+    EPSS default and is_cisa_kev=False for every finding regardless of real-world exploitation
+    status -- e.g. a finding for Log4Shell (CVE-2021-44228, confirmed CISA KEV, EPSS ~1.0) and
+    an obscure CVE with near-zero real exploitation likelihood got an identical score. Runs as
+    a background pass (not per-request) since EPSS/KEV are external API calls -- both endpoints
+    are batched, but recomputing on every dashboard page load would be slow and wasteful. This
+    also backfills the large volume of pre-existing rows from before this fix existed.
+    """
+    from core import threat_intel, deduplication_engine
+    while True:
+        try:
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                # epss_score/is_cisa_kev default to 0.0/FALSE at the column level (never NULL),
+                # so "never enriched" can't be told apart from "genuinely zero" by NULL-ness --
+                # and most findings aren't CVE-based at all (ZAP-*/DOCKER-*/STD-* rule IDs), so
+                # they'd always legitimately get real epss=0.0/kev=false written back, which
+                # would re-match a filter based on those values on every single pass forever.
+                # threat_intel_checked_at is a real completion marker instead: set once per row
+                # below, and re-checked after 24h since EPSS scores do genuinely change over time
+                # as real-world exploitation data comes in.
+                cur.execute("""
+                    SELECT v.id, v.cve_id, v.severity, i.criticality
+                    FROM vulnerability_log v
+                    JOIN infra_inventory i ON v.asset_id = i.id
+                    WHERE (v.threat_intel_checked_at IS NULL OR v.threat_intel_checked_at < NOW() - INTERVAL '24 hours')
+                    AND v.status != 'RESOLVED'
+                    ORDER BY v.id DESC
+                    LIMIT 200
+                """)
+                rows = cur.fetchall()
+
+            if not rows:
+                time.sleep(300)
+                continue
+
+            print(f"🛰️ [Centinela-AI] Enriching {len(rows)} finding(s) with real EPSS/CISA KEV threat intel...")
+
+            cve_by_row = {r["id"]: threat_intel.extract_cve(r["cve_id"]) for r in rows}
+            real_cves = [c for c in cve_by_row.values() if c]
+            epss_scores = threat_intel.get_epss_scores(real_cves) if real_cves else {}
+            kev_set = threat_intel.get_cisa_kev_set()
+
+            with db_manager.get_db_cursor() as write_cur:
+                for r in rows:
+                    cve = cve_by_row[r["id"]]
+                    # No real CVE (ZAP/DOCKER/STD/etc. -- Centinela's own rule IDs, not CVEs):
+                    # 0.0/False is the honest value (no EPSS/KEV data exists for a non-CVE), not
+                    # a copy of the old fake "unknown so assume 0.15" placeholder.
+                    epss = epss_scores.get(cve, 0.0) if cve else 0.0
+                    is_kev = (cve in kev_set) if cve else False
+
+                    sev = str(r.get("severity") or "MEDIUM").upper()
+                    # No numeric CVSS is stored anywhere in this schema; approximating from the
+                    # severity bucket a real scanner (OSV/ZAP/etc.) already assigned is the best
+                    # available signal without adding a slow, heavily rate-limited per-CVE NVD
+                    # lookup to a bulk backfill pass.
+                    cvss_approx = {"CRITICAL": 9.5, "HIGH": 7.5, "MEDIUM": 5.0, "LOW": 2.5}.get(sev, 5.0)
+                    risk_score = deduplication_engine.calculate_centinela_risk_score(
+                        cvss_approx, epss, is_kev, _criticality_weight(r.get("criticality"))
+                    )
+
+                    write_cur.execute("""
+                        UPDATE vulnerability_log
+                        SET epss_score = %s, is_cisa_kev = %s, risk_score = %s, threat_intel_checked_at = NOW()
+                        WHERE id = %s
+                    """, (epss, is_kev, risk_score, r["id"]))
+
+            kev_hits = sum(1 for r in rows if (cve_by_row[r["id"]] in kev_set if cve_by_row[r["id"]] else False))
+            if kev_hits:
+                print(f"🚨 [Centinela-AI] {kev_hits} finding(s) in this batch are CISA-confirmed actively exploited (KEV).")
+
+            # Brief pacing between batches during backlog catch-up so this doesn't hammer
+            # FIRST.org/CISA back-to-back with no gap; harmless once the backlog is drained and
+            # each pass finds nothing (that case sleeps 300s via the `if not rows` branch above).
+            time.sleep(5)
+
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error in threat intel enrichment loop: {e}")
+            time.sleep(60)
+
+
 def main_loop():
     print("🚀 [Centinela-AI] Aura-Guard v2026.4.2 active.")
     
@@ -1041,6 +1136,10 @@ def main_loop():
     # Start real-time Heuristics Engine thread
     heuristics_thread = threading.Thread(target=run_heuristics_loop, daemon=True)
     heuristics_thread.start()
+
+    # Real EPSS/CISA KEV threat-intel enrichment (backfills real risk scores)
+    threat_intel_thread = threading.Thread(target=run_threat_intel_enrichment_loop, daemon=True)
+    threat_intel_thread.start()
     
     # External Auditor Thread
     from auditors import auditor_ext
