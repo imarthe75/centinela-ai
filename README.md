@@ -11,12 +11,15 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
 - **UEBA (User & Entity Behavior Analytics)**: Análisis de comportamiento sin firma para detectar accesos en horarios anómalos (00:00 - 05:00 UTC) y ráfagas inusuales de tráfico.
 - **SOAR 2.0 con Respuesta Autónoma Escalonada**: Acciones autónomas inmediatas si la confianza es ≥95% (Parcheo Virtual Nginx, Revocación de Sesión Authentik, Contención of Host) y encolamiento para Aprobación Manual con 1-clic si la confianza es <95%.
 - **Gestión Avanzada de Inventario & Registro Diferido (Offline)**: Permite registrar activos apagados o en aprovisionamiento (*Offline*), asignándoles automáticamente 0 vulnerabilidades hasta que completan su sincronización en red.
-- **Modelo de Control de Acceso Basado en Roles (RBAC de 4 Niveles - NIST SP 800-53 AC-2/AC-3 / ISO 27001)**:
+- **Modelo de Control de Acceso basado en Roles (RBAC de 4 Niveles - NIST SP 800-53 AC-2/AC-3 / ISO 27001)**:
   - 🛡️ **`Admin` (Administrador de Seguridad)**: Acceso total al sistema, configuración de agentes, gestión de usuarios en Authentik e llaves Vault.
   - ⚡ **`Analyst` (Analista SOC Nivel 1/2)**: Operación de incidentes, ejecución de parches SOAR y solicitudes de remediación con IA. Sin acceso a llaves Vault ni administración de usuarios.
   - 📋 **`Auditor` (Auditor de Ciberseguridad / QA)**: Acceso a reportes ejecutivos PDF, matrices de cumplimiento normativo y visibilidad de vulnerabilidades. Sin capacidad de ejecutar acciones remediadoras ni cambiar configuraciones.
   - 👁️ **`Viewer` (Visualizador / Ejecutivo)**: Acceso de solo lectura a los dashboards macro y métricas ejecutivas.
-- **Alternativas Zero-Trust a Contraseñas Sudo (Análisis QA)**: Para evitar ingresar contraseñas `sudo` en interfaz web, Centinela-AI soporta 3 esquemas seguros: (1) Llaves SSH Privadas/PEM encriptadas en Vault, (2) One-Liner de Instalación Local en Servidor (`curl | sudo bash`), y (3) Sondas de Red Agentless (SNMP/Nuclei) sin instalación de software.
+- **Alternativas Arquitectónicas Cero-Contraseña (Resolución Observación QA / NIST SP 800-53 IA-2 & AC-6)**:
+  - 🛡️ **Opción 1 — Llave SSH Dedicada con `sudoers` restringido (`NOPASSWD` acotado)**: Permite ejecutar remediaciones automáticas sin almacenar contraseñas `sudo`. El archivo `/etc/sudoers.d/centinela` limita el privilegio del usuario `centinela-agent` exclusivamente a binarios autorizados (`/usr/bin/wazuh-agent`, `/usr/sbin/service`, `/sbin/iptables`).
+  - ⚡ **Opción 2 — Instalación Local con Comando One-Liner**: El modal de "Añadir Activo" permite generar un comando seguro `curl -sSL https://centinela.casmart.internal/api/agent/install-script?asset=XYZ | sudo bash` que el administrador ejecuta localmente sin exponer credenciales a la web.
+  - 🌐 **Opción 3 — Monitoreo & Remediación Agentless (Parcheo Virtual en Gateway)**: Para activos críticos donde no se permite instalar agentes, la detección opera mediante sondas (SNMP, Nuclei, Zeek) y la remediación se aplica en el Reverse Proxy Nginx (`deny IP` / bloqueo de URL).
 
 > [!IMPORTANT]
 > **Centinela-AI es un sistema estrictamente DEFENSIVO.** 

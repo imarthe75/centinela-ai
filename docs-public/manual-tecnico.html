@@ -757,10 +757,22 @@
       </div>
     </section>
 
+    <section id="zero-trust">
+      <h2>Arquitectura Cero-Contraseña & Hardening Sudoers (Respuesta a QA)</h2>
+      <p>Conforme a los estándares <b>NIST SP 800-53 (IA-2 y AC-6)</b>, la plataforma elimina el riesgo de compartir contraseñas <code>sudo</code> de superusuario mediante 3 mecanismos:</p>
+      <ul>
+        <li><b>1. Llave SSH Dedicada con Privilegios Acotados:</b> El agente utiliza una llave SSH sin contraseña cuya autorización en el servidor destino está limitada en <code>/etc/sudoers.d/centinela</code>:
+          <pre><code>centinela-agent ALL=(ALL) NOPASSWD: /usr/bin/wazuh-agent, /usr/sbin/service, /sbin/iptables</code></pre>
+        </li>
+        <li><b>2. Instalación Local One-Liner (curl | sudo bash):</b> Los administradores pueden ejecutar la instalación de forma local mediante un token de un solo uso sin exponer credenciales a la web.</li>
+        <li><b>3. Remediación Agentless (Parcheo Virtual Nginx):</b> Para servidores donde está prohibida la instalación de software, la detección opera por red y la remediación se aplica en el Reverse Proxy perimetral (bloqueo de IP / reglas WAF).</li>
+      </ul>
+    </section>
+
     <section id="otros">
       <h2>Otros componentes</h2>
       <ul>
-        <li><b>HashiCorp Vault</b> — único lugar donde viven las credenciales de Ansible (llaves SSH, contraseñas sudo) por activo. Nunca se guardan en la base de datos ni en el código.</li>
+        <li><b>HashiCorp Vault</b> — único lugar donde viven las credenciales de Ansible (llaves SSH, contraseñas sudo) por activo. Restringido exclusivamente al rol <code>Admin</code>. Nunca se guardan en la base de datos ni en el código.</li>
         <li><b>Neo4j / BloodHound</b> — modela el dominio de Active Directory como grafo para encontrar rutas de escalamiento hacia cuentas privilegiadas (ver detalle en Wazuh/Zeek y en Omni-XDR).</li>
       </ul>
     </section>
