@@ -233,10 +233,15 @@ async def add_inventory_item(item: AssetModel):
                 ssh_key="/app/keys/casmarts.key"
             )
 
+        # Generar comando One-Liner para instalación local sin credenciales (Zero-Trust NIST SP 800-53)
+        one_liner = f"curl -sSL https://centinela.casmart.internal/api/agent/install-script?asset={item.asset_name} | sudo bash"
+
         return {
             "status": "success",
-            "message": f"Asset {item.asset_name} registered.",
-            "vault_secret_stored": vault_stored
+            "message": f"Activo '{item.asset_name}' registrado exitosamente.",
+            "vault_secret_stored": vault_stored,
+            "one_liner_install": one_liner,
+            "sudoers_instruction": "echo 'centinela-agent ALL=(ALL) NOPASSWD: /usr/bin/wazuh-agent, /usr/sbin/service, /sbin/iptables' | sudo tee /etc/sudoers.d/centinela"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
