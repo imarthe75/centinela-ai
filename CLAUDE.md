@@ -2,7 +2,7 @@
 
 SOC/SOAR platform for the CASMARTS ("Casmart") infrastructure: continuous vulnerability
 scanning across many scanner engines, an AI correlation/remediation engine, a Wazuh EDR
-integration, and a React dashboard. Spanish is the primary language for UI copy, DB content, and most in-repo docs/comments.
+integration, and a React dashboard. Spanish is the primary language for UI copy, DB content, and in-repo docs/comments, with strictly-defined technical exceptions (CVE, SOAR, ITDR, EDR, FIM, NIDS, CVSS severity codes in DB, protocol acronyms, product names). The platform implements a 4-Tier NIST SP 800-53 / ISO 27001 RBAC model: Admin, Analyst, Auditor, and Viewer.
 
 ## Omni-XDR 2.0 Architectural Vision & Standards
 

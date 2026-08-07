@@ -11,6 +11,11 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
 - **UEBA (User & Entity Behavior Analytics)**: Análisis de comportamiento sin firma para detectar accesos en horarios anómalos (00:00 - 05:00 UTC) y ráfagas inusuales de tráfico.
 - **SOAR 2.0 con Respuesta Autónoma Escalonada**: Acciones autónomas inmediatas si la confianza es ≥95% (Parcheo Virtual Nginx, Revocación de Sesión Authentik, Contención of Host) y encolamiento para Aprobación Manual con 1-clic si la confianza es <95%.
 - **Gestión Avanzada de Inventario & Registro Diferido (Offline)**: Permite registrar activos apagados o en aprovisionamiento (*Offline*), asignándoles automáticamente 0 vulnerabilidades hasta que completan su sincronización en red.
+- **Modelo de Control de Acceso Basado en Roles (RBAC de 4 Niveles - NIST SP 800-53 AC-2/AC-3 / ISO 27001)**:
+  - 🛡️ **`Admin` (Administrador de Seguridad)**: Acceso total al sistema, configuración de agentes, gestión de usuarios en Authentik e llaves Vault.
+  - ⚡ **`Analyst` (Analista SOC Nivel 1/2)**: Operación de incidentes, ejecución de parches SOAR y solicitudes de remediación con IA. Sin acceso a llaves Vault ni administración de usuarios.
+  - 📋 **`Auditor` (Auditor de Ciberseguridad / QA)**: Acceso a reportes ejecutivos PDF, matrices de cumplimiento normativo y visibilidad de vulnerabilidades. Sin capacidad de ejecutar acciones remediadoras ni cambiar configuraciones.
+  - 👁️ **`Viewer` (Visualizador / Ejecutivo)**: Acceso de solo lectura a los dashboards macro y métricas ejecutivas.
 - **Alternativas Zero-Trust a Contraseñas Sudo (Análisis QA)**: Para evitar ingresar contraseñas `sudo` en interfaz web, Centinela-AI soporta 3 esquemas seguros: (1) Llaves SSH Privadas/PEM encriptadas en Vault, (2) One-Liner de Instalación Local en Servidor (`curl | sudo bash`), y (3) Sondas de Red Agentless (SNMP/Nuclei) sin instalación de software.
 
 > [!IMPORTANT]
