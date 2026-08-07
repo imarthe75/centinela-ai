@@ -2330,9 +2330,9 @@ async def run_resident_loop():
 
 @app.get("/api/users")
 async def get_authentik_users():
-    """Lists all non-system users from Authentik with their assigned Centinela role (Admin / Viewer)."""
+    """Lists all non-system users from Authentik with their assigned Centinela RBAC role (Admin / Analyst / Auditor / Viewer)."""
     try:
-        cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"import json; from authentik.core.models import User, Group; admin_group = Group.objects.filter(name='Centinela Admin').first(); users = [{'username': u.username, 'name': u.name or u.username, 'email': u.email, 'role': 'Admin' if admin_group in u.groups.all() else 'Viewer'} for u in User.objects.all() if not u.username.startswith('ak-') and u.username != 'AnonymousUser']; print('JSON_DATA:' + json.dumps(users))\\"" """
+        cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"import json; from authentik.core.models import User, Group; g_admin = Group.objects.filter(name='Centinela Admin').first(); g_analyst = Group.objects.filter(name='Centinela Analyst').first(); g_auditor = Group.objects.filter(name='Centinela Auditor').first(); users = [];\nfor u in User.objects.all():\n  if u.username.startswith('ak-') or u.username == 'AnonymousUser': continue;\n  groups = u.groups.all();\n  role = 'Admin' if g_admin in groups else ('Analyst' if g_analyst in groups else ('Auditor' if g_auditor in groups else 'Viewer'));\n  users.append({'username': u.username, 'name': u.name or u.username, 'email': u.email, 'role': role});\nprint('JSON_DATA:' + json.dumps(users))\\"" """
         proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
         out = proc.stdout
         if "JSON_DATA:" in out:
@@ -2345,16 +2345,16 @@ async def get_authentik_users():
 
 class UserRoleUpdateModel(BaseModel):
     username: str
-    role: str  # "Admin" or "Viewer"
+    role: str  # "Admin", "Analyst", "Auditor", or "Viewer"
 
 
 @app.post("/api/users/role")
 async def update_authentik_user_role(body: UserRoleUpdateModel):
-    """Updates a user's role in Authentik (Centinela Admin vs Centinela Viewer)."""
+    """Updates a user's RBAC role in Authentik (Centinela Admin / Analyst / Auditor / Viewer)."""
     try:
         new_role = body.role
         username = body.username
-        cmd = f"""ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User, Group; admin_group, _ = Group.objects.get_or_create(name='Centinela Admin'); viewer_group, _ = Group.objects.get_or_create(name='Centinela Viewer'); u = User.objects.filter(username='{username}').first(); u.groups.add(admin_group) if '{new_role}' == 'Admin' else u.groups.add(viewer_group); u.groups.remove(viewer_group) if '{new_role}' == 'Admin' else u.groups.remove(admin_group); print('ROLE_UPDATED_SUCCESS')\\"" """
+        cmd = f"""ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User, Group; roles = ['Admin', 'Analyst', 'Auditor', 'Viewer']; groups = {{r: Group.objects.get_or_create(name=f'Centinela {{r}}')[0] for r in roles}}; u = User.objects.filter(username='{username}').first();\nif u:\n  for r, g in groups.items(): u.groups.remove(g)\n  u.groups.add(groups['{new_role}'])\n  print('ROLE_UPDATED_SUCCESS')\n\\"" """
         proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
         if "ROLE_UPDATED_SUCCESS" in proc.stdout:
             return {"status": "success", "username": username, "role": new_role}
