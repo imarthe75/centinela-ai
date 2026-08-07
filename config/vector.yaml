@@ -1,0 +1,39 @@
+sources:
+  authentik_webhook:
+    type: "http_server"
+    address: "0.0.0.0:8088"
+    path: "/vector/authentik"
+
+  zeek_conn_logs:
+    type: "file"
+    include: ["/app/logs/zeek/conn.log"]
+    read_from: "beginning"
+
+  wazuh_syslog:
+    type: "syslog"
+    mode: "udp"
+    address: "0.0.0.0:5140"
+
+transforms:
+  parse_authentik:
+    type: "remap"
+    inputs: ["authentik_webhook"]
+    source: |
+      .source = "authentik"
+      .timestamp = to_timestamp!(.timestamp ?? now())
+
+sinks:
+  clickhouse_out:
+    type: "clickhouse"
+    inputs: ["parse_authentik"]
+    endpoint: "http://centinela-clickhouse:8123"
+    database: "centinela_telemetry"
+    table: "telemetry_events"
+    skip_unknown_fields: true
+
+  backend_webhook:
+    type: "http"
+    inputs: ["parse_authentik"]
+    uri: "http://centinela-backend:8000/api/itdr/authentik/webhook"
+    encoding:
+      codec: "json"

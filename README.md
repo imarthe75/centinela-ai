@@ -1,6 +1,16 @@
 # 🛡️ Centinela-AI: Plataforma Omni-XDR & AI Governance
 
-Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI Governance de Alta Fidelidad** del ecosistema CASMARTS. Diseñada bajo un enfoque defensivo estricto, actúa como el centro neurálgico para la correlación de telemetría multinivel, detección omnidireccional de vulnerabilidades (en código fuente, dependencias, contenedores, nubes, APIs e Inteligencia Artificial), auditoría de cumplimiento normativo y remediación autónoma asistida por IA Generativa.
+Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI Governance de Alta Fidelidad** del ecosistema CASMARTS. Diseñada bajo un enfoque defensivo estricto, actúa como el centro neurálgico para la correlación de telemetría multinivel, detección omnidireccional de vulnerabilidades (en código fuente, dependencias, contenedores, nubes, APIs e Inteligencia Artificial), auditoría de cumplimiento normativo, detección de amenazas de identidad (ITDR) y remediación autónoma asistida por IA Generativa.
+
+---
+
+### 🌐 Transformación Omni-XDR (Arquitectura Integrada)
+- **ITDR (Identity Threat Detection & Response)**: Webhook en tiempo real con Authentik IdP para la detección de Password Spraying, Fuerza Bruta (≥5 intentos en <60s) y revocación autónoma de sesiones OIDC en <500ms.
+- **eBPF Kernel Tracing**: Ingesta de llamadas al sistema (syscalls `execve`, `ptrace`, `/tmp`) a nivel de kernel en servidores Linux.
+- **Grafo de Ataques Neo4j (Attack Storyline)**: Correlación en grafos Cypher de nodos de Identidad, IPs de Origen, Servidores de Red y Vulnerabilidades CVE.
+- **UEBA (User & Entity Behavior Analytics)**: Análisis de comportamiento sin firma para detectar accesos en horarios anómalos (00:00 - 05:00 UTC) y ráfagas inusuales de tráfico.
+- **SOAR 2.0 con Respuesta Autónoma Escalonada**: Acciones autónomas inmediatas si la confianza es ≥95% (Parcheo Virtual Nginx, Revocación de Sesión Authentik, Contención de Host) y encolamiento para Aprobación Manual con 1-clic si la confianza es <95%.
+- **Gestión Avanzada de Inventario**: Conmutador de vistas (Tarjetas vs Lista/Tabla), ordenamiento dinámico (Más Recientes, Alfabético, Vulnerabilidades, Alertas), badges explícitos de `Activo Unificado` y desglose directo de `Activos Online vs Offline`.
 
 > [!IMPORTANT]
 > **Centinela-AI es un sistema estrictamente DEFENSIVO.** 
@@ -82,6 +92,23 @@ Centinela-AI integra un flujo **DevSecOps Bidireccional** con servidores GitLab 
 
 Centinela-AI audita servidores físicos y máquinas virtuales (Linux/Windows) en tiempo real:
 - **EDR — Wazuh Manager**: Al registrar una nueva dirección IP o servidor en el inventario, el orquestador dispara un Playbook de Ansible que instala y configura automáticamente el agente de Wazuh. El Manager corre como servicio propio del stack (`wazuh-manager`), con enrolamiento remoto de agentes vía los puertos 1514/1515 y consulta de estado vía la API 55000.
+  - **Acciones de Gestión de Agentes EDR**:
+    - **Reiniciar Agente**: Envía comando de reinicio remoto en caliente al servicio `wazuh-agent` (`agent_control -r -a <agent_id>`).
+    - **Escanear FIM**: Desencadena análisis en tiempo real de Integridad de Archivos (FIM / `syscheck` vía `agent_control -s -a <agent_id>`).
+    - **Ver Logs**: Muestra las últimas 100 líneas del registro de eventos de auditoría del agente EDR.
+    - **Desinstalar Agente**: Desregistra y elimina permanentemente la clave del agente en Wazuh Manager (`manage_agents -r <agent_id>`) actualizando el inventario en PostgreSQL.
+  - **Información de SO e Historial de Instalación**: Muestra en tiempo real la variante del Sistema Operativo (`Linux` / `Ubuntu` / `RHEL` vs `Windows Server`), la versión del cliente EDR, la fecha de alta/inscripción del agente y el último pulso de comunicación (*keepalive*).
+
+### 🖥️ Alcance y Funcionalidad por Plataforma (Linux vs. Windows)
+
+| Capacidad / Módulo | Entorno Linux (Ubuntu / Debian / RHEL / CentOS) | Entorno Windows (Server 2016-2022 / Win 10-11) |
+| :--- | :--- | :--- |
+| **Instalación EDR** | Paquete DEB/RPM automático y script de enrolamiento bash. | Paquete MSI (`wazuh-agent-4.x.msi`) con parámetro de Manager `10.4.3.34:1514`. |
+| **Auditoría EDR & Logs** | Monitoreo de `/etc`, `syslog`, `auditd` y comandos bash. | Monitoreo de Visor de Eventos (Security, System, App) y Registro `HKLM`. |
+| **Integridad de Archivos (FIM)** | `syscheck` en `/bin`, `/sbin`, `/etc` y archivos de configuración. | `syscheck` en `C:\Windows\System32` y claves de inicio en Registro. |
+| **Escaneo de Red & Servicios** | SSH (22), HTTP/S (80/443), Docker APIs, Bases de Datos SQL. | RDP (3389), WinRM (5985/5986), SMB (445), NetBIOS, IIS (80/443). |
+| **Remediación Automatizada** | Generación de parches en **Bash (`.sh`)** y reglas de `iptables`/`ufw`. | Generación de parches en **PowerShell (`.ps1`)** y `Windows Defender Firewall`. |
+| **Límites de Funcionalidad** | CIS Benchmark cubre ~11 verificaciones principales Level 1. | Requiere PowerShell 5.1+ y WinRM o agente activo para ejecutar parches remotos. |
 - **NDR — Zeek**: sensor de red que observa tráfico en vivo. Además del log de eventos notables propio de Zeek (`notice.log`), Centinela procesa en tiempo real su log de conexiones (`conn.log`), cruzando cada conexión observada contra el feed de inteligencia de amenazas (ver más abajo) y emitiendo un latido de actividad real cada 5 minutos — no una señal simulada.
 - **Escaneo de Red Perimetral**: Integración con **Nuclei** (plantillas de vulnerabilidades perimetrales) y **Nmap** (descubrimiento de puertos y servicios).
 - **Seguridad Runtime (Falco / Wazuh Syslog)**: Captura de eventos del kernel en caliente para detectar ejecuciones sospechosas de shell, modificación de binarios del sistema o accesos no autorizados.

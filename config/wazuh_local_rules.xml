@@ -1,0 +1,33 @@
+<!-- Custom Wazuh EDR Rules for Centinela Omni-XDR -->
+<group name="local,centinela_omni_xdr,">
+  <!-- Windows LSASS Memory Dump Attempt (LSASS Process Access) -->
+  <rule id="100010" level="12">
+    <if_sid>60106</if_sid>
+    <field name="win.system.eventID">^4656$|^10$</field>
+    <field name="win.eventdata.targetImage">lsass.exe</field>
+    <description>Centinela EDR (Windows): Intento de extracción/dumping de memoria de LSASS (Credential Dumping).</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Windows PowerShell Encoded Command Execution -->
+  <rule id="100011" level="10">
+    <if_sid>60000</if_sid>
+    <field name="win.eventdata.commandLine">-enc|-encodedcommand|-e </field>
+    <description>Centinela EDR (Windows): Ejecución de comando oculto o codificado en PowerShell (EncodedCommand).</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Linux Unauthorized Binary Execution in /tmp or /dev/shm -->
+  <rule id="100012" level="11">
+    <if_sid>550</if_sid>
+    <match>/tmp/|/dev/shm/</match>
+    <description>Centinela EDR (Linux): Creación o ejecución de binario no autorizado en directorio temporal (/tmp o /dev/shm).</description>
+    <mitre>
+      <id>T1059.004</id>
+    </mitre>
+  </rule>
+</group>
