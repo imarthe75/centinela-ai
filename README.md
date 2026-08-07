@@ -9,8 +9,9 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
 - **eBPF Kernel Tracing**: Ingesta de llamadas al sistema (syscalls `execve`, `ptrace`, `/tmp`) a nivel de kernel en servidores Linux.
 - **Grafo de Ataques Neo4j (Attack Storyline)**: Correlación en grafos Cypher de nodos de Identidad, IPs de Origen, Servidores de Red y Vulnerabilidades CVE.
 - **UEBA (User & Entity Behavior Analytics)**: Análisis de comportamiento sin firma para detectar accesos en horarios anómalos (00:00 - 05:00 UTC) y ráfagas inusuales de tráfico.
-- **SOAR 2.0 con Respuesta Autónoma Escalonada**: Acciones autónomas inmediatas si la confianza es ≥95% (Parcheo Virtual Nginx, Revocación de Sesión Authentik, Contención de Host) y encolamiento para Aprobación Manual con 1-clic si la confianza es <95%.
-- **Gestión Avanzada de Inventario**: Conmutador de vistas (Tarjetas vs Lista/Tabla), ordenamiento dinámico (Más Recientes, Alfabético, Vulnerabilidades, Alertas), badges explícitos de `Activo Unificado` y desglose directo de `Activos Online vs Offline`.
+- **SOAR 2.0 con Respuesta Autónoma Escalonada**: Acciones autónomas inmediatas si la confianza es ≥95% (Parcheo Virtual Nginx, Revocación de Sesión Authentik, Contención of Host) y encolamiento para Aprobación Manual con 1-clic si la confianza es <95%.
+- **Gestión Avanzada de Inventario & Registro Diferido (Offline)**: Permite registrar activos apagados o en aprovisionamiento (*Offline*), asignándoles automáticamente 0 vulnerabilidades hasta que completan su sincronización en red.
+- **Alternativas Zero-Trust a Contraseñas Sudo (Análisis QA)**: Para evitar ingresar contraseñas `sudo` en interfaz web, Centinela-AI soporta 3 esquemas seguros: (1) Llaves SSH Privadas/PEM encriptadas en Vault, (2) One-Liner de Instalación Local en Servidor (`curl | sudo bash`), y (3) Sondas de Red Agentless (SNMP/Nuclei) sin instalación de software.
 
 > [!IMPORTANT]
 > **Centinela-AI es un sistema estrictamente DEFENSIVO.** 
