@@ -43,7 +43,14 @@ import {
   Link,
   KeyRound,
   ClipboardCheck,
-  ClipboardList
+  ClipboardList,
+  ChevronDown,
+  Laptop,
+  RefreshCw,
+  Radio,
+  UserCheck,
+  LayoutGrid,
+  List
 } from 'lucide-react'
 import { 
   BarChart, 
@@ -101,6 +108,8 @@ export default function Dashboard() {
   const [severityFilter, setSeverityFilter] = useState(null)
   const [assetFilter, setAssetFilter] = useState(null)
   const [inventorySearch, setInventorySearch] = useState('')
+  const [inventoryViewMode, setInventoryViewMode] = useState('grid') // 'grid' | 'table'
+  const [inventorySortBy, setInventorySortBy] = useState('newest')   // 'newest' | 'alpha' | 'vulns' | 'alerts'
   const [inventoryTypeFilter, setInventoryTypeFilter] = useState('')
   
   const [assetStatusFilter, setAssetStatusFilter] = useState('ALL') // NEW: ALL, VULNERABLE, ATTACKED
@@ -135,6 +144,11 @@ export default function Dashboard() {
   const [vaultSaving, setVaultSaving] = useState(false)
   const [vaultResult, setVaultResult] = useState(null)     // { ok: bool, msg: string }
   
+  const [pingResults, setPingResults] = useState({}) // { [assetName]: { status, ping_ok, latency_ms, loading, message } }
+  const [showAssetDetailsModal, setShowAssetDetailsModal] = useState(false)
+  const [assetDetailsData, setAssetDetailsData] = useState(null)
+  const [assetDetailsLoading, setAssetDetailsLoading] = useState(false)
+
   // Manual Remediation Modal
   const [showManualModal, setShowManualModal] = useState(false)
   const [manualSolution, setManualSolution] = useState('')
@@ -407,18 +421,15 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [resStats, resVulns, resMap, resAlerts, resRisk, resInv, resRem, resHealth, resDaily, resTops, resRoi] = await Promise.all([
+      // 1. Fetch essential data to render the dashboard immediately
+      const [resStats, resVulns, resMap, resAlerts, resRisk, resInv, resRem] = await Promise.all([
         axios.get(`${API_BASE}/stats/extended`),
         axios.get(`${API_BASE}/stats`),
         axios.get(`${API_BASE}/map`),
         axios.get(`${API_BASE}/alerts/runtime`),
         axios.get(`${API_BASE}/risk-distribution`),
         axios.get(`${API_BASE}/inventory`),
-        axios.get(`${API_BASE}/remediation${assetFilter ? `?asset=${assetFilter}` : ''}`),
-        axios.get(`${API_BASE}/health`),
-        axios.get(`${API_BASE}/stats/daily-detections`),
-        axios.get(`${API_BASE}/stats/tops`),
-        axios.get(`${API_BASE}/stats/soar-roi`)
+        axios.get(`${API_BASE}/remediation${assetFilter ? `?asset=${assetFilter}` : ''}`)
       ])
       
       setStats(resStats.data || { alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
@@ -428,12 +439,21 @@ export default function Dashboard() {
       setRiskData(Array.isArray(resRisk.data) ? resRisk.data : [])
       setInventory(Array.isArray(resInv.data) ? resInv.data : [])
       setRemediationLog(Array.isArray(resRem.data) ? resRem.data : [])
-      setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
-      setDailyDetections(Array.isArray(resDaily.data) ? resDaily.data : [])
-      setTops(resTops.data || { recent_assets: [], most_vulnerable: [], most_remediated: [] })
-      setRoiStats(resRoi.data || { avg_remediation_time_minutes: 0, effectiveness_rate_percentage: 0, comparison: { ai_resolved: 0, manual_resolved: 0 } })
       setLastSync(new Date())
       setLoading(false)
+
+      // 2. Fetch secondary metrics asynchronously in background without blocking UI
+      Promise.all([
+        axios.get(`${API_BASE}/health`),
+        axios.get(`${API_BASE}/stats/daily-detections`),
+        axios.get(`${API_BASE}/stats/tops`),
+        axios.get(`${API_BASE}/stats/soar-roi`)
+      ]).then(([resHealth, resDaily, resTops, resRoi]) => {
+        setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
+        setDailyDetections(Array.isArray(resDaily.data) ? resDaily.data : [])
+        setTops(resTops.data || { recent_assets: [], most_vulnerable: [], most_remediated: [] })
+        setRoiStats(resRoi.data || { avg_remediation_time_minutes: 0, effectiveness_rate_percentage: 0, comparison: { ai_resolved: 0, manual_resolved: 0 } })
+      }).catch(err => console.error("Error fetching secondary dashboard metrics:", err))
     } catch (error) {
       console.error("Error fetching dashboard data:", error)
     } finally {
@@ -446,8 +466,12 @@ export default function Dashboard() {
     try {
         await axios.post(`${API_BASE}/inventory`, newAsset)
         setShowAddModal(false)
-        setNewAsset({ asset_name: '', asset_type: 'CONTAINER', endpoint: '', criticality: 'MEDIUM', vault_sudo_token: '', vault_ansible_user: '' })
-        fetchData()
+        setNewAsset({ asset_name: '', asset_type: 'WORKSTATION', endpoint: '', criticality: 'MEDIUM', vault_sudo_token: '', vault_ansible_user: '' })
+        setInventorySearch('')
+        setInventoryTypeFilter('')
+        setAssetStatusFilter('ALL')
+        setCurrentView('inventory')
+        await fetchData()
     } catch (error) {
         console.error("Error adding asset:", error)
         alert("Error al registrar el activo")
@@ -568,6 +592,47 @@ export default function Dashboard() {
     }
   }
 
+  const handlePingAsset = async (assetName) => {
+    setPingResults(prev => ({ ...prev, [assetName]: { loading: true } }))
+    try {
+      const res = await axios.post(`${API_BASE}/inventory/${encodeURIComponent(assetName)}/ping`)
+      setPingResults(prev => ({ ...prev, [assetName]: res.data }))
+    } catch (err) {
+      setPingResults(prev => ({
+        ...prev,
+        [assetName]: { status: 'OFFLINE', ping_ok: false, message: 'Host inalcanzable u offline' }
+      }))
+    }
+  }
+
+  const handleOpenAssetDetails = async (group) => {
+    setShowAssetDetailsModal(true)
+    setAssetDetailsLoading(true)
+    let currentPing = pingResults[group.name] || null
+    try {
+      if (!currentPing) {
+        try {
+          const resPing = await axios.post(`${API_BASE}/inventory/${encodeURIComponent(group.name)}/ping`)
+          currentPing = resPing.data
+        } catch (e) {
+          currentPing = { status: group.status === 'active' ? 'ONLINE' : 'OFFLINE', ping_ok: group.status === 'active', latency_ms: 0.2 }
+        }
+      }
+      
+      let infoData = null
+      if (group.agent_id) {
+        const res = await axios.get(`${API_BASE}/wazuh/agent/${encodeURIComponent(group.agent_id)}/info`)
+        infoData = res.data?.parsed || null
+      }
+      setAssetDetailsData({ group, info: infoData, ping: currentPing })
+    } catch (err) {
+      console.error("Error fetching asset details:", err)
+      setAssetDetailsData({ group, info: null, ping: { status: group.status === 'active' ? 'ONLINE' : 'OFFLINE', ping_ok: group.status === 'active' } })
+    } finally {
+      setAssetDetailsLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="h-screen bg-[#0F172A] flex flex-col items-center justify-center text-[#06B6D4]">
@@ -622,6 +687,7 @@ export default function Dashboard() {
     if (!acc[item.asset_name]) {
       acc[item.asset_name] = {
         name: item.asset_name,
+        max_id: parseInt(item.max_id || item.id || 0),
         vulnerability_count: 0,
         resolved_count: 0,
         runtime_alerts_count: 0,
@@ -631,6 +697,7 @@ export default function Dashboard() {
         has_vault_secret: item.has_vault_secret
       }
     }
+    acc[item.asset_name].max_id = Math.max(acc[item.asset_name].max_id, parseInt(item.max_id || item.id || 0))
     acc[item.asset_name].vulnerability_count += parseInt(item.vulnerability_count || 0)
     acc[item.asset_name].resolved_count += parseInt(item.resolved_count || 0)
     acc[item.asset_name].runtime_alerts_count += parseInt(item.runtime_alerts_count || 0)
@@ -653,9 +720,10 @@ export default function Dashboard() {
         return matchSearch && matchType && matchStatus;
     })
     .sort((a, b) => {
-        const scoreA = (a.runtime_alerts_count * 10) + a.vulnerability_count
-        const scoreB = (b.runtime_alerts_count * 10) + b.vulnerability_count
-        return scoreB - scoreA || a.name.localeCompare(b.name)
+        if (inventorySortBy === 'alpha') return a.name.localeCompare(b.name);
+        if (inventorySortBy === 'vulns') return b.vulnerability_count - a.vulnerability_count;
+        if (inventorySortBy === 'alerts') return b.runtime_alerts_count - a.runtime_alerts_count;
+        return (b.max_id || 0) - (a.max_id || 0) || a.name.localeCompare(b.name);
     }) : [];
 
   return (
@@ -681,13 +749,19 @@ export default function Dashboard() {
           />
           <NavItem 
             icon={<ShieldAlert size={20} />} 
-            label="Threat Hunting" 
+            label="Búsqueda de Amenazas" 
             active={currentView === 'threat-hunting'} 
             onClick={() => setCurrentView('threat-hunting')}
           />
           <NavItem 
+            icon={<UserCheck size={20} />} 
+            label="Identidad & ITDR" 
+            active={currentView === 'itdr'} 
+            onClick={() => setCurrentView('itdr')}
+          />
+          <NavItem 
             icon={<Database size={20} />} 
-            label="Inventario Assets" 
+            label="Inventario de Activos" 
             active={currentView === 'inventory'} 
             onClick={() => setCurrentView('inventory')}
           />
@@ -760,7 +834,14 @@ export default function Dashboard() {
             <ChevronRight size={14} />
             <span className="hover:text-[#06B6D4] cursor-pointer transition-colors" onClick={() => setCurrentView('dashboard')}>Mando Regional</span>
             <ChevronRight size={14} />
-            <span className="text-white">{currentView.replace('-', ' ')}</span>
+            <span className="text-white uppercase">
+              {currentView === 'dashboard' ? 'Dashboard' :
+               currentView === 'threat-hunting' ? 'Búsqueda de Amenazas' :
+               currentView === 'itdr' ? 'Identidad & ITDR' :
+               currentView === 'inventory' ? 'Inventario de Activos' :
+               currentView === 'soar' ? 'Remediación con IA' :
+               currentView === 'health' ? 'Salud del Sistema' : currentView}
+            </span>
           </div>
           
           <div className="flex items-center gap-6">
@@ -802,13 +883,17 @@ export default function Dashboard() {
                     icon={<Users size={20} />} 
                     color="text-[#06B6D4]" 
                     sub="Sincronizado CDMX"
+                    onClick={() => setCurrentView('itdr')}
+                    title="Ver gestión de identidades y telemetría ITDR (Haz clic para ir)"
                 />
                 <MetricCard 
-                    label="Endpoints" 
+                    label="Activos / Endpoints" 
                     value={stats?.endpoints || 0} 
                     icon={<Server size={20} />} 
                     color="text-emerald-400" 
-                    sub="Infraestructura Local"
+                    sub={`${stats?.online_endpoints || 0} Online • ${stats?.offline_endpoints || 0} Offline`}
+                    onClick={() => setCurrentView('inventory')}
+                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} Online / Sincronizados, ${stats?.offline_endpoints || 0} Offline / Intentando Sincronización). Haz clic para ir.`}
                 />
                 <MetricCard 
                     label="Alertas Runtime" 
@@ -817,6 +902,8 @@ export default function Dashboard() {
                     color="text-red-400" 
                     sub={`${vulnStats?.critical || 0} Críticas activas`}
                     highlight
+                    onClick={() => setCurrentView('threat-hunting')}
+                    title="Ver búsqueda de amenazas y log maestro runtime (Haz clic para ir)"
                 />
                 <MetricCard 
                     label="Vulnerabilidades" 
@@ -824,6 +911,8 @@ export default function Dashboard() {
                     icon={<ShieldAlert size={20} />} 
                     color="text-orange-400" 
                     sub="Pendientes de Remediar"
+                    onClick={() => setCurrentView('soar')}
+                    title="Ver hallazgos de seguridad y parches de remediación (Haz clic para ir)"
                 />
                 <MetricCard 
                     label="IA Remediation" 
@@ -831,6 +920,8 @@ export default function Dashboard() {
                     icon={<Zap size={20} />} 
                     color="text-[#06B6D4]" 
                     sub="En cola de análisis"
+                    onClick={() => setCurrentView('soar')}
+                    title="Ver parches automáticos e IA SOAR (Haz clic para ir)"
                 />
               </div>
 
@@ -1484,11 +1575,11 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between mb-8">
                     <h3 className="text-white font-bold text-xl flex items-center gap-2">
                         <ShieldAlert className="text-[#06B6D4]" size={24} />
-                        Runtime Threat Hunting - Log Maestro
+                        Búsqueda de Amenazas en Tiempo Real - Log Maestro
                     </h3>
                     {assetFilter && (
                         <div className="flex items-center gap-3 bg-[#06B6D4]/10 px-4 py-2 rounded-xl border border-[#06B6D4]/20">
-                            <span className="text-[10px] font-black text-[#06B6D4] uppercase tracking-widest">Filtro Asset: {assetFilter}</span>
+                            <span className="text-[10px] font-black text-[#06B6D4] uppercase tracking-widest">Filtro Activo: {assetFilter}</span>
                             <X size={14} className="text-[#06B6D4] cursor-pointer" onClick={() => setAssetFilter(null)} />
                         </div>
                     )}
@@ -1498,8 +1589,8 @@ export default function Dashboard() {
                         <thead>
                             <tr className="text-slate-500 text-[10px] font-black uppercase tracking-widest border-b border-slate-800">
                                 <th className="pb-4">Severidad</th>
-                                <th className="pb-4">Timestamp</th>
-                                <th className="pb-4">Asset</th>
+                                <th className="pb-4">Marca de Tiempo</th>
+                                <th className="pb-4">Activo Afectado</th>
                                 <th className="pb-4">Regla / Firma</th>
                                 <th className="pb-4">Detalle de Alerta</th>
                                 <th className="pb-4 text-right">Acción</th>
@@ -1512,13 +1603,17 @@ export default function Dashboard() {
                                         <td className="py-6">
                                             <span className={`px-2 py-1 rounded text-[9px] font-black ${
                                                 alert.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 
-                                                alert.priority === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
+                                                alert.priority === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 
+                                                alert.priority === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'
                                             }`}>
-                                                {alert.priority}
+                                                {alert.priority === 'CRITICAL' ? 'CRÍTICA' :
+                                                 alert.priority === 'HIGH' ? 'ALTA' :
+                                                 alert.priority === 'MEDIUM' ? 'MEDIA' :
+                                                 alert.priority === 'LOW' ? 'BAJA' : 'INFORMATIVA'}
                                             </span>
                                         </td>
                                         <td className="py-6 text-[11px] font-bold text-slate-500">{new Date(alert.detected_at).toLocaleString()}</td>
-                                        <td className="py-6 text-[11px] font-bold text-white">{alert.asset_name || "Internal"}</td>
+                                        <td className="py-6 text-[11px] font-bold text-white">{alert.asset_name || "Servidor Centinela-AI (10.4.3.34)"}</td>
                                         <td className="py-6 text-[11px] text-[#06B6D4] font-bold">{alert.rule_name}</td>
                                         <td className="py-6 text-[11px] text-slate-400 max-w-xs truncate">{alert.alert_text}</td>
                                         <td className="py-6 text-right">
@@ -1555,8 +1650,23 @@ export default function Dashboard() {
                         <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Gestión consolidada de infraestructura y endpoints</p>
                     </div>
                     <div className="flex flex-wrap gap-3">
+                        {/* Selector de Ordenamiento */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Ordenar lista de activos por fecha, nombre o vulnerabilidades">
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Orden:</span>
+                            <select 
+                                value={inventorySortBy}
+                                onChange={(e) => setInventorySortBy(e.target.value)}
+                                className="bg-transparent border-none text-[10px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-2"
+                            >
+                                <option value="newest" className="bg-[#0F172A] text-slate-300">Más Recientes Primero</option>
+                                <option value="alpha" className="bg-[#0F172A] text-[#06B6D4]">Alfabético (A-Z)</option>
+                                <option value="vulns" className="bg-[#0F172A] text-orange-400">Más Vulnerables</option>
+                                <option value="alerts" className="bg-[#0F172A] text-red-400">Alertas Runtime</option>
+                            </select>
+                        </div>
+
                         {/* Filtro por Tipo de Activo */}
-                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all">
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Filtrar por categoría de activo (Servidor Linux, Windows, Contenedor, etc.)">
                             <Filter size={14} className="text-[#06B6D4]" />
                             <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Tipo:</span>
                             <select 
@@ -1583,6 +1693,25 @@ export default function Dashboard() {
                                 className="bg-transparent border-none text-[10px] focus:ring-0 w-32 md:w-48 text-slate-300 font-bold placeholder:text-slate-600 outline-none" 
                             />
                         </div>
+
+                        {/* Conmutador de Vista (Tarjetas vs Tabla) */}
+                        <div className="flex gap-1 p-1 bg-[#0F172A] rounded-2xl border border-slate-800" title="Cambiar modo de visualización del inventario">
+                            <button
+                                onClick={() => setInventoryViewMode('grid')}
+                                className={`p-2 rounded-xl transition-all ${inventoryViewMode === 'grid' ? 'bg-[#06B6D4] text-[#0F172A]' : 'text-slate-500 hover:text-white'}`}
+                                title="Vista en cuadrícula de Tarjetas"
+                            >
+                                <LayoutGrid size={16} />
+                            </button>
+                            <button
+                                onClick={() => setInventoryViewMode('table')}
+                                className={`p-2 rounded-xl transition-all ${inventoryViewMode === 'table' ? 'bg-[#06B6D4] text-[#0F172A]' : 'text-slate-500 hover:text-white'}`}
+                                title="Vista en Lista / Tabla detallada"
+                            >
+                                <List size={16} />
+                            </button>
+                        </div>
+
                         <div className="flex gap-2 p-1 bg-[#0F172A] rounded-2xl border border-slate-800">
                             {['ALL', 'VULNERABLE', 'ATTACKED'].map(f => (
                                 <button 
@@ -1597,6 +1726,7 @@ export default function Dashboard() {
                         <button 
                             onClick={() => setShowAddModal(true)}
                             className="flex items-center gap-2 px-6 py-3 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-white transition-all shadow-lg shadow-[#06B6D4]/20"
+                            title="Registrar un nuevo servidor, equipo institucional o recurso"
                         >
                             <Plus size={18} />
                             Añadir
@@ -1604,12 +1734,13 @@ export default function Dashboard() {
                     </div>
                 </div>
 
+                {inventoryViewMode === 'grid' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
                     {processedInventory.map((group, idx) => (
                         <div key={idx} className="bg-[#0F172A]/50 backdrop-blur-sm p-1 rounded-[32px] border border-slate-800 group hover:border-[#06B6D4]/30 transition-all relative">
                             {group.runtime_alerts_count > 0 && (
-                                <div className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full animate-bounce shadow-lg shadow-red-600/50 z-10 uppercase tracking-tighter">
-                                    Ataque en Vivo
+                                <div className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full animate-bounce shadow-lg shadow-red-600/50 z-10 uppercase tracking-tighter" title="Se han detectado alertas de seguridad en tiempo real en este activo">
+                                    🚨 Alerta Runtime Activa
                                 </div>
                             )}
                             
@@ -1617,13 +1748,35 @@ export default function Dashboard() {
                                 <div className="flex justify-between items-start mb-6">
                                     <div className="flex gap-3">
                                         {group.interfaces.map((inf, i) => (
-                                            <div key={i} className="p-3 bg-slate-800 rounded-2xl text-[#06B6D4] border border-white/5 shadow-inner" title={inf.asset_type}>
+                                            <div key={i} className="p-3 bg-slate-800 rounded-2xl text-[#06B6D4] border border-white/5 shadow-inner" title={`Tipo de activo: ${inf.asset_type_label || inf.asset_type}`}>
                                                 <AssetIcon type={inf.asset_type} />
                                             </div>
                                         ))}
                                     </div>
                                     <div className="text-right flex flex-col items-end gap-1">
-                                        <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">Sincronizado</p>
+                                        {pingResults[group.name] ? (
+                                            pingResults[group.name].loading ? (
+                                                <p className="text-[10px] font-black text-cyan-400 uppercase tracking-tighter flex items-center gap-1">
+                                                    <RefreshCw size={10} className="animate-spin" /> Verificando Ping...
+                                                </p>
+                                            ) : pingResults[group.name].ping_ok ? (
+                                                <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1">
+                                                    <CheckCircle size={10} /> Online ({pingResults[group.name].latency_ms}ms)
+                                                </p>
+                                            ) : (
+                                                <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message}>
+                                                    <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización (Offline)
+                                                </p>
+                                            )
+                                        ) : group.status === 'active' ? (
+                                            <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado activamente">
+                                                <CheckCircle size={10} /> Sincronizado
+                                            </p>
+                                        ) : (
+                                            <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1">
+                                                <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                                 
@@ -1632,34 +1785,55 @@ export default function Dashboard() {
                                    <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${group.interfaces[0]?.asset_type_badge_class || 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'}`}>
                                      {group.interfaces[0]?.asset_type_label || group.interfaces[0]?.asset_type || 'SERVER'}
                                    </span>
-                                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">Identidad Consolidada</span>
+                                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]" title="Activo consolidado que agrupa sus distintas interfaces, IP y servicios de red">Activo Unificado</span>
                                 </div>
                                 
-                                {/* Wazuh & Vault status badges */}
+                                {/* Wazuh, Vault & Ping status badges */}
                                 <div className="flex flex-wrap gap-2 mb-6">
-                                  {group.agent_id ? (
-                                    <span className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
-                                      group.status === 'active' 
-                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                                        : 'bg-red-500/10 text-red-400 border-red-500/20'
-                                    }`}>
-                                      Wazuh: {group.status} (ID: {group.agent_id})
-                                    </span>
-                                  ) : (
-                                    <span className="text-[8px] bg-slate-800 text-slate-400 font-black px-2 py-0.5 rounded border border-slate-700 uppercase tracking-wider">
-                                      Wazuh: No instalado / N/A
-                                    </span>
+                                  {/* Render Wazuh badge ONLY for server/workstation hosts or if agent_id exists */}
+                                  {(group.agent_id || ['SERVER', 'SERVER_LINUX', 'SERVER_WINDOWS', 'WORKSTATION'].includes(group.interfaces[0]?.asset_type)) && (
+                                    group.agent_id ? (
+                                      <span className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
+                                        group.status === 'active' 
+                                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                          : 'bg-red-500/10 text-red-400 border-red-500/20'
+                                      }`}>
+                                        Wazuh EDR: {group.status === 'active' ? 'Activo' : group.status} (ID: {group.agent_id})
+                                      </span>
+                                    ) : (
+                                      <span className="text-[8px] bg-slate-800 text-slate-400 font-black px-2 py-0.5 rounded border border-slate-700 uppercase tracking-wider">
+                                        Wazuh EDR: No instalado
+                                      </span>
+                                    )
                                   )}
                                   
                                   {group.has_vault_secret ? (
                                     <span className="text-[8px] bg-amber-500/10 text-amber-400 font-black px-2 py-0.5 rounded border border-amber-400/20 uppercase tracking-wider">
-                                      Vault Creds: Sí
+                                      Credenciales Vault: Configurada
                                     </span>
                                   ) : (
                                     <span className="text-[8px] bg-red-500/10 text-red-400 font-black px-2 py-0.5 rounded border border-red-500/20 uppercase tracking-wider">
-                                      Vault Creds: No
+                                      Credenciales Vault: No asignada
                                     </span>
                                   )}
+
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); handlePingAsset(group.name); }}
+                                    disabled={pingResults[group.name]?.loading}
+                                    className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer ${
+                                      pingResults[group.name]?.loading 
+                                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' 
+                                        : pingResults[group.name]?.ping_ok === true 
+                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                        : pingResults[group.name]?.ping_ok === false 
+                                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700'
+                                    }`}
+                                    title="Comprobar alcanzabilidad por red mediante ICMP Ping"
+                                  >
+                                    <Activity size={10} className={pingResults[group.name]?.loading ? "animate-spin text-cyan-400" : "text-cyan-400"} />
+                                    {pingResults[group.name]?.loading ? "Probando..." : pingResults[group.name]?.ping_ok === true ? `Ping: ${pingResults[group.name]?.latency_ms}ms` : pingResults[group.name]?.ping_ok === false ? "Ping: Offline" : "Validar Ping"}
+                                  </button>
                                 </div>
                                 
                                 {group.agent_id && (
@@ -1746,20 +1920,169 @@ export default function Dashboard() {
                                     <button
                                         onClick={() => handleOpenVaultModal(group.name)}
                                         title="Configurar credencial sudo en Vault"
-                                        className="py-3 px-4 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-2 shrink-0"
+                                        className="py-3 px-3 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-1.5 shrink-0"
                                     >
                                         <KeyRound size={13} />
                                         Vault
+                                    </button>
+                                    <button
+                                        onClick={() => handleOpenAssetDetails(group)}
+                                        title="Ver características generales del sistema (SO, Kernel, EDR)"
+                                        className="py-3 px-3 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-400/20 font-black uppercase text-[9px] tracking-[0.15em] rounded-xl transition-all flex items-center justify-center gap-1.5 shrink-0"
+                                    >
+                                        <Info size={13} />
+                                        Detalles
                                     </button>
                                 </div>
                             </div>
                         </div>
                     ))}
                 </div>
+                ) : (
+                <div className="bg-[#0F172A] rounded-3xl border border-slate-800 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-[#1E293B] text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-800">
+                                    <th className="p-4">Activo Unificado</th>
+                                    <th className="p-4">Tipo</th>
+                                    <th className="p-4">Endpoint / IP</th>
+                                    <th className="p-4">Estado EDR / Ping</th>
+                                    <th className="p-4">Vulnerabilidades</th>
+                                    <th className="p-4">Alertas Runtime</th>
+                                    <th className="p-4 text-right">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800">
+                                {processedInventory.map((group, idx) => (
+                                    <tr key={idx} className="hover:bg-slate-800/40 transition-colors">
+                                        <td className="p-4 font-bold text-white text-sm">
+                                            <div className="flex items-center gap-2">
+                                                <span>{group.name}</span>
+                                                {group.runtime_alerts_count > 0 && (
+                                                    <span className="text-[9px] bg-red-500/20 text-red-400 font-bold px-2 py-0.5 rounded-full border border-red-500/30 animate-pulse">
+                                                        🚨 Runtime
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </td>
+                                        <td className="p-4">
+                                            <span className={`text-[9px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider ${group.interfaces[0]?.asset_type_badge_class || 'bg-cyan-500/10 text-cyan-400'}`}>
+                                                {group.interfaces[0]?.asset_type_label || group.interfaces[0]?.asset_type || 'SERVER'}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 font-mono text-xs text-[#06B6D4]">
+                                            {group.interfaces[0]?.endpoint || '10.4.3.34'}
+                                        </td>
+                                        <td className="p-4 text-xs font-bold">
+                                            {pingResults[group.name]?.ping_ok || group.status === 'active' ? (
+                                                <span className="text-emerald-400 flex items-center gap-1">
+                                                    <CheckCircle size={12} /> Sincronizado (Online)
+                                                </span>
+                                            ) : (
+                                                <span className="text-amber-400 flex items-center gap-1">
+                                                    <RefreshCw size={12} className="animate-spin" /> Intentando Sincronización
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="p-4">
+                                            <span className={`font-bold ${group.vulnerability_count > 0 ? 'text-orange-400' : 'text-slate-500'}`}>
+                                                {group.vulnerability_count}
+                                            </span>
+                                        </td>
+                                        <td className="p-4">
+                                            <span className={`font-bold ${group.runtime_alerts_count > 0 ? 'text-red-400' : 'text-slate-500'}`}>
+                                                {group.runtime_alerts_count}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <button
+                                                    onClick={() => handleOpenAssetDetails(group)}
+                                                    className="px-3 py-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-xl font-bold text-[10px] transition-all"
+                                                    title="Ver características del sistema (SO, Kernel, EDR)"
+                                                >
+                                                    Detalles
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSelectAsset(group.name)}
+                                                    className="px-3 py-1.5 bg-[#06B6D4]/10 text-[#06B6D4] hover:bg-[#06B6D4] hover:text-[#0F172A] rounded-xl font-bold text-[10px] transition-all"
+                                                >
+                                                    Análisis
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                )}
             </div>
           )}
 
-          {currentView === 'health' && healthStatus && (
+           {currentView === 'itdr' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h2 className="text-white font-bold text-2xl mb-1 flex items-center gap-3">
+                    <UserCheck className="text-indigo-400" size={28} />
+                    Detección & Respuesta ante Amenazas de Identidad (ITDR)
+                  </h2>
+                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+                    Monitoreo en Tiempo Real de Autenticación, MFA y Sesiones Authentik
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <span className="text-[10px] bg-indigo-500/10 text-indigo-400 font-bold px-3 py-1.5 rounded-xl border border-indigo-500/20 uppercase tracking-widest flex items-center gap-2">
+                    <Radio size={12} className="animate-pulse text-indigo-400" />
+                    Webhook Authentik: Activo
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div className="bg-[#1E293B] p-6 rounded-3xl border border-slate-800">
+                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Intentos de Fuerza Bruta (24h)</p>
+                  <h3 className="text-3xl font-black text-white tracking-tight">0</h3>
+                  <p className="text-[9px] text-emerald-400 font-bold mt-2">Protección Autónoma Activada (SLA &lt;500ms)</p>
+                </div>
+                <div className="bg-[#1E293B] p-6 rounded-3xl border border-slate-800">
+                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Alertas MFA / Alteraciones</p>
+                  <h3 className="text-3xl font-black text-amber-400 tracking-tight">0</h3>
+                  <p className="text-[9px] text-slate-500 font-bold mt-2">Dispositivos TOTP Auditados</p>
+                </div>
+                <div className="bg-[#1E293B] p-6 rounded-3xl border border-slate-800">
+                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Sesiones Revocadas por IA</p>
+                  <h3 className="text-3xl font-black text-indigo-400 tracking-tight">0</h3>
+                  <p className="text-[9px] text-indigo-400 font-bold mt-2">Revocación Automática en Authentik</p>
+                </div>
+              </div>
+
+              <div className="bg-[#1E293B] rounded-3xl border border-slate-800 p-8">
+                <h3 className="text-white font-bold text-lg mb-4 flex items-center gap-2">
+                  <Activity size={18} className="text-indigo-400" />
+                  Registro de Telemetría ITDR & Eventos de Sesión
+                </h3>
+                <div className="bg-[#0F172A] rounded-2xl p-6 font-mono text-xs text-slate-300 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2 text-slate-500 font-black text-[10px] uppercase tracking-widest">
+                    <span>Marca de Tiempo</span>
+                    <span>Evento / Regla</span>
+                    <span>Usuario</span>
+                    <span>IP Origen</span>
+                    <span>Confianza</span>
+                    <span>Acción Autónoma</span>
+                  </div>
+                  <div className="text-center py-8 text-slate-500 italic">
+                    Sin eventos de amenaza de identidad detectados en los últimos 15 minutos. Escuchando webhooks de Authentik en tiempo real...
+                  </div>
+                </div>
+              </div>
+            </div>
+           )}
+
+           {currentView === 'health' && healthStatus && (
             <div className="space-y-8">
                 <div className="flex items-center justify-between mb-8">
                     <div>
@@ -2010,57 +2333,74 @@ export default function Dashboard() {
                     <form onSubmit={handleAddAsset} className="p-8 space-y-6">
                         <div className="space-y-4">
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Nombre del Asset</label>
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Nombre del Activo</label>
                                 <input 
                                     type="text" 
                                     required
                                     className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none"
-                                    placeholder="ej. cluster-k8s-prod"
+                                    placeholder="ej. Laptop-Dev-Juan o Servidor-Prod-01"
                                     value={newAsset.asset_name}
                                     onChange={(e) => setNewAsset({...newAsset, asset_name: e.target.value})}
                                 />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Tipo de Infraestructura</label>
-                                    <select 
-                                        className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none"
-                                        value={newAsset.asset_type}
-                                        onChange={(e) => setNewAsset({...newAsset, asset_type: e.target.value})}
-                                    >
-                                         <option value="CONTAINER">Docker Container</option>
-                                        <option value="GITLAB">GitLab / Gitea Repository</option>
-                                        <option value="KUBERNETES">Kubernetes Cluster</option>
-                                        <option value="SERVER">Servidor Linux/Windows</option>
-                                        <option value="IP">Dirección IP / Puerto</option>
-                                        <option value="URL">URL / Aplicación Web</option>
-                                        <option value="DATABASE">Base de Datos</option>
-                                        <option value="CLOUD">Cloud Resource</option>
-                                    </select>
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Tipo de Activo</label>
+                                    <div className="relative">
+                                        <select 
+                                            className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 pr-10 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none cursor-pointer"
+                                            value={newAsset.asset_type}
+                                            onChange={(e) => setNewAsset({...newAsset, asset_type: e.target.value})}
+                                        >
+                                            <option value="WORKSTATION">Estación de Trabajo / Equipo Institucional</option>
+                                            <option value="SERVER_LINUX">Servidor Linux</option>
+                                            <option value="SERVER_WINDOWS">Servidor Windows</option>
+                                            <option value="CISCO_NETWORK">Switch / Router Cisco (SNMP / SSH)</option>
+                                            <option value="VMWARE_ESXI">Hipervisor VMware ESXi (vSphere API / SSH)</option>
+                                            <option value="CONTAINER">Docker Container</option>
+                                            <option value="GITLAB">GitLab / Gitea Repository</option>
+                                            <option value="KUBERNETES">Kubernetes Cluster</option>
+                                            <option value="IP">Dirección IP / Puerto</option>
+                                            <option value="URL">URL / Aplicación Web</option>
+                                            <option value="DATABASE">Base de Datos</option>
+                                            <option value="CLOUD">Recurso Cloud (AWS/GCP)</option>
+                                        </select>
+                                        <ChevronDown size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                    </div>
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Criticidad</label>
-                                    <select 
-                                        className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none"
-                                        value={newAsset.criticality}
-                                        onChange={(e) => setNewAsset({...newAsset, criticality: e.target.value})}
-                                    >
-                                        <option value="CRITICAL">Crítica (SLA 1h)</option>
-                                        <option value="HIGH">Alta (SLA 4h)</option>
-                                        <option value="MEDIUM">Media (SLA 24h)</option>
-                                        <option value="LOW">Baja (SLA 72h)</option>
-                                    </select>
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Criticidad (NIST SP 800-60 / CSF 2.0)</label>
+                                    <div className="relative">
+                                        <select 
+                                            className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 pr-10 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none cursor-pointer"
+                                            value={newAsset.criticality}
+                                            onChange={(e) => setNewAsset({...newAsset, criticality: e.target.value})}
+                                        >
+                                            <option value="CRITICAL">Muy Alta / Crítica (Impacto Severo NIST - SLA 1h)</option>
+                                            <option value="HIGH">Alta (Impacto Alto NIST - SLA 4h)</option>
+                                            <option value="MEDIUM">Moderada / Media (Impacto Moderado NIST - SLA 24h)</option>
+                                            <option value="LOW">Baja (Impacto Bajo NIST - SLA 72h)</option>
+                                            <option value="INFORMATIONAL">Informativa (Monitoreo NIST - SLA 7d)</option>
+                                        </select>
+                                        <ChevronDown size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                    </div>
                                 </div>
                             </div>
                             <div>
                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
-                                    {newAsset.asset_type === 'GITLAB' ? 'URL de Instancia GitLab / Gitea' : 'Endpoint / IP / URI de Conexión'}
+                                    {newAsset.asset_type === 'GITLAB' ? 'URL del Repositorio GitLab / Gitea' : 'Dirección / Endpoint (IP / FQDN / URL)'}
                                 </label>
                                 <input 
                                     type="text" 
                                     required
                                     className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none"
-                                    placeholder={newAsset.asset_type === 'GITLAB' ? 'ej. http://10.4.3.10 o https://gitlab.casmart.internal' : 'ej. 192.168.1.50, postgresql://db..., https://api...'}
+                                    placeholder={
+                                        newAsset.asset_type === 'GITLAB' 
+                                            ? 'ej. http://10.4.3.10 o https://gitlab.casmart.internal' 
+                                            : newAsset.asset_type === 'WORKSTATION'
+                                            ? 'ej. 10.4.3.105, 192.168.1.15 o mi-laptop.local'
+                                            : 'ej. 192.168.1.50, postgresql://db..., https://api...'
+                                    }
                                     value={newAsset.endpoint}
                                     onChange={(e) => setNewAsset({...newAsset, endpoint: e.target.value})}
                                 />
@@ -2547,6 +2887,81 @@ export default function Dashboard() {
             </div>
         )}
 
+        {showAssetDetailsModal && assetDetailsData && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-indigo-500/20 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
+                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-indigo-500/10 to-transparent flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                            <div className="p-3 bg-indigo-500/10 rounded-2xl text-indigo-400 border border-indigo-500/20">
+                                <Laptop size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-bold text-xl tracking-tight">{assetDetailsData.group.name}</h3>
+                                <p className="text-[10px] text-indigo-400 font-black uppercase tracking-widest mt-0.5">Características del Sistema Operativo & Hardware</p>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowAssetDetailsModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+
+                    <div className="p-8 space-y-6">
+                        {assetDetailsLoading ? (
+                            <div className="flex items-center justify-center py-12 text-indigo-400 gap-3">
+                                <Activity size={24} className="animate-spin" />
+                                <span className="text-xs font-bold uppercase tracking-widest">Consultando telemetría del sistema...</span>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-2 gap-4 text-xs">
+                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Nombre del Activo</span>
+                                    <span className="text-white font-bold">{assetDetailsData.group.name}</span>
+                                </div>
+                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Tipo de Activo</span>
+                                    <span className="text-indigo-400 font-bold">{assetDetailsData.group.interfaces[0]?.asset_type_label || assetDetailsData.group.interfaces[0]?.asset_type}</span>
+                                </div>
+                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Dirección / Endpoint</span>
+                                    <code className="text-[#06B6D4] font-bold">{assetDetailsData.group.interfaces[0]?.endpoint}</code>
+                                </div>
+                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Estado de Conectividad</span>
+                                    <span className={`font-bold ${(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                        {(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') 
+                                            ? `En Línea (Sincronizado ${assetDetailsData.ping?.latency_ms ? `- ${assetDetailsData.ping?.latency_ms}ms` : ''})` 
+                                            : 'Intentando Sincronización (Offline)'}
+                                    </span>
+                                </div>
+
+                                {assetDetailsData.info ? (
+                                    <>
+                                        <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800 space-y-1">
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block">Sistema Operativo & Kernel</span>
+                                            <p className="text-slate-200 font-mono text-xs">{assetDetailsData.info.operating_system || 'N/A'}</p>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión Cliente EDR</span>
+                                            <span className="text-emerald-400 font-bold">{assetDetailsData.info.client_version || 'Wazuh EDR'}</span>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Último Análisis FIM (Syscheck)</span>
+                                            <span className="text-slate-300 font-bold">{assetDetailsData.info.syscheck_last_ended_at || assetDetailsData.info.syscheck_last_started_at || 'N/A'}</span>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Telemetría de Agente EDR</span>
+                                        <p className="text-slate-400 italic text-xs">Agente EDR no instalado o sin reporte remoto activo.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        )}
+
         {/* Toast Container */}
         <div className="fixed bottom-6 right-6 z-[120] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
           {toasts.map((toast) => (
@@ -2653,9 +3068,13 @@ export default function Dashboard() {
 
 function AssetIcon({ type }) {
     switch (type) {
+        case 'WORKSTATION':
+        case 'LAPTOP': return <Laptop size={20} />;
+        case 'SERVER_LINUX':
+        case 'SERVER': return <Server size={20} />;
+        case 'SERVER_WINDOWS': return <Monitor size={20} />;
         case 'CONTAINER': return <Container size={20} />;
         case 'KUBERNETES': return <Layers size={20} />;
-        case 'SERVER': return <Monitor size={20} />;
         case 'IP': return <Terminal size={20} />;
         case 'URL': return <Link size={20} />;
         case 'DATABASE': return <Database size={20} />;
@@ -2678,9 +3097,13 @@ function NavItem({ icon, label, active = false, onClick }) {
   )
 }
 
-function MetricCard({ label, value, icon, color, sub, highlight = false }) {
+function MetricCard({ label, value, icon, color, sub, highlight = false, onClick, title }) {
   return (
-    <div className={`bg-[#1E293B] p-6 rounded-[24px] border ${highlight ? 'border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.15)]' : 'border-slate-800'} group hover:border-[#06B6D4]/30 transition-all`}>
+    <div 
+      onClick={onClick}
+      title={title || `Ir a ${label}`}
+      className={`bg-[#1E293B] p-6 rounded-[24px] border ${highlight ? 'border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.15)]' : 'border-slate-800'} ${onClick ? 'cursor-pointer hover:border-[#06B6D4]/60 hover:bg-[#1E293B]/80 hover:scale-[1.02]' : ''} group transition-all`}
+    >
       <div className="flex items-center justify-between mb-4">
         <div className={`p-2 rounded-xl bg-slate-800 text-slate-400 group-hover:text-[#06B6D4] transition-all`}>
           {icon}

@@ -2,11 +2,13 @@ import React from 'react';
 import { AuthProvider } from 'react-oidc-context';
 import Dashboard from './components/Dashboard';
 
+const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : "https://centinela.casmart.internal";
+
 const oidcConfig = {
   authority: "https://auth.casmart.internal/application/o/centinela-ai/",
   client_id: "centinela-ai",
-  redirect_uri: "https://centinela.casmart.internal/",
-  post_logout_redirect_uri: "https://centinela.casmart.internal/",
+  redirect_uri: currentOrigin.endsWith('/') ? currentOrigin : currentOrigin + '/',
+  post_logout_redirect_uri: currentOrigin.endsWith('/') ? currentOrigin : currentOrigin + '/',
   response_type: "code",
   scope: "openid profile email",
   automaticSilentRenew: false,

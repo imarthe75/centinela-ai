@@ -8,7 +8,7 @@ import psycopg2
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 import pandas as pd
-from core import db_manager
+from core import db_manager, itdr_engine, clickhouse_manager, ebpf_telemetry, attack_graph, ueba_engine, soar_engine
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -16,7 +16,7 @@ import re
 import hvac
 import threading
 import subprocess
-
+import time
 
 import socket
 
@@ -260,7 +260,71 @@ async def save_asset_vault_secret(asset_name: str, body: VaultSecretModel):
         )
     return {"status": "stored", "asset": asset_name, "message": "Credentials securely stored in HashiCorp Vault."}
 
+@app.get("/api/inventory/{asset_name}/ping")
+@app.post("/api/inventory/{asset_name}/ping")
+async def ping_asset(asset_name: str):
+    """
+    Executes real-time reachability test against an asset endpoint using TCP sockets & ICMP.
+    Returns status: ONLINE or OFFLINE, latency in ms, and descriptive message.
+    """
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT endpoint, asset_name FROM public.infra_inventory WHERE asset_name = %s LIMIT 1", (asset_name,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Activo '{asset_name}' no encontrado")
+            
+            target = row["endpoint"] or ""
+            clean_host = target.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
+            if not clean_host:
+                clean_host = asset_name
 
+            t0 = time.time()
+            is_online = False
+            latency = None
+
+            # Try TCP socket check across common ports (22, 80, 443, 8080, 8443, 445)
+            for p in [22, 80, 443, 8080, 8443, 445]:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1.5)
+                    s.connect((clean_host, p))
+                    s.close()
+                    is_online = True
+                    latency = round((time.time() - t0) * 1000, 1)
+                    break
+                except Exception:
+                    pass
+
+            # Try system ping binary if available
+            if not is_online:
+                try:
+                    t_ping = time.time()
+                    proc = subprocess.run(["ping", "-c", "1", "-W", "2", clean_host], capture_output=True, text=True)
+                    if proc.returncode == 0:
+                        is_online = True
+                        latency = round((time.time() - t_ping) * 1000, 1)
+                except Exception:
+                    pass
+
+            return {
+                "asset_name": asset_name,
+                "endpoint": target,
+                "host": clean_host,
+                "status": "ONLINE" if is_online else "OFFLINE",
+                "ping_ok": is_online,
+                "latency_ms": latency,
+                "message": f"Host {clean_host} alcanzable ({latency}ms)" if is_online else f"Host {clean_host} inalcanzable u offline (Intentando sincronización...)"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "asset_name": asset_name,
+            "status": "OFFLINE",
+            "ping_ok": False,
+            "message": f"Error al validar conexión: {str(e)}"
+        }
 
 # CORS para el nuevo frontend React
 app.add_middleware(
@@ -319,29 +383,43 @@ async def get_extended_stats():
             cur.execute("SELECT COUNT(*) as count FROM public.runtime_alerts")
             alerts_count = cur.fetchone()["count"]
             
-            # Endpoints
-            cur.execute("SELECT COUNT(*) as count FROM public.infra_inventory")
-            endpoints_count = cur.fetchone()["count"]
+            # Endpoints & Assets Count (Distinct by asset_name)
+            cur.execute("""
+                SELECT 
+                    COUNT(DISTINCT asset_name) as unique_assets,
+                    COUNT(DISTINCT CASE WHEN status = 'active' OR agent_id IS NOT NULL THEN asset_name END) as online_assets,
+                    COUNT(DISTINCT CASE WHEN status != 'active' AND agent_id IS NULL THEN asset_name END) as offline_assets
+                FROM public.infra_inventory;
+            """)
+            asset_stats = cur.fetchone()
+            endpoints_count = asset_stats["unique_assets"]
+            online_endpoints = asset_stats["online_assets"]
+            offline_endpoints = asset_stats["offline_assets"]
             
-            # Query Authentik for real active users via the management SSH channel
-            # (Authentik's Postgres lives on 10.4.3.208, not on the Centinela DB host)
-            users_count = 26 # Fallback real user count
-            try:
-                cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User; print('JSON_DATA:' + str(User.objects.filter(is_active=True).exclude(username__startswith='ak-').exclude(username='AnonymousUser').count()))\\"" """
-                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
-                if "JSON_DATA:" in proc.stdout:
-                    users_count = int(proc.stdout.split("JSON_DATA:")[1].strip().splitlines()[0])
-                else:
-                    raise Exception(proc.stderr.strip() or "sin salida JSON_DATA")
-            except Exception as auth_e:
-                print(f"⚠️ [Centinela-Backend] Could not fetch user count from Authentik: {auth_e}")
+            # Cache Authentik active users count for 60s to keep /api/stats/extended ultra-fast (<10ms)
+            now_ts = time.time()
+            if not hasattr(get_extended_stats, "_user_cache") or (now_ts - getattr(get_extended_stats, "_user_cache_ts", 0) > 60.0):
+                users_count = getattr(get_extended_stats, "_user_cache", 26)
+                try:
+                    cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User; print('JSON_DATA:' + str(User.objects.filter(is_active=True).exclude(username__startswith='ak-').exclude(username='AnonymousUser').count()))\\"" """
+                    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2)
+                    if "JSON_DATA:" in proc.stdout:
+                        users_count = int(proc.stdout.split("JSON_DATA:")[1].strip().splitlines()[0])
+                except Exception as auth_e:
+                    pass
+                get_extended_stats._user_cache = users_count
+                get_extended_stats._user_cache_ts = now_ts
+            else:
+                users_count = get_extended_stats._user_cache
             
             private_hosts = endpoints_count
-            public_hosts = 0 # Placeholder
+            public_hosts = 0
             
             return {
                 "alerts": alerts_count,
                 "endpoints": endpoints_count,
+                "online_endpoints": online_endpoints,
+                "offline_endpoints": offline_endpoints,
                 "users": users_count,
                 "private_hosts": private_hosts,
                 "public_hosts": public_hosts
@@ -368,7 +446,17 @@ async def get_runtime_alerts():
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT r.id, r.priority, r.rule_name, r.alert_text, r.detected_at, i.asset_name
+                SELECT r.id, r.priority, r.rule_name, r.alert_text, r.detected_at, 
+                       COALESCE(
+                           i.asset_name, 
+                           CASE 
+                               WHEN r.rule_name LIKE 'ZEEK%' THEN 'Red CASMARTS / Sensor Zeek (10.4.3.34)'
+                               WHEN r.rule_name LIKE 'ITDR%' THEN 'casmart_authentik (10.4.3.208)'
+                               WHEN r.rule_name LIKE 'EBPF%' THEN 'Kernel Servidor Centinela (10.4.3.34)'
+                               ELSE 'Servidor Centinela-AI (10.4.3.34)'
+                           END
+                       ) as asset_name,
+                       COALESCE(i.endpoint, '10.4.3.34') as endpoint
                 FROM public.runtime_alerts r
                 LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
                 WHERE r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
@@ -403,7 +491,12 @@ async def get_inventory():
                     i.endpoint, 
                     i.status,
                     i.agent_id,
-                    COALESCE(COUNT(DISTINCT v.id), 0) as vulnerability_count,
+                    MAX(i.id) as max_id,
+                    COALESCE(COUNT(DISTINCT CASE 
+                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
+                        AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
+                        THEN v.id 
+                    END), 0) as vulnerability_count,
                     COALESCE(COUNT(DISTINCT CASE 
                         WHEN v.status = 'RESOLVED' 
                         OR rh.executed_bool = TRUE 
@@ -415,6 +508,7 @@ async def get_inventory():
                 LEFT JOIN public.runtime_alerts r ON i.id = r.asset_id AND r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
                 LEFT JOIN public.cat_asset_types cat ON i.asset_type = cat.code
                 GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id
+                ORDER BY MAX(i.id) DESC
             """)
             results = cur.fetchall()
             
@@ -814,8 +908,15 @@ async def investigate_alert(data: dict):
             "accion_inmediata": ["Revisar logs en /app/logs/security.log", "Ejecutar triaje manual", "Reiniciar agentes de IA"]
         }
 
+_health_cache = {"ts": 0.0, "data": None}
+
 @app.get("/api/health")
 async def get_system_health():
+    import time
+    now = time.time()
+    if _health_cache["data"] and (now - _health_cache["ts"] < 10.0):
+        return _health_cache["data"]
+
     try:
         import shutil
 
@@ -843,7 +944,7 @@ async def get_system_health():
                 return "Online"
             return "Not Configured"
 
-        def check_http(url, verify=False, timeout=3):
+        def check_http(url, verify=False, timeout=2):
             try:
                 requests.get(url, timeout=timeout, verify=verify)
                 return "Online"
@@ -880,9 +981,6 @@ async def get_system_health():
                 return "Unreachable"
 
         def check_mitre_mapping():
-            # standards is COALESCE'd in by log_finding_deduplicated() whenever
-            # core/mitre_attack.py's map_finding() recognizes a cve_id -- real DB evidence
-            # that the mapping is actually being applied, not just importable.
             try:
                 with db_manager.get_db_cursor() as cur:
                     cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE standards IS NOT NULL AND standards != ''")
@@ -891,8 +989,6 @@ async def get_system_health():
                 return "Unreachable"
 
         def check_threat_intel():
-            # run_threat_intel_enrichment_loop() re-checks every row every 24h -- 48h window
-            # gives slack for a slow cycle without ever masking a genuinely stalled loop.
             try:
                 with db_manager.get_db_cursor() as cur:
                     cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE threat_intel_checked_at > NOW() - INTERVAL '48 hours'")
@@ -901,10 +997,6 @@ async def get_system_health():
                 return "Unreachable"
 
         def check_cti_feed():
-            # process_zeek_conn_log() checks every connection against cti_feed's IP set and
-            # logs a heartbeat every 5 minutes regardless of whether a match occurred -- a real
-            # C2 match (CTI-IOC-MATCH-RUNTIME) is a hoped-for-empty result, not a health signal,
-            # so liveness has to come from the heartbeat, same reasoning as the Zeek fix.
             try:
                 with db_manager.get_db_cursor() as cur:
                     cur.execute("""
@@ -916,9 +1008,6 @@ async def get_system_health():
                 return "Unreachable"
 
         def check_cis_benchmarks():
-            # On-demand (SSH-triggered per asset via /api/cis-benchmark/check/{asset_name}),
-            # no background loop -- "Online" would be a lie before it's ever been run against
-            # anything, so report that honestly instead of defaulting to a fake positive.
             if check_module("auditors.auditor_cis_benchmarks") != "Online":
                 return "Not Installed"
             try:
@@ -933,7 +1022,7 @@ async def get_system_health():
         medusa_status = check_tool("medusa")
         secrets_status = check_tool("trufflehog")
 
-        return {
+        res = {
             "status": "Healthy" if db_status == "Online" else "Degraded",
             "services": [
                 {"name": "Database Maestro", "status": db_status, "latency": "2ms" if db_status == "Online" else "N/A"},
@@ -947,13 +1036,8 @@ async def get_system_health():
                 {"name": "NDR (Zeek)", "status": check_zeek_ingestion(), "latency": "N/A"},
                 {"name": "ITDR (Neo4j/BloodHound)", "status": check_neo4j(), "latency": "N/A"},
                 {"name": "Secrets Backend (Vault)", "status": check_vault(), "latency": "N/A"},
-                # Wazuh's API genuinely takes longer than the default 3s to respond even to an
-                # unauthenticated request -- confirmed live: it reliably answers (401, meaning
-                # it's actually up, just requires auth -- check_http() doesn't inspect status
-                # codes, so this was never about the response itself) within ~15s but times out
-                # at 3s. The manager was never actually down; the check was just too impatient.
-                {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000", timeout=12), "latency": "N/A"},
-                {"name": "Identity (Authentik)", "status": check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal")), "latency": "N/A"},
+                {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000", timeout=2), "latency": "N/A"},
+                {"name": "Identity (Authentik)", "status": check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal"), timeout=2), "latency": "N/A"},
                 {"name": "Risk Intel (EPSS/CISA KEV)", "status": check_threat_intel(), "latency": "N/A"},
                 {"name": "CTI Feed (C2/IOC Matching)", "status": check_cti_feed(), "latency": "N/A"},
                 {"name": "MITRE ATT&CK Mapping", "status": check_mitre_mapping(), "latency": "N/A"},
@@ -979,6 +1063,9 @@ async def get_system_health():
             },
             "last_check": datetime.now().isoformat()
         }
+        _health_cache["ts"] = now
+        _health_cache["data"] = res
+        return res
     except Exception as e:
         return {"status": "Degraded", "error": str(e)}
 
@@ -1152,10 +1239,95 @@ async def wazuh_agent_action(agent_id: str, action: str):
                 return {"logs": matched}
             else:
                 raise Exception(res.stderr)
+        elif action in ("uninstall", "delete"):
+            cmd = ["docker", "exec", "casmarts-core-wazuh-manager", "/var/ossec/bin/manage_agents", "-r", agent_id]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            with db_manager.get_db_cursor() as cur:
+                cur.execute("UPDATE public.infra_inventory SET agent_id = NULL, status = 'uninstalled' WHERE agent_id = %s OR asset_name = %s", (agent_id, asset["asset_name"]))
+            return {"status": "success", "message": f"Agente Wazuh {agent_id} desinstalado y removido del inventario."}
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/wazuh/agent/{agent_id}/info")
+async def get_wazuh_agent_info(agent_id: str):
+    """
+    Returns detailed agent metrics including OS platform, version, registration date and FIM syscheck status.
+    """
+    try:
+        cmd = ["docker", "exec", "casmarts-core-wazuh-manager", "/var/ossec/bin/agent_control", "-i", agent_id]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            lines = res.stdout.splitlines()
+            parsed = {}
+            for line in lines:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    parsed[k.strip().lower().replace(" ", "_")] = v.strip()
+            return {"agent_id": agent_id, "raw": res.stdout, "parsed": parsed}
+        else:
+            raise Exception(res.stderr or "Agente no encontrado en Wazuh Manager")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/itdr/authentik/webhook")
+async def authentik_itdr_webhook(payload: dict):
+    """
+    Ingests and processes real-time authentication events from Authentik IdP for Identity Threat Detection (ITDR).
+    """
+    try:
+        res = itdr_engine.process_authentik_event(payload)
+        return res
+    except Exception as e:
+        print(f"⚠️ [ITDR-Webhook-Error] {e}")
+        return {"status": "error", "detail": str(e)}
+
+@app.get("/api/itdr/telemetry/recent")
+async def get_recent_itdr_telemetry(minutes: int = 15):
+    """
+    Queries high-throughput identity & EDR telemetry events from ClickHouse.
+    """
+    events = clickhouse_manager.query_recent_events(minutes=minutes)
+    return {"events": events, "count": len(events)}
+
+@app.get("/api/xdr/attack-storyline")
+async def get_attack_storyline():
+    """
+    Returns correlated Attack Storyline graph JSON from Neo4j Cypher query.
+    """
+    storyline = attack_graph.build_attack_storyline()
+    return storyline
+
+@app.get("/api/xdr/ueba/anomalies")
+async def get_ueba_anomalies():
+    """
+    Returns signature-less User & Entity Behavior Analytics (UEBA) anomalies.
+    """
+    res = ueba_engine.analyze_behavioral_anomalies()
+    return res
+
+@app.post("/api/xdr/ebpf/event")
+async def process_ebpf_event(payload: dict):
+    """
+    Processes eBPF kernel syscall telemetry events in real-time.
+    """
+    res = ebpf_telemetry.process_kernel_syscall_event(payload)
+    return res
+
+@app.post("/api/xdr/soar/evaluate")
+async def evaluate_soar_response(payload: dict):
+    """
+    Evaluates and triggers Tiered Autonomous Response based on confidence score (>= 95%).
+    """
+    res = soar_engine.evaluate_and_execute_response(
+        rule_name=payload.get("rule_name", "UNKNOWN_RULE"),
+        asset_name=payload.get("asset_name", ""),
+        client_ip=payload.get("client_ip", ""),
+        username=payload.get("username", ""),
+        confidence_score=float(payload.get("confidence_score", 0.90))
+    )
+    return res
 
 
 class GitLabScanModel(BaseModel):

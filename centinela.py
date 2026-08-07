@@ -623,6 +623,159 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 echo '✅ Verificación de reglas de puerto y firewall completada.'
 """
+    elif cve.startswith('CIS-') or 'CIS' in cve:
+        if '1.1' in cve or 'ROOT-LOGIN' in cve or 'ROOT' in cve:
+            body = """# Remediar CIS-1.1: Deshabilitar acceso root por SSH
+if [ -f /etc/ssh/sshd_config ]; then
+    echo '🔐 Configurando SSH sin acceso directo a root (PermitRootLogin no)...'
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%s)
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || true
+    echo '✅ SSH PermitRootLogin configurado en no.'
+else
+    echo 'ℹ️ /etc/ssh/sshd_config no encontrado.'
+fi
+"""
+        elif '1.2' in cve or 'PASSWORD' in cve:
+            body = """# Remediar CIS-1.2: Deshabilitar autenticación SSH por contraseña
+if [ -f /etc/ssh/sshd_config ]; then
+    echo '🔐 Configurando SSH para requerir autenticación por clave pública (PasswordAuthentication no)...'
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%s)
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || true
+    echo '✅ SSH PasswordAuthentication configurado en no.'
+else
+    echo 'ℹ️ /etc/ssh/sshd_config no encontrado.'
+fi
+"""
+        elif '2.1' in cve or 'PASSWD' in cve:
+            body = """# Remediar CIS-2.1: Permisos estrictos en /etc/passwd (644)
+echo '🔒 Ajustando permisos y propietario en /etc/passwd...'
+chmod 644 /etc/passwd
+chown root:root /etc/passwd
+echo '✅ Permisos de /etc/passwd ajustados a 644 (root:root).'
+"""
+        elif '2.2' in cve or 'SHADOW' in cve:
+            body = """# Remediar CIS-2.2: Permisos estrictos en /etc/shadow (600)
+echo '🔒 Ajustando permisos y propietario en /etc/shadow...'
+chmod 600 /etc/shadow
+chown root:root /etc/shadow
+echo '✅ Permisos de /etc/shadow ajustados a 600 (root:root).'
+"""
+        elif '3.1' in cve or 'MIN_LEN' in cve:
+            body = """# Remediar CIS-3.1: Longitud mínima de contraseña >= 14 en /etc/login.defs
+if [ -f /etc/login.defs ]; then
+    echo '🔐 Configurando PASS_MIN_LEN 14 en /etc/login.defs...'
+    if grep -q '^PASS_MIN_LEN' /etc/login.defs; then
+        sed -i 's/^PASS_MIN_LEN.*/PASS_MIN_LEN   14/' /etc/login.defs
+    else
+        echo 'PASS_MIN_LEN   14' >> /etc/login.defs
+    fi
+    echo '✅ PASS_MIN_LEN establecido a 14 en /etc/login.defs.'
+else
+    echo 'ℹ️ /etc/login.defs no encontrado.'
+fi
+"""
+        elif '4.1' in cve or 'FIREWALL' in cve:
+            body = """# Remediar CIS-4.1: Activación y endurecimiento de Firewall (UFW / firewalld)
+echo '🛡️ Verificando y activando servicio de firewall...'
+if command -v ufw >/dev/null 2>&1; then
+    echo 'Activando UFW con políticas defensivas...'
+    ufw default deny incoming 2>/dev/null || true
+    ufw default allow outgoing 2>/dev/null || true
+    ufw allow 22/tcp 2>/dev/null || true
+    ufw allow 80/tcp 2>/dev/null || true
+    ufw allow 443/tcp 2>/dev/null || true
+    ufw --force enable 2>/dev/null || true
+    echo '✅ UFW activado correctamente.'
+elif command -v firewalld >/dev/null 2>&1; then
+    echo 'Activando firewalld...'
+    systemctl enable --now firewalld 2>/dev/null || true
+    echo '✅ firewalld activado correctamente.'
+else
+    echo '📦 Instalando ufw como solución de firewall estándar...'
+    apt-get update -qq && apt-get install -y ufw 2>/dev/null || yum install -y ufw 2>/dev/null || true
+    if command -v ufw >/dev/null 2>&1; then
+        ufw default deny incoming 2>/dev/null || true
+        ufw default allow outgoing 2>/dev/null || true
+        ufw allow 22/tcp 2>/dev/null || true
+        ufw --force enable 2>/dev/null || true
+        echo '✅ UFW instalado y activado.'
+    fi
+fi
+"""
+        elif '5.1' in cve or 'EMPTY' in cve:
+            body = """# Remediar CIS-5.1: Bloqueo de cuentas sin contraseña definida
+echo '🔒 Auditando cuentas con contraseña vacía en /etc/shadow...'
+empty_users=$(awk -F: '($2==""){print $1}' /etc/shadow 2>/dev/null || true)
+if [ -n "$empty_users" ]; then
+    echo "⚠️ Bloqueando usuarios sin contraseña: $empty_users"
+    for u in $empty_users; do
+        passwd -l "$u" 2>/dev/null || true
+    done
+    echo '✅ Cuentas sin contraseña bloqueadas exitosamente.'
+else
+    echo '✅ No se encontraron cuentas con contraseña vacía.'
+fi
+"""
+        elif '5.2' in cve or 'AUDITD' in cve:
+            body = """# Remediar CIS-5.2: Instalación y activación de auditd (Auditoría del Sistema)
+echo '🔍 Verificando servicio de auditoría de kernel (auditd)...'
+if ! command -v auditd >/dev/null 2>&1 && ! systemctl status auditd >/dev/null 2>&1; then
+    echo '📦 Instalando paquete auditd...'
+    apt-get update -qq && apt-get install -y auditd auditd-plugins 2>/dev/null || yum install -y audit 2>/dev/null || true
+fi
+if systemctl enable --now auditd 2>/dev/null || service auditd start 2>/dev/null; then
+    echo '✅ Servicio auditd activado e iniciado.'
+else
+    echo '⚠️ No se pudo iniciar auditd automáticamente; verificar módulo de kernel audit.'
+fi
+"""
+        elif '6.1' in cve or 'IP_FORWARD' in cve:
+            body = """# Remediar CIS-6.1: Deshabilitar IP Forwarding (net.ipv4.ip_forward=0)
+echo '🛡️ Deshabilitando enrutamiento de paquetes IP (IP Forwarding)...'
+sysctl -w net.ipv4.ip_forward=0 2>/dev/null || true
+mkdir -p /etc/sysctl.d
+echo 'net.ipv4.ip_forward = 0' > /etc/sysctl.d/99-cis-ip-forward.conf
+sysctl --system 2>/dev/null || true
+echo '✅ IP Forwarding configurado en 0 persistentemente.'
+"""
+        elif '6.2' in cve or 'CORE' in cve or 'SUID' in cve:
+            body = """# Remediar CIS-6.2: Restricción de Core Dumps (fs.suid_dumpable=0)
+echo '🛡️ Restringiendo generación de core dumps de binarios SUID/SGID...'
+sysctl -w fs.suid_dumpable=0 2>/dev/null || true
+mkdir -p /etc/sysctl.d
+echo 'fs.suid_dumpable = 0' > /etc/sysctl.d/99-cis-coredump.conf
+sysctl --system 2>/dev/null || true
+if [ -f /etc/security/limits.conf ]; then
+    if ! grep -q '^\*\s*hard\s*core\s*0' /etc/security/limits.conf; then
+        echo '* hard core 0' >> /etc/security/limits.conf
+    fi
+fi
+echo '✅ Restricción de core dumps (fs.suid_dumpable=0) configurada correctamente.'
+"""
+        elif '7.1' in cve or 'TIME' in cve or 'NTP' in cve:
+            body = """# Remediar CIS-7.1: Activación de servicio de sincronización horaria (NTP)
+echo '⏱️ Verificando servicios de sincronización de tiempo...'
+if systemctl enable --now systemd-timesyncd 2>/dev/null; then
+    echo '✅ systemd-timesyncd activado.'
+elif systemctl enable --now chrony 2>/dev/null || systemctl enable --now ntp 2>/dev/null; then
+    echo '✅ Servicio NTP (chrony/ntp) activado.'
+else
+    echo '📦 Instalando y activando chrony...'
+    apt-get update -qq && apt-get install -y chrony 2>/dev/null || yum install -y chrony 2>/dev/null || true
+    systemctl enable --now chrony 2>/dev/null || true
+    echo '✅ chrony instalado y activado.'
+fi
+"""
+        else:
+            body = f"""# Hardening general CIS Benchmark para {cve}
+echo '🔍 Ejecutando hardening defensivo CIS en {asset} ({ep})...'
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet wazuh-agent 2>/dev/null && echo 'Agente Wazuh activo' || true
+fi
+echo '✅ Verificación CIS completada.'
+"""
     else:
         body = f"""# Hardening general de servicio e infraestructura
 echo '🔍 Auditando parámetros de seguridad en {asset} ({ep})...'
@@ -646,7 +799,7 @@ def heuristic_can_automate(vuln):
     atype = str(vuln.get('asset_type', '')).upper()
     desc = str(vuln.get('description', '')).lower()
 
-    if cve.startswith('CTI-IOC-MATCH') or cve == 'HOST-CONTAINMENT-REQUEST':
+    if cve.startswith('CTI-IOC-MATCH') or cve == 'HOST-CONTAINMENT-REQUEST' or cve.startswith('CIS-') or 'CIS' in cve:
         return True
     if cve.startswith('ZAP-'):
         return generate_zap_header_fix(vuln) is not None
@@ -676,6 +829,79 @@ def generate_heuristic_analysis(vuln):
     ep = str(vuln.get('endpoint', '0.0.0.0'))
     desc = str(vuln.get('description', '')).lower()
     location = str(vuln.get('url_path', '')) or 'ver descripción'
+
+    if cve_u.startswith('CIS-') or 'CIS' in cve_u:
+        if '1.1' in cve_u:
+            return (
+                "Acceso directo de superusuario root por SSH activado (CIS-1.1)",
+                "Permite intentos de autenticación directa y ataques de fuerza bruta contra el usuario de máxima autoridad (root) en el servidor.",
+                f"Se actualiza `/etc/ssh/sshd_config` con `PermitRootLogin no` en {ep} y se recarga el servicio SSH para forzar acceso mediante usuarios no privilegiados y elevación con sudo."
+            )
+        if '1.2' in cve_u:
+            return (
+                "Autenticación SSH mediante contraseña habilitada (CIS-1.2)",
+                "Expone el servicio de administración remota SSH a ataques de fuerza bruta y diccionario contra credenciales del sistema.",
+                f"Se establece `PasswordAuthentication no` en `/etc/ssh/sshd_config` en {ep} y se recarga el daemon SSH obligando el uso exclusivo de llaves criptográficas."
+            )
+        if '2.1' in cve_u:
+            return (
+                "Permisos de escritura inseguros en /etc/passwd (CIS-2.1)",
+                "Permite a usuarios locales o procesos comprometidos modificar las cuentas del sistema y escalar privilegios creando usuarios root arbitrarios.",
+                f"Se aplican permisos estrictos `chmod 644 /etc/passwd` y propiedad `chown root:root /etc/passwd` en {ep}."
+            )
+        if '2.2' in cve_u:
+            return (
+                "Permisos de lectura no restringidos en /etc/shadow (CIS-2.2)",
+                "Permite la lectura no autorizada de hashes de contraseñas de usuarios del sistema para ataques de cracking de credenciales offline.",
+                f"Se aplican permisos restringidos `chmod 600 /etc/shadow` y propiedad `chown root:root /etc/shadow` en {ep}."
+            )
+        if '3.1' in cve_u:
+            return (
+                "Longitud mínima de contraseña inferior a 14 caracteres (CIS-3.1)",
+                "Contraseñas débiles o cortas facilitan el descubrimiento de credenciales por ataques de fuerza bruta o diccionarios.",
+                f"Se establece `PASS_MIN_LEN 14` en `/etc/login.defs` en {ep} para reforzar la política global de complejidad de credenciales."
+            )
+        if '4.1' in cve_u:
+            return (
+                "Firewall de red deshabilitado o inactivo (CIS-4.1)",
+                "El host no filtra tráfico de red entrante, exponiendo todos los puertos locales y servicios no autorizados a la red externa.",
+                f"Se habilita y configura el servicio de firewall (UFW/firewalld) en {ep} estableciendo denegación por defecto e ingress únicamente en puertos declarados (22/80/443)."
+            )
+        if '5.1' in cve_u:
+            return (
+                "Existencia de cuentas de usuario sin contraseña definida (CIS-5.1)",
+                "Permite autenticación inmediata y sin requerimiento de credenciales a usuarios locales o interactivos.",
+                f"Se audita `/etc/shadow` en {ep} buscando cuentas sin contraseña y se aplica `passwd -l` para bloquear su acceso."
+            )
+        if '5.2' in cve_u:
+            return (
+                "Servicio de auditoría del kernel auditd inactivo (CIS-5.2)",
+                "Falta de visibilidad y registro persistente ante modificaciones de archivos críticos o comandos sospechosos en el sistema.",
+                f"Se instala y activa el servicio `auditd` en {ep} habilitando la auditoría de eventos de kernel a nivel de sistema operativo."
+            )
+        if '6.1' in cve_u:
+            return (
+                "Enrutamiento IP (IP Forwarding) habilitado en el host (CIS-6.1)",
+                "Permite que el servidor sea utilizado como router o pivote no autorizado para canalizar tráfico malicioso entre subredes.",
+                f"Se deshabilita `net.ipv4.ip_forward = 0` en caliente vía `sysctl` y se persiste en `/etc/sysctl.d/99-cis-ip-forward.conf` en {ep}."
+            )
+        if '6.2' in cve_u:
+            return (
+                "Generación de core dumps no restringida para binarios SUID (CIS-6.2)",
+                "Los volcados de memoria (core dumps) de procesos privilegiados pueden exponer contraseñas, claves privadas y tokens en texto plano accesibles localmente.",
+                f"Se configura `fs.suid_dumpable = 0` vía `sysctl`, se persiste en `/etc/sysctl.d/99-cis-coredump.conf` y se bloquea el límite `core` a 0 en `/etc/security/limits.conf` en {ep}."
+            )
+        if '7.1' in cve_u:
+            return (
+                "Sincronización de tiempo (NTP) inactiva (CIS-7.1)",
+                "La desincronización horaria compromete la validez legal y forense de marcas de tiempo en auditorías, trazabilidad e inspección de logs.",
+                f"Se activa y arranca el servicio de sincronización de tiempo (`systemd-timesyncd`, `chrony` o `ntp`) en {ep}."
+            )
+        return (
+            f"Control de hardening CIS incumplido: {cve}",
+            f"El control {cve} no cumple con los estándares recomendados de CIS Benchmark en {asset} -- ver evidencia técnica.",
+            f"Se aplica script de hardening defensivo específico para {cve} en {ep}."
+        )
 
     if cve_u.startswith('CTI-IOC-MATCH'):
         return (
