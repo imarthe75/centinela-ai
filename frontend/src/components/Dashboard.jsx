@@ -200,11 +200,10 @@ export default function Dashboard() {
     }
   }
 
-  const handleToggleUserRole = async (username, currentRole) => {
-    const newRole = currentRole === 'Admin' ? 'Viewer' : 'Admin'
+  const handleUpdateUserRole = async (username, newRole) => {
     try {
       await axios.post(`${API_BASE}/users/role`, { username, role: newRole })
-      alert(`✅ Rol de ${username} actualizado exitosamente a ${newRole} en Authentik.`)
+      alert(`✅ Rol de ${username} actualizado exitosamente a '${newRole}' en Authentik.`)
       fetchUsers()
     } catch (error) {
       console.error("Error updating user role:", error)
@@ -860,8 +859,15 @@ export default function Dashboard() {
               <div className="text-right">
                 <p className="text-xs font-bold text-white leading-none">{auth.user?.profile?.name || "Operador"}</p>
                 <div className="flex items-center gap-1 justify-end mt-1">
-                  <span className={`px-2 py-0.5 text-[9px] font-black rounded-md uppercase tracking-wider ${currentUserRole === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/40' : 'bg-slate-700/50 text-slate-400 border border-slate-700'}`}>
-                    {currentUserRole === 'Admin' ? '🛡️ Admin' : '👁️ Viewer'}
+                  <span className={`px-2 py-0.5 text-[9px] font-black rounded-md uppercase tracking-wider ${
+                    currentUserRole === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/40' :
+                    currentUserRole === 'Analyst' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40' :
+                    currentUserRole === 'Auditor' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                    'bg-slate-700/50 text-slate-400 border border-slate-700'
+                  }`}>
+                    {currentUserRole === 'Admin' ? '🛡️ Admin' :
+                     currentUserRole === 'Analyst' ? '⚡ Analista' :
+                     currentUserRole === 'Auditor' ? '📋 Auditor' : '👁️ Visualizador'}
                   </span>
                 </div>
               </div>
@@ -2214,22 +2220,36 @@ export default function Dashboard() {
                                         <td className="py-4 text-xs font-bold text-slate-300">{usr.name ||usr.username}</td>
                                         <td className="py-4 text-xs font-bold text-slate-400">{usr.email || 'N/A'}</td>
                                         <td className="py-4">
-                                            <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider ${usr.role === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>
-                                                {usr.role === 'Admin' ? '🛡️ Administrador' : '👁️ Visualizador'}
-                                            </span>
-                                        </td>
-                                        <td className="py-4 text-right">
-                                            {currentUserRole === 'Admin' ? (
-                                                <button 
-                                                    onClick={() => handleToggleUserRole(usr.username, usr.role)}
-                                                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${usr.role === 'Admin' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20' : 'bg-[#06B6D4]/10 text-[#06B6D4] border border-[#06B6D4]/30 hover:bg-[#06B6D4]/20'}`}
-                                                >
-                                                    {usr.role === 'Admin' ? 'Cambiar a Visualizador' : 'Hacer Administrador'}
-                                                </button>
-                                            ) : (
-                                                <span className="text-[10px] font-bold text-slate-600 uppercase">Sin Privilegios</span>
-                                            )}
-                                        </td>
+                                             <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider ${
+                                                 usr.role === 'Admin' ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' :
+                                                 usr.role === 'Analyst' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' :
+                                                 usr.role === 'Auditor' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                                                 'bg-slate-800 text-slate-400 border border-slate-700'
+                                             }`}>
+                                                 {usr.role === 'Admin' ? '🛡️ Administrador' :
+                                                  usr.role === 'Analyst' ? '⚡ Analista SOC' :
+                                                  usr.role === 'Auditor' ? '📋 Auditor Seg' : '👁️ Visualizador'}
+                                             </span>
+                                         </td>
+                                         <td className="py-4 text-right">
+                                             {currentUserRole === 'Admin' ? (
+                                                 <div className="relative inline-block">
+                                                     <select 
+                                                         value={usr.role}
+                                                         onChange={(e) => handleUpdateUserRole(usr.username, e.target.value)}
+                                                         className="bg-[#0F172A] border border-slate-700 text-white font-bold text-xs rounded-xl px-3 py-2 pr-8 focus:ring-2 focus:ring-[#06B6D4] outline-none appearance-none cursor-pointer"
+                                                     >
+                                                         <option value="Admin">🛡️ Administrador (Acceso Total)</option>
+                                                         <option value="Analyst">⚡ Analista SOC (Operación / Remediar)</option>
+                                                         <option value="Auditor">📋 Auditor (Auditoría / Reportes)</option>
+                                                         <option value="Viewer">👁️ Visualizador (Sólo Lectura)</option>
+                                                     </select>
+                                                     <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                                 </div>
+                                             ) : (
+                                                 <span className="text-[10px] font-bold text-slate-600 uppercase">Sin Privilegios</span>
+                                             )}
+                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
