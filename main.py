@@ -492,11 +492,15 @@ async def get_inventory():
                     i.status,
                     i.agent_id,
                     MAX(i.id) as max_id,
-                    COALESCE(COUNT(DISTINCT CASE 
-                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
-                        AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
-                        THEN v.id 
-                    END), 0) as vulnerability_count,
+                    CASE 
+                        WHEN i.status = 'active' OR i.agent_id IS NOT NULL THEN
+                            COALESCE(COUNT(DISTINCT CASE 
+                                WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
+                                AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
+                                THEN v.id 
+                            END), 0)
+                        ELSE 0
+                    END as vulnerability_count,
                     COALESCE(COUNT(DISTINCT CASE 
                         WHEN v.status = 'RESOLVED' 
                         OR rh.executed_bool = TRUE 
