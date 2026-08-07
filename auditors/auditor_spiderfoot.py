@@ -323,7 +323,7 @@ def log_osint_finding(asset_id: int, cve_id: str, severity: str, description: st
         with db_manager.get_db_cursor() as cur:
             deduplication_engine.log_finding_deduplicated(
                 cur, asset_id, cve_id, severity, description, "spiderfoot",
-                url_path=cve_id, open_status="NEW"
+                url_path=cve_id, open_status="NEW", preserve_status=True
             )
     except Exception as e:
         logger.error(f"Error logging OSINT finding: {e}")

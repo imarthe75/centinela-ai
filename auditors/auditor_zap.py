@@ -456,7 +456,7 @@ def log_zap_findings(asset_id: int, target_url: str, findings: List[Dict], scan_
                 # instead of opening a second ticket) via the shared fingerprint-based logger.
                 action, row_id = deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, cve_id, severity, description, "zap",
-                    url_path=finding['url'], open_status="NEW"
+                    url_path=finding['url'], open_status="NEW", preserve_status=True
                 )
                 if action == "updated":
                     print(f"  🔄 Updated ZAP finding: [{severity}] {cve_id} on {finding['url']}")

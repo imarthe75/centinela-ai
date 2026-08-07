@@ -277,7 +277,121 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
    logs it and moves on. After a reorg, grep the whole tree for the old paths of anything that
    moved, not just check the moved file's own new location works.
 
-## Known open issues (as of 2026-08-04, updated 2026-08-06)
+## Known open issues (as of 2026-08-04, updated 2026-08-07)
+
+- ~~A full "is everything at 100%?" audit found the AI correlation pipeline was quietly
+  starving itself, and Sentinel was crashing intermittently~~ — **resolved 2026-08-07**, in
+  response to a direct user request to verify the whole stack end-to-end rather than trust the
+  docs. Live DB/log inspection (not just re-reading this file) found several real, compounding
+  bugs, all now fixed and verified live:
+  1. **`log_finding_deduplicated()`'s `preserve_status` flag (see item 3 above) was only ever
+     used by 2 of 9 real call sites.** `auditor_zap.py` — 68% of every finding in the DB —
+     reset a finding's `status` back to `NEW` on **every single re-detection**, even one already
+     `CORRELATED` by the AI. Since ZAP re-scans the same few AppServers roughly every 10–15
+     minutes, this meant the same already-analyzed findings got shoved back into the
+     AI-correlation queue forever, which (a) burned through Groq's small daily token quota
+     almost immediately every day, confirmed live in logs (`Used 99509, Limit 100000` within the
+     first scan cycles), and (b) meant `centinela.py`'s idle-branch background scan (SAST/SCA/
+     Standards) *never ran*, because the queue it waits on to empty never actually emptied.
+     Fixed by adding `preserve_status=True` to `auditor_zap.py`, `auditor_master_vulnerabilities.py`,
+     `auditor_sca_dependencies.py`, `auditor_compliance_standards.py`, `auditor_medusa.py`,
+     `auditor_secrets.py`, `auditor_spiderfoot.py`, and the 4 CTI-feed/BloodHound call sites in
+     `centinela.py`. Verified live: the correlation queue, which had been stuck non-empty across
+     the entire visible log history, drained from 20 genuinely-new rows to 11 within minutes of
+     the fix, processing real distinct findings instead of looping on the same ones.
+  2. **The idle-branch background scan was auditing the wrong target.** `run_master_vulnerability_scan()`
+     etc. default to `target_dir="/opt/centinela-ai"` (Centinela's own source) and `asset_id=None`
+     when called with no arguments — which is exactly how `centinela.py`'s idle branch called
+     them, so it had never once audited any of the 66 real `GitLab-Repo` customer assets, only
+     ever the platform's own code (with nowhere valid to even attribute a finding to). The real,
+     already-working, token-authenticated implementation (`GitLabIntegrator.scan_all_projects()`,
+     clones each project and calls the same three auditors with the correct `target_dir`/`asset_id`
+     per repo) existed but was wired **only** to the manual `POST /api/gitlab/scan` endpoint, never
+     to anything periodic. Fixed by pointing the idle branch at it instead. Verified live: the next
+     idle cycle after the fix produced real `🔄 [GitLab-Integrator] Pulled latest changes for
+     arquitectura/core-casmarts` / `🔍 Auditing GitLab Project...` log lines against real projects,
+     something 44+ hours of prior logs had zero instances of.
+  3. **`vulnerability_log.url_path` (the real file:line location `auditor_master_vulnerabilities.py`
+     etc. already compute) was never selected by the main correlation query** in `centinela.py`
+     (`SELECT v.id, v.cve_id, v.severity, v.description, i.asset_name, i.asset_type, i.endpoint...`
+     — no `v.url_path`). Every single GitLab-Repo (SAST/SCA/Standards) finding's AI prompt has
+     been telling the LLM "Ubicación (archivo:línea): desconocida" instead of the real location,
+     even though the prompt explicitly asks for a `git apply`-ready diff *at that exact location*.
+     Fixed by adding `v.url_path` to the SELECT.
+  4. **`core/db_manager.py`'s connection pool recycled dead connections instead of discarding
+     them**, root-causing Sentinel's intermittent `❌ [Aura-Sentinel] Error in main loop:
+     connection already closed` crashes (present in logs since before this session, self-healing
+     only because the whole container got restarted, never because the code recovered).
+     `get_db_connection()`'s `finally: db_pool.putconn(conn)` ran unconditionally — if Postgres
+     had closed the connection server-side (idle timeout, network blip), the pool got the dead
+     connection object back anyway and would later hand that exact same poisoned connection to a
+     *different*, unrelated caller, who'd immediately fail. This is a shared module imported by
+     all three Python services (`centinela-ai`, `centinela-backend`, `centinela-sentinel`), so
+     the same latent failure mode existed in all three, just visibly crashing only in Sentinel's
+     loop. Fixed with the standard psycopg2 idiom: `db_pool.putconn(conn, close=bool(conn.closed))`,
+     plus guarding `conn.rollback()`/`cur.close()` in `get_db_cursor()`'s exception path so a
+     rollback failure on an already-dead connection can't mask the real underlying error.
+  5. **Groq → NVIDIA NIM → Google Gemini → heuristic cascade added**, replacing the old design
+     where exactly one provider was chosen at process startup and stuck with for the container's
+     whole lifetime — once that one provider's daily quota ran out, every subsequent finding for
+     the rest of the day fell straight to the heuristic engine even if other providers' keys were
+     configured and had headroom. `centinela.call_ai_cascade()` now tries all three, in order, on
+     every single call. Also deleted a related dead-code path: `correlate_vulnerability()`'s
+     exception handler had an old "Vertex quota → fall back to Groq" branch that referenced a
+     variable named `prompt` which never existed in this function (the real variable is
+     `prompt_text`) — it would have thrown its own `NameError` on every attempt, silently
+     swallowed by its own inner `except`. It had never worked and is now gone.
+     **Live-verified, real finding: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY are both currently
+     invalid** — confirmed via raw `curl` against each provider directly (not just the client
+     library): NVIDIA returns `403 Forbidden — Authorization failed`, Google returns
+     `400 API_KEY_INVALID`. Groq itself works but has a small (100k tokens/day) quota that's
+     being hit early most days. **The cascade code is real and correctly falls through
+     Groq → NVIDIA → Gemini → heuristic in that order (verified live by simulating a Groq outage),
+     but only Groq currently has a working key** — fresh NVIDIA/Google API keys are needed for
+     the other two tiers to actually contribute capacity rather than silently no-op to heuristic.
+  6. **One-time backfill launched for findings that only ever got the generic/no-specific-rule
+     heuristic fallback text** (`"Hallazgo DAST sin regla determinística"`, `"Hallazgo de código
+     fuente:"`, `"Hallazgo de seguridad sin regla de remediación específica"` — 669 rows
+     identified live via these exact markers; the heuristic branches with a real, specific,
+     already-good deterministic answer — ZAP header fixes, Docker non-root fix, SCA version
+     bump, SSH/firewall hardening — were deliberately left alone, re-running those through an
+     LLM wouldn't improve them). 25/669 got a real upgraded analysis before Groq's daily quota
+     ran out mid-run; the script correctly detected 15 consecutive all-providers-down responses
+     and stopped itself rather than grinding through the remaining ~629 producing no-op
+     rewrites. Re-runnable once Groq's quota resets or NVIDIA/Google keys are fixed.
+  7. **CIS Benchmarks was genuinely on-demand-only with zero scheduling** — `/api/health`
+     honestly reported `"Available (On-Demand, Not Yet Run)"` because nothing had ever called
+     it automatically. Added `run_cis_benchmark_loop()` in `centinela.py`: real, read-only SSH
+     checks against every `SERVER`/`AppServer` asset (excluding Wazuh-agent-only assets with no
+     resolved IP yet), re-checking any asset not audited in the last 7 days. `log_cis_findings()`
+     now always writes a `CIS-BENCHMARK-AUDIT` completion marker (pass **or** fail) so the
+     scheduler can tell "never checked" apart from "checked recently, all green" from the
+     marker's own `detected_at`, without needing a new schema column — the same pattern
+     `threat_intel_checked_at` already uses. Verified live: `/api/health`'s CIS Benchmarks entry
+     flipped from the honest-but-idle string to a real `Online` within the first loop iteration
+     after restart, backed by a real `chat: grade F (36.4%)` audit result.
+  8. **Host Containment: verified the request → correlate → approve pipeline live** (per explicit
+     user instruction: verify only, do not approve/execute against a real host) — and the live
+     test itself caught a real, separate safety bug. Asking the generic LLM prompt to "fix"
+     `HOST-CONTAINMENT-REQUEST` (a synthetic system marker, not a real scanner finding) made Groq
+     hallucinate an unrelated WildFly/JMX script with `can_automate: true` — the SOAR UI would
+     have offered a human a one-click "fix" that does nothing relevant to actual containment, on
+     a host that may not even run WildFly. `generate_heuristic_script()` already has correct,
+     purpose-built logic for exactly this case (backs up firewall rules, applies a real
+     deny-all-except-DNS/NTP lockdown) but was never reached because the LLM returned *some*
+     content, however wrong. Fixed by skipping the LLM cascade entirely for cve_id values that
+     are Centinela's own synthetic/system markers (`HOST-CONTAINMENT-REQUEST`, `CTI-IOC-MATCH-*`,
+     `BLOODHOUND-PATH-*`, `SCAN-AUDIT`, `HEURISTIC-SECURITY-DEBT`, `CIS-BENCHMARK-AUDIT`) and
+     routing straight to the heuristic generator, which already has real, correct answers for
+     every one of them. Verified live end-to-end against a disposable test finding on the
+     `centinela` host itself: request created → real pipeline correlated it → correct firewall
+     lockdown script generated, `PENDING_APPROVAL` — never approved, and the test finding/script
+     were deleted afterward, matching this project's standing rule of never triggering actual
+     host containment outside a deliberate human decision in the real SOAR UI.
+
+  **Still open**: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY need to be replaced with valid keys for
+  the AI cascade to actually use 3 providers instead of 1; the remaining ~629 generic-heuristic
+  findings need a re-run of the backfill once quota/keys allow it.
 
 - ~~Some AI-generated ZAP remediation scripts contained no real content~~ — **resolved
   2026-08-06**, in response to a real user report ("para algunos zap no estaba generando

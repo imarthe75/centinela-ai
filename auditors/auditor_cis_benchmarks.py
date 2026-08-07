@@ -154,7 +154,20 @@ def log_cis_findings(asset_id: int, audit_result: Dict[str, Any]):
                 f"**Control:** {check['description']}\n"
                 f"**Resultado observado:** `{check['raw_output'] or '(sin salida / comando no aplicable)'}`"
             )
+            # preserve_status=True: a check that keeps failing on every periodic re-run
+            # shouldn't bounce an already-CORRELATED/reviewed finding back to OPEN each time --
+            # matches every other engine's dedup call (see deduplication_engine.py docstring).
             deduplication_engine.log_finding_deduplicated(
                 cur, asset_id, check["id"], check["severity"], description,
-                "cis-benchmark", url_path=check["id"], open_status="OPEN"
+                "cis-benchmark", url_path=check["id"], open_status="OPEN", preserve_status=True
             )
+
+        # Always leave a real, honest completion marker (pass or fail) -- unlike the per-check
+        # findings above, this fires every run regardless of outcome, so the periodic scheduler
+        # in centinela.py can tell "never checked" apart from "checked N days ago, all green"
+        # by querying this row's detected_at instead of needing a dedicated schema column.
+        marker_desc = f"Auditoría CIS Benchmarks completada. Grade: {audit_result['grade']} ({audit_result['percentage']}%, {audit_result['passed']}/{audit_result['total']} checks aprobados)."
+        deduplication_engine.log_finding_deduplicated(
+            cur, asset_id, "CIS-BENCHMARK-AUDIT", "Info", marker_desc,
+            "cis-benchmark", url_path="CIS-BENCHMARK-AUDIT", open_status="NEW", preserve_status=True
+        )

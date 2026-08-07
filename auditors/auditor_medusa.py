@@ -17,7 +17,7 @@ def log_vulnerability(asset_id, cve_id, severity, description):
             # (asset_id, cve_id) dedup was, just with fingerprint_hash/MITRE mapping added.
             action, _ = deduplication_engine.log_finding_deduplicated(
                 cur, asset_id, cve_id, severity, description, "medusa",
-                url_path=cve_id, open_status="NEW"
+                url_path=cve_id, open_status="NEW", preserve_status=True
             )
             if action == "updated":
                 print(f"  🔄 Updated Medusa finding in DB: [{severity}] {cve_id}")
