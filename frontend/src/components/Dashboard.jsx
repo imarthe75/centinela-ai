@@ -767,7 +767,7 @@ export default function Dashboard() {
           />
           <NavItem 
             icon={<Zap size={20} />} 
-            label="IA Remediation" 
+            label="Remediación con IA" 
             active={currentView === 'soar'} 
             onClick={() => setCurrentView('soar')}
           />
@@ -891,19 +891,19 @@ export default function Dashboard() {
                     value={stats?.endpoints || 0} 
                     icon={<Server size={20} />} 
                     color="text-emerald-400" 
-                    sub={`${stats?.online_endpoints || 0} Online • ${stats?.offline_endpoints || 0} Offline`}
+                    sub={`${stats?.online_endpoints || 0} En línea • ${stats?.offline_endpoints || 0} Sin conexión`}
                     onClick={() => setCurrentView('inventory')}
-                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} Online / Sincronizados, ${stats?.offline_endpoints || 0} Offline / Intentando Sincronización). Haz clic para ir.`}
+                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} En línea / Sincronizados, ${stats?.offline_endpoints || 0} Sin conexión / Intentando Sincronización). Haz clic para ir.`}
                 />
                 <MetricCard 
-                    label="Alertas Runtime" 
+                    label="Alertas en Tiempo Real" 
                     value={stats?.alerts || 0} 
                     icon={<AlertTriangle size={20} />} 
                     color="text-red-400" 
                     sub={`${vulnStats?.critical || 0} Críticas activas`}
                     highlight
                     onClick={() => setCurrentView('threat-hunting')}
-                    title="Ver búsqueda de amenazas y log maestro runtime (Haz clic para ir)"
+                    title="Ver búsqueda de amenazas y log maestro en tiempo real (Haz clic para ir)"
                 />
                 <MetricCard 
                     label="Vulnerabilidades" 
@@ -915,7 +915,7 @@ export default function Dashboard() {
                     title="Ver hallazgos de seguridad y parches de remediación (Haz clic para ir)"
                 />
                 <MetricCard 
-                    label="IA Remediation" 
+                    label="Remediación con IA" 
                     value={vulnStats?.pending_ia || 0} 
                     icon={<Zap size={20} />} 
                     color="text-[#06B6D4]" 
@@ -948,12 +948,12 @@ export default function Dashboard() {
                     <div className="flex items-center justify-between mb-8">
                       <h3 className="text-white font-bold text-xl flex items-center gap-2">
                         <Activity className="text-[#06B6D4]" size={20} />
-                        {severityFilter ? `Alertas ${severityFilter}` : 'Alertas Recientes (Runtime)'}
+                        {severityFilter ? `Alertas ${severityFilter}` : 'Alertas Recientes en Tiempo Real'}
                       </h3>
                       {severityFilter && (
                         <button onClick={() => setSeverityFilter(null)} className="text-slate-500 text-[10px] font-black uppercase tracking-widest hover:text-white">Limpiar Filtro</button>
                       )}
-                      <button onClick={() => setCurrentView('threat-hunting')} className="text-[#06B6D4] text-[10px] font-black uppercase tracking-widest hover:underline">Ver Todo el Log</button>
+                      <button onClick={() => setCurrentView('threat-hunting')} className="text-[#06B6D4] text-[10px] font-black uppercase tracking-widest hover:underline">Ver Todo el Registro</button>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-left">
@@ -1763,7 +1763,7 @@ export default function Dashboard() {
                         <div key={idx} className="bg-[#0F172A]/50 backdrop-blur-sm p-1 rounded-[32px] border border-slate-800 group hover:border-[#06B6D4]/30 transition-all relative">
                             {group.runtime_alerts_count > 0 && (
                                 <div className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full animate-bounce shadow-lg shadow-red-600/50 z-10 uppercase tracking-tighter" title="Se han detectado alertas de seguridad en tiempo real en este activo">
-                                    🚨 Alerta Runtime Activa
+                                    🚨 Alerta en Tiempo Real Activa
                                 </div>
                             )}
                             
@@ -1784,11 +1784,11 @@ export default function Dashboard() {
                                                 </p>
                                             ) : pingResults[group.name].ping_ok ? (
                                                 <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1">
-                                                    <CheckCircle size={10} /> Online ({pingResults[group.name].latency_ms}ms)
+                                                    <CheckCircle size={10} /> En línea ({pingResults[group.name].latency_ms}ms)
                                                 </p>
                                             ) : (
                                                 <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message}>
-                                                    <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización (Offline)
+                                                    <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización (Sin conexión)
                                                 </p>
                                             )
                                         ) : group.status === 'active' ? (
@@ -1866,7 +1866,7 @@ export default function Dashboard() {
                                     title="Comprobar alcanzabilidad por red en tiempo real mediante ICMP Ping"
                                   >
                                     <Activity size={10} className={pingResults[group.name]?.loading ? "animate-spin text-cyan-400" : "text-cyan-400"} />
-                                    {pingResults[group.name]?.loading ? "Probando..." : pingResults[group.name]?.ping_ok === true ? `Ping: ${pingResults[group.name]?.latency_ms}ms` : pingResults[group.name]?.ping_ok === false ? "Ping: Offline" : "Validar Ping"}
+                                    {pingResults[group.name]?.loading ? "Probando..." : pingResults[group.name]?.ping_ok === true ? `Ping: ${pingResults[group.name]?.latency_ms}ms` : pingResults[group.name]?.ping_ok === false ? "Ping: Sin respuesta" : "Validar Ping"}
                                   </button>
                                 </div>
                                 
@@ -1921,7 +1921,7 @@ export default function Dashboard() {
                                       className={`p-4 rounded-2xl border transition-all ${group.runtime_alerts_count > 0 ? 'bg-red-500/5 border-red-500/20' : 'bg-slate-800/20 border-slate-800'}`}
                                       title="Alertas de seguridad en tiempo real (Falco/Wazuh/Zeek) asociadas a este activo"
                                     >
-                                        <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-1">Alertas Runtime</p>
+                                        <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-1">Alertas en Tiempo Real</p>
                                         <div className="flex items-center gap-2">
                                             <Zap size={14} className={group.runtime_alerts_count > 0 ? 'text-red-400' : 'text-slate-600'} />
                                             <span className={`text-lg font-black ${group.runtime_alerts_count > 0 ? 'text-red-400' : 'text-slate-400'}`}>
