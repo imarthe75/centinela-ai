@@ -341,14 +341,95 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
      variable named `prompt` which never existed in this function (the real variable is
      `prompt_text`) — it would have thrown its own `NameError` on every attempt, silently
      swallowed by its own inner `except`. It had never worked and is now gone.
-     **Live-verified, real finding: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY are both currently
-     invalid** — confirmed via raw `curl` against each provider directly (not just the client
-     library): NVIDIA returns `403 Forbidden — Authorization failed`, Google returns
+     **Live-verified 2026-08-05: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY were both invalid at the
+     time** — confirmed via raw `curl` against each provider directly (not just the client
+     library): NVIDIA returned `403 Forbidden — Authorization failed`, Google returned
      `400 API_KEY_INVALID`. Groq itself works but has a small (100k tokens/day) quota that's
-     being hit early most days. **The cascade code is real and correctly falls through
-     Groq → NVIDIA → Gemini → heuristic in that order (verified live by simulating a Groq outage),
-     but only Groq currently has a working key** — fresh NVIDIA/Google API keys are needed for
-     the other two tiers to actually contribute capacity rather than silently no-op to heuristic.
+     being hit early most days.
+     **Resolved 2026-08-07**: user supplied fresh keys for both. Re-verified live with real
+     `curl` calls against each provider directly before touching anything: NVIDIA's key worked
+     immediately; Google's key was valid but `google_model_name`'s hardcoded default
+     (`gemini-1.5-flash-latest`) 404'd — that model has been fully retired, confirmed via
+     `GET /v1beta/models` against the new key, which lists only current-generation models
+     (`gemini-2.5-*`/`gemini-3.x-*`, no `1.5` family at all). No `AI_MODEL_GOOGLE` env var was
+     set, so the dead default was actually in use. Set `AI_MODEL_GOOGLE=gemini-3.1-flash-lite`
+     in `.env` (best free-tier quota of the available current models per the user's own
+     Google AI Studio rate-limit page: 15 RPM / 500 RPD) — confirmed this specific model answers
+     `generateContent` with the new key via direct `curl` before wiring it in.
+     `AI_MODEL_GOOGLE` isn't listed in `docker-compose.yml`'s explicit `environment:` block for
+     `centinela-ai`, but all three Python services already have `env_file: .env`, so it passes
+     through anyway — confirmed live rather than assumed. Recreated `centinela-ai`
+     (`docker compose up -d`, not a plain restart — env var changes need a recreate, see gotcha
+     #7) and confirmed all three `✅ ... provider initialized` lines in its logs. Then exercised
+     `call_ai_cascade()` directly inside the running container (`docker exec ... python3 -c
+     "import centinela; ..."`), not just each key in isolation: a normal call correctly used
+     Groq; with `centinela.groq_llm` monkeypatched to `None` inside the running process it
+     correctly fell through to NVIDIA; with both Groq and NVIDIA patched to `None` it correctly
+     fell through to Gemini; with all three patched to `None` it correctly returned `None` (the
+     signal `correlate_vulnerability()` uses to fall back to the heuristic engine). **The cascade
+     now has all 3 real LLM tiers live**, not just Groq.
+     **Same day, cascade order and timeouts fixed** after the user asked whether the "best"
+     model was picked for NVIDIA/Groq too. It wasn't — the existing hardcoded defaults
+     (`llama-3.3-70b-versatile` on Groq, `meta/llama-3.1-70b-instruct` on NVIDIA) were kept as-is
+     from before this session. Tested real candidate "upgrades" against the actual correlation
+     prompt before touching anything, and both were worse, not better: Groq's biggest model,
+     `openai/gpt-oss-120b`, is a reasoning model — it spent its entire completion-token budget on
+     hidden `reasoning_tokens` and returned zero actual output; NVIDIA's `meta/llama-3.3-70b-instruct`
+     never responded at all within 150s+ (that specific NIM-catalog model appears cold/unavailable
+     on NVIDIA's shared infra). Kept both existing defaults. Separately, timing the *current*
+     default models on the real prompt found NVIDIA taking ~65s for a legitimate successful
+     reply — much slower than Groq (~3s) or Gemini (~1s, and the only tier with true JSON mode
+     via `response_mime_type="application/json"`, the other two rely on prose + regex
+     extraction). Reordered the cascade from Groq→NVIDIA→Gemini to **Groq→Gemini→NVIDIA** so the
+     slow/hang-prone tier is tried last, and added `request_timeout`/`max_retries` bounds to all
+     three clients so a stuck provider can't stall the whole correlation loop. Two real bugs
+     found while wiring this in, both caught by testing live rather than trusting the kwarg
+     names: (1) first attempt passed `request_timeout=90, max_retries=1` to NVIDIA's `ChatOpenAI`
+     — looked like a no-op at first (a naive `getattr(obj, "timeout", ...)` sanity check
+     returned nothing, since the real pydantic field is named `request_timeout` with `timeout`
+     only as an alias) but the kwarg itself was in fact being applied correctly; the real
+     surprise was that `max_retries=1` means up to 2 attempts, so a 90s per-attempt timeout
+     produced a genuine 180.9s worst-case failure, confirmed live with the same known-broken
+     NVIDIA model used above, not 90s as intended. (2) Fixed by setting NVIDIA's `max_retries=0`
+     — its observed failure mode (multi-minute non-response) is not the kind of transient blip a
+     retry fixes, so retrying only doubles the time wasted before falling through to the next
+     tier; confirmed live with a scaled-down 10s-timeout version that the fix bounds it to ~10s,
+     not ~20s. Gemini's client got `http_options=types.HttpOptions(timeout=30000)` (milliseconds,
+     confirmed via the field's own pydantic description — an easy unit mistake otherwise) and
+     confirmed live that the value is actually threaded into `_api_client._http_options.timeout`.
+     Groq kept `max_retries=1` (its own worst case is a bounded 60s, and Groq's real-world
+     failures — quota exhaustion, rate limits — are exactly the transient kind a retry can help
+     with, unlike NVIDIA's observed hang). Final config, confirmed live on the actual running
+     `centinela-ai` process: Groq `timeout=30/retries=1`, Gemini `timeout=30s`, NVIDIA
+     `timeout=90/retries=0`.
+     **OpenRouter added as a 4th cascade tier, same day (2026-08-07)**, after the user asked
+     about other free-tier AI providers and supplied a key. Two other candidates from that same
+     conversation were evaluated and rejected before this: **Cerebras** — key is valid and its
+     dashboard genuinely shows a real free quota (5 req/min·2,400/day, 30K tok/min·1M/day across
+     `gemma-4-31b`/`zai-glm-4.7`/`gpt-oss-120b`) but every real completion call returns
+     `payment_required` — an account-level billing gate on Cerebras' side, not fixable in code;
+     left out of the cascade until the user resolves that on their account. **GitHub Models** —
+     confirmed via GitHub's own current docs that the entire service (playground, catalog,
+     inference API, BYOK) was retired 2026-07-30; not usable at all, correctly ruled out.
+     For OpenRouter itself: chose the default model empirically, not from the vendor's marketing
+     copy. Tested 3 free-tier candidates against the real correlation prompt as `ChatOpenAI`
+     would actually call them (no artificial `max_tokens` cap, matching production): 1st attempt
+     used a `curl`-only test with `max_tokens=1200`, which was misleading — `gpt-oss-20b:free`
+     ran out of budget mid-reasoning (0 output), `gemma-4-31b-it:free` got an instant `429` from
+     OpenRouter's own **shared upstream pool** (unrelated to this account's quota), and
+     `nvidia/nemotron-3-super-120b-a12b:free` got partway through a visible chain-of-thought
+     preamble but never reached real JSON within the cap. Re-tested the two survivors through
+     the actual `langchain_openai.ChatOpenAI` class with no token cap: nemotron-3-super answered
+     in 18.6s with clean, direct, correctly-shaped JSON (no fence, no visible reasoning
+     preamble); gpt-oss-20b took 60.7s and wrapped its answer in a ` ```json ` fence (parseable
+     by the existing regex, just slower and messier). Picked `nvidia/nemotron-3-super-120b-a12b:free`
+     as `AI_MODEL_OPENROUTER`'s default on that basis. Placed last in the cascade (Groq → Gemini
+     → NVIDIA → OpenRouter), since it's the least predictable of the four (shared-pool 429s
+     unrelated to this account, 12-60s response times observed) — same `timeout=90/max_retries=0`
+     reasoning as NVIDIA's tier. Verified live end-to-end on the real running process: normal
+     call hits Groq; with Groq/Gemini/NVIDIA all monkeypatched to `None`, correctly fell through
+     to OpenRouter (12.6s, correct content); with all four `None`, correctly returned `None`
+     (heuristic fallback signal). **The cascade now has 4 real LLM tiers**, not 3.
   6. **One-time backfill launched for findings that only ever got the generic/no-specific-rule
      heuristic fallback text** (`"Hallazgo DAST sin regla determinística"`, `"Hallazgo de código
      fuente:"`, `"Hallazgo de seguridad sin regla de remediación específica"` — 669 rows
@@ -389,9 +470,12 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
      were deleted afterward, matching this project's standing rule of never triggering actual
      host containment outside a deliberate human decision in the real SOAR UI.
 
-  **Still open**: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY need to be replaced with valid keys for
-  the AI cascade to actually use 3 providers instead of 1; the remaining ~629 generic-heuristic
-  findings need a re-run of the backfill once quota/keys allow it.
+  **Still open**: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY were replaced with working keys, an
+  OpenRouter key was added as a 4th tier, and the resulting 4-provider cascade
+  (Groq → Gemini → NVIDIA → OpenRouter) is now verified live end-to-end (see item 5) — the
+  remaining ~629 generic-heuristic findings from the earlier backfill (item 6) can now be re-run
+  for real, since real headroom exists across 3 fallback tiers beyond Groq's small daily quota;
+  that re-run hasn't been launched yet.
 
 - ~~Some AI-generated ZAP remediation scripts contained no real content~~ — **resolved
   2026-08-06**, in response to a real user report ("para algunos zap no estaba generando

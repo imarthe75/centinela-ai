@@ -77,13 +77,29 @@ VALKEY_CONFIG = {
 # small daily token quota was exhausted mid-day, every single subsequent finding fell straight
 # to the heuristic engine for the rest of the day, even though NVIDIA/Gemini keys were also
 # configured and never got a chance to try.
+#
+# Cascade order is Groq -> Gemini -> NVIDIA -> OpenRouter (NOT alphabetical/vendor order),
+# chosen and verified live 2026-08-07 against the real correlation prompt: Groq answers in ~3s,
+# Gemini (with response_mime_type="application/json" -- a real JSON mode, unlike the other
+# three, which rely on prose/fence + regex extraction) in a few seconds too, but NVIDIA's
+# currently-configured model took 65s for a real successful reply during testing, and a
+# same-class "upgrade" model on the same NVIDIA endpoint never responded at all within 150s.
+# OpenRouter's free-tier models are the least predictable of all four -- verified live: one
+# candidate free model got instantly 429 rate-limited by OpenRouter's own shared upstream pool
+# (unrelated to this account's own quota), and both tested candidates needed 18-60s once
+# actually able to answer. NVIDIA and OpenRouter are kept last (in that order, OpenRouter last
+# of all) so a request_timeout on either (below) can only ever delay the *last* resorts before
+# the heuristic fallback, not stall every single correlation ahead of the two fast, reliable
+# tiers.
 model_name = get_secret("AI_MODEL", "llama-3.3-70b-versatile")
 google_model_name = get_secret("AI_MODEL_GOOGLE", "gemini-1.5-flash-latest")
 nvidia_model_name = get_secret("AI_MODEL_NVIDIA", "meta/llama-3.1-70b-instruct")
+openrouter_model_name = get_secret("AI_MODEL_OPENROUTER", "nvidia/nemotron-3-super-120b-a12b:free")
 
 groq_llm = None
 nvidia_llm = None
 gemini_client = None
+openrouter_llm = None
 
 if ChatOpenAI is not None:
     groq_key = get_secret("GROQ_API_KEY")
@@ -92,7 +108,9 @@ if ChatOpenAI is not None:
             groq_llm = ChatOpenAI(
                 openai_api_base="https://api.groq.com/openai/v1",
                 openai_api_key=groq_key,
-                model_name=model_name
+                model_name=model_name,
+                request_timeout=30,
+                max_retries=1,
             )
             print(f"✅ [Centinela-AI] Groq provider initialized (model={model_name}).")
         except Exception as e:
@@ -104,31 +122,62 @@ if ChatOpenAI is not None:
             nvidia_llm = ChatOpenAI(
                 openai_api_base=get_secret("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
                 openai_api_key=nvidia_key,
-                model_name=nvidia_model_name
+                model_name=nvidia_model_name,
+                # NVIDIA NIM has been observed taking ~65s for a legitimate successful reply
+                # (verified live 2026-08-07), so this must stay well above Groq/Gemini's timeout
+                # rather than match it -- the point is to bound the *hang* case (150s+, no
+                # response), not to penalize this tier's normal latency. max_retries=0 (not the
+                # langchain default of 2) because a request_timeout retry multiplies the worst
+                # case linearly (verified live: max_retries=1 -> a 90s timeout became a 180.9s
+                # real-world failure, not 90s) -- NVIDIA's observed failure mode here is a
+                # genuine multi-minute non-response, not a transient blip a retry would fix, so
+                # retrying just doubles time wasted before falling through to the next tier.
+                request_timeout=90,
+                max_retries=0,
             )
             print(f"✅ [Centinela-AI] NVIDIA NIM provider initialized (model={nvidia_model_name}).")
         except Exception as e:
             print(f"⚠️ [Centinela-AI] NVIDIA NIM init failed: {e}")
 
+    openrouter_key = get_secret("OPENROUTER_API_KEY")
+    if openrouter_key:
+        try:
+            openrouter_llm = ChatOpenAI(
+                openai_api_base=get_secret("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                openai_api_key=openrouter_key,
+                model_name=openrouter_model_name,
+                # Same reasoning as NVIDIA's timeout/retry choice above: OpenRouter's free-tier
+                # models are the slowest/least predictable tier in this cascade (verified live,
+                # 18-60s for a real reply, plus a real 429 from OpenRouter's own shared upstream
+                # pool for a different free model), so max_retries=0 avoids doubling the worst
+                # case before falling through to the heuristic engine.
+                request_timeout=90,
+                max_retries=0,
+            )
+            print(f"✅ [Centinela-AI] OpenRouter provider initialized (model={openrouter_model_name}).")
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] OpenRouter init failed: {e}")
+
 if genai is not None:
     google_key = get_secret("GOOGLE_API_KEY")
     if google_key:
         try:
-            gemini_client = genai.Client(api_key=google_key)
+            from google.genai import types
+            gemini_client = genai.Client(api_key=google_key, http_options=types.HttpOptions(timeout=30000))
             print(f"✅ [Centinela-AI] Google Gemini provider initialized (model={google_model_name}).")
         except Exception as e:
             print(f"⚠️ [Centinela-AI] Google Gemini init failed: {e}")
 
-if not (groq_llm or nvidia_llm or gemini_client):
-    print("⚠️ [Centinela-AI] No AI provider initialized (Groq/NVIDIA/Gemini all unavailable or missing keys). Correlation will use the heuristic engine only.")
+if not (groq_llm or nvidia_llm or gemini_client or openrouter_llm):
+    print("⚠️ [Centinela-AI] No AI provider initialized (Groq/Gemini/NVIDIA/OpenRouter all unavailable or missing keys). Correlation will use the heuristic engine only.")
 
 
 def call_ai_cascade(prompt_text, want_json=True):
     """
-    Tries each configured LLM provider in order -- Groq -> NVIDIA NIM -> Google Gemini -- and
-    returns the text of the first one that actually responds. Returns None if every provider is
-    unavailable/unconfigured or errors out (invalid key, rate limit, etc), in which case the
-    caller falls back to the deterministic heuristic engine.
+    Tries each configured LLM provider in order -- Groq -> Google Gemini -> NVIDIA NIM ->
+    OpenRouter -- and returns the text of the first one that actually responds. Returns None if
+    every provider is unavailable/unconfigured or errors out (invalid key, rate limit, timeout,
+    etc), in which case the caller falls back to the deterministic heuristic engine.
     """
     if groq_llm:
         try:
@@ -139,16 +188,6 @@ def call_ai_cascade(prompt_text, want_json=True):
                 return content
         except Exception as e:
             print(f"⚠️ [Centinela-AI] Groq call failed: {e}")
-
-    if nvidia_llm:
-        try:
-            response = nvidia_llm.invoke(prompt_text)
-            content = (response.content if hasattr(response, "content") else str(response)).strip()
-            if content:
-                print("🧠 [Centinela-AI] Using LLM provider 'nvidia_nim'...")
-                return content
-        except Exception as e:
-            print(f"⚠️ [Centinela-AI] NVIDIA NIM call failed: {e}")
 
     if gemini_client:
         try:
@@ -165,6 +204,26 @@ def call_ai_cascade(prompt_text, want_json=True):
                 return content
         except Exception as e:
             print(f"⚠️ [Centinela-AI] Google Gemini call failed: {e}")
+
+    if nvidia_llm:
+        try:
+            response = nvidia_llm.invoke(prompt_text)
+            content = (response.content if hasattr(response, "content") else str(response)).strip()
+            if content:
+                print("🧠 [Centinela-AI] Using LLM provider 'nvidia_nim'...")
+                return content
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] NVIDIA NIM call failed: {e}")
+
+    if openrouter_llm:
+        try:
+            response = openrouter_llm.invoke(prompt_text)
+            content = (response.content if hasattr(response, "content") else str(response)).strip()
+            if content:
+                print("🧠 [Centinela-AI] Using LLM provider 'openrouter'...")
+                return content
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] OpenRouter call failed: {e}")
 
     return None
 
