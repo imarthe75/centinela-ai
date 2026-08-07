@@ -86,7 +86,16 @@ def get_db_connection():
     try:
         yield conn
     finally:
-        db_pool.putconn(conn)
+        # putconn() used to run unconditionally, which recycles a dead connection right back
+        # into the pool if the server side closed it (idle timeout, network blip, Postgres
+        # restart) -- psycopg2 marks conn.closed non-zero in that case, but nothing here ever
+        # checked it. The next getconn() call would then hand that same poisoned connection to
+        # a *different* caller, who'd immediately hit "connection already closed" on their first
+        # query. This is what caused Sentinel's intermittent main-loop crashes: not a bug in
+        # Sentinel itself, but a pool that kept re-issuing a connection it should have discarded.
+        # close=True tells the pool to actually drop this slot and open a fresh connection next
+        # time instead of recycling it.
+        db_pool.putconn(conn, close=bool(conn.closed))
 
 @contextmanager
 def get_db_cursor(cursor_factory=None):
@@ -100,7 +109,16 @@ def get_db_cursor(cursor_factory=None):
             yield cur
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            # rollback() itself raises InterfaceError on an already-dead connection (e.g. the
+            # server closed it mid-transaction) -- guard it so that secondary failure doesn't
+            # mask the real exception `e` that callers need to see.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise e
         finally:
-            cur.close()
+            try:
+                cur.close()
+            except Exception:
+                pass

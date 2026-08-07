@@ -37,7 +37,7 @@ Evaluación estática de la postura de infraestructura vía **Checkov** (Terrafo
 - **Manifiestos de Kubernetes (`.yaml`, Helm Charts) y Terraform (`.tf`)**: vía Checkov — contenedores `privileged: true`, ausencia de límites de recursos, montajes inseguros de `hostPath`, buckets S3/GCS públicos, Security Groups abriendo puertos administrativos a `0.0.0.0/0`.
 
 > [!NOTE]
-> **Alcance real de `auditor_cis_benchmarks.py`** (distinto de lo anterior): ejecuta en vivo, por SSH, un subconjunto defendible de **~11 verificaciones CIS Level 1 para Linux** (login root por SSH, autenticación por contraseña, permisos de `/etc/passwd`/`/etc/shadow`, longitud mínima de contraseña, firewall activo, cuentas sin contraseña, `auditd`, IP forwarding, core dumps, sincronización horaria) contra un activo concreto vía `POST /api/cis-benchmark/check/{asset_name}`, con calificación A-F. **No es el CIS Benchmark oficial completo** (cientos de controles, específico por versión de distro) — es un subconjunto real y honesto, no una implementación exhaustiva.
+> **Alcance real de `auditor_cis_benchmarks.py`** (distinto de lo anterior): ejecuta en vivo, por SSH, un subconjunto defendible de **~11 verificaciones CIS Level 1 para Linux** (login root por SSH, autenticación por contraseña, permisos de `/etc/passwd`/`/etc/shadow`, longitud mínima de contraseña, firewall activo, cuentas sin contraseña, `auditd`, IP forwarding, core dumps, sincronización horaria), con calificación A-F. Se puede disparar bajo demanda contra un activo concreto (`POST /api/cis-benchmark/check/{asset_name}`), y además corre solo, en segundo plano, re-auditando cada activo `SERVER`/`AppServer` cada 7 días. **No es el CIS Benchmark oficial completo** (cientos de controles, específico por versión de distro) — es un subconjunto real y honesto, no una implementación exhaustiva.
 
 ### 4. 🤖 Gobernanza de Inteligencia Artificial y Modelos LLM (OWASP LLM Top 10)
 Auditoría y control de seguridad específico para aplicaciones que consumen LLMs:
@@ -110,7 +110,7 @@ Cada motor cubre una capa distinta de la superficie de ataque. La columna `scan_
 | **ffuf / Kiterunner** | `ffuf` / `kiterunner` | APIs | Rutas y endpoints ocultos vía fuzzing |
 | **SpiderFoot** | `spiderfoot` | OSINT | Subdominios, WHOIS, huella digital de tecnología |
 | **BloodHound / Neo4j** | `bloodhound` | Active Directory | Rutas de escalamiento de privilegios hacia Domain Admins |
-| **CIS Benchmarks (propio)** | `cis-benchmark` | Hardening de SO | Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH, bajo demanda por activo |
+| **CIS Benchmarks (propio)** | `cis-benchmark` | Hardening de SO | Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH; automático cada 7 días por activo, o bajo demanda |
 
 > [!NOTE]
 > **Grafo de rutas de ataque AD — activo pero latente por diseño.** La consulta Cypher (ruta más corta de cualquier usuario a Domain Admins) es real y funciona contra **cualquier** dominio — antes estaba fijada al nombre ficticio `INTERNAL.LOCAL`, un bug real que habría hecho que nunca encontrara nada ni con datos reales cargados; corregido y verificado contra un grafo Neo4j sintético desechable. El grafo en sí no tiene datos de Active Directory todavía (requiere ejecutar SharpHound/AzureHound contra el dominio real, con credenciales que no están disponibles en este entorno). Se mantiene corriendo cada 10 minutos contra el grafo vacío — sin costo real — en vez de desactivarse, para que el día que haya un dominio real solo haga falta importar los datos, no re-verificar el código.
@@ -203,7 +203,7 @@ flowchart TB
 
 | Componente | Herramientas | Propósito |
 | :--- | :--- | :--- |
-| **Cerebro Generativo** | Groq (proveedor primario configurado), con cadena de respaldo NVIDIA NIM → OpenRouter → Google GenAI → Ollama (local) | Correlación de amenazas, generación de reportes y parches de código. Si ningún proveedor responde, un motor heurístico determinístico genera el análisis y — cuando aplica — un script real, en vez de dejar el hallazgo sin procesar. |
+| **Cerebro Generativo** | Cascada real por llamada: Groq → NVIDIA NIM → Google Gemini → motor heurístico | Correlación de amenazas, generación de reportes y parches de código. Cada llamada intenta los tres proveedores en orden (no solo al arrancar el proceso) antes de caer al motor heurístico determinístico. Hallazgos sintéticos propios de Centinela (`HOST-CONTAINMENT-REQUEST`, `CTI-IOC-MATCH-*`, etc.) omiten el LLM por diseño y van directo al heurístico, que ya tiene la respuesta correcta para ellos — evita que un LLM sin contexto alucine un script irrelevante para una acción crítica. |
 | **Gobernanza de IA** | Auditor Nativo OWASP LLM | Detección de Prompt Injection, fuga de PII y guardrails de modelo. |
 | **EDR / NDR** | Wazuh Manager, Zeek | Telemetría de endpoint (agentes) y de red (conn.log en vivo) sobre servidores físicos y virtuales Linux/Windows. |
 | **Grafo de Ataques AD** | Neo4j / BloodHound | Rutas de escalamiento de privilegios hacia Domain Admins — motor real, en espera de datos de un dominio AD real. |
@@ -214,7 +214,7 @@ flowchart TB
 | **Escaneo de Red** | Nuclei, Nmap | Detección perimetral de vulnerabilidades y descubrimiento de puertos/servicios. |
 | **Análisis Estático (SAST)** | Auditor Nativo AST, Semgrep, Medusa (`medusa-security`) | Detección de SQLi, Command Injection, secretos hardcodeados, complejidad cognitiva y patrones inseguros en apps con componentes GenAI. |
 | **Composición de Software (SCA)** | Auditor Nativo SCA (OSV.dev en vivo), Trivy / Grype / Syft | Dependencias vulnerables en `requirements.txt`/`package.json` y CVEs en imágenes de contenedor, con análisis de alcanzabilidad real. |
-| **Hardening de Sistema y Contenedores** | Auditor Nativo CIS Benchmarks (SSH), Checkov (IaC) | Subconjunto real de CIS Level 1 Linux bajo demanda; Terraform/Kubernetes/Helm vía Checkov. |
+| **Hardening de Sistema y Contenedores** | Auditor Nativo CIS Benchmarks (SSH), Checkov (IaC) | Subconjunto real de CIS Level 1 Linux, automático cada 7 días por activo o bajo demanda; Terraform/Kubernetes/Helm vía Checkov. |
 | **Mapeo de Cumplimiento** | Compliance Mapper, MITRE ATT&CK® | Mapeo directo a ISO 27001, NIST SP 800-53, PCI-DSS v4.0, SOC 2, GDPR y técnicas ATT&CK reales por hallazgo. |
 | **Integración Git** | GitLab REST API v4, Git CLI | Clonación automatizada, escaneo y generación de Merge Requests con parches determinísticos o asistidos por IA. |
 | **Orquestación SOAR** | Ansible (Playbooks), Docker SDK, HashiCorp Vault | Remediación autónoma con aprobación humana, instalación automática de agentes, y credenciales por activo nunca almacenadas en la base de datos. |

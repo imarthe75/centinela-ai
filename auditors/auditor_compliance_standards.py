@@ -116,7 +116,7 @@ def run_compliance_standards_audit(target_dir: str = "/opt/centinela-ai", asset_
 
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
-                    "standards-audit", url_path=location, open_status="OPEN"
+                    "standards-audit", url_path=location, open_status="OPEN", preserve_status=True
                 )
     except Exception as db_err:
         print(f"⚠️ [Standards-Auditor] Could not log findings to DB: {db_err}")

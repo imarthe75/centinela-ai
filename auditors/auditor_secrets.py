@@ -251,7 +251,7 @@ def log_secrets(asset_id: int, repo_path: str, findings: List[Dict], scan_phase:
 
                 action, _ = deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, cve_id, severity, description, "secrets",
-                    url_path=location, open_status="NEW"
+                    url_path=location, open_status="NEW", preserve_status=True
                 )
                 if action == "updated":
                     print(f"  🔄 Updated secrets finding: [{severity}] {cve_id} @ {location}")

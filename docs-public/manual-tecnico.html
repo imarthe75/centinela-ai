@@ -479,7 +479,7 @@
             <tr><td>ffuf / Kiterunner</td><td><code>ffuf</code> / <code>kiterunner</code></td><td>APIs</td><td>Rutas y endpoints ocultos vía fuzzing</td></tr>
             <tr><td>SpiderFoot</td><td><code>spiderfoot</code></td><td>OSINT</td><td>Subdominios, WHOIS, huella digital de tecnología</td></tr>
             <tr><td>BloodHound / Neo4j</td><td><code>bloodhound</code></td><td>Active Directory</td><td>Rutas de escalamiento de privilegios en el dominio — motor real, en espera de datos reales (ver Omni-XDR más abajo)</td></tr>
-            <tr><td>CIS Benchmarks (propio)</td><td><code>cis-benchmark</code></td><td>Hardening de SO</td><td>Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH, bajo demanda por activo</td></tr>
+            <tr><td>CIS Benchmarks (propio)</td><td><code>cis-benchmark</code></td><td>Hardening de SO</td><td>Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH; automático cada 7 días por activo, o bajo demanda</td></tr>
           </tbody>
         </table>
       </div>
@@ -538,8 +538,12 @@
       <p>Cada hallazgo nuevo pasa por <code>correlate_vulnerability()</code>, que arma un prompt con el tipo de activo, la severidad, la ubicación exacta y la evidencia técnica, y lo envía a un modelo de lenguaje.</p>
 
       <h3>Cadena de proveedores</h3>
-      <p class="dim">El proveedor configurado (actualmente Groq) se intenta primero; si no está disponible, Centinela recorre esta cadena en orden hasta que uno inicialice:</p>
-      <p><code>nvidia_nim</code> → <code>openrouter</code> → <code>google_genai</code> → <code>groq</code> → <code>ollama</code> (local)</p>
+      <p class="dim">Groq, NVIDIA NIM y Google Gemini se inicializan de forma independiente al arrancar (cada uno si tiene una API key configurada), y <strong>cada llamada</strong> de correlación — no solo el arranque del proceso — recorre la cadena en orden hasta obtener una respuesta real:</p>
+      <p><code>groq</code> → <code>nvidia_nim</code> → <code>google_genai</code> → motor heurístico</p>
+      <p class="dim">Antes, se elegía un único proveedor al arrancar el contenedor y se usaba durante toda su vida — si ese proveedor agotaba su cuota a mitad del día, todo hallazgo posterior caía directo al motor heurístico aunque otros proveedores tuvieran API key configurada y cupo disponible. Ahora cada llamada intenta los tres.</p>
+
+      <h3>Hallazgos sintéticos: sin LLM por diseño</h3>
+      <p>Los hallazgos que son marcadores propios del sistema — <code>HOST-CONTAINMENT-REQUEST</code>, <code>CTI-IOC-MATCH-*</code>, <code>BLOODHOUND-PATH-*</code>, <code>SCAN-AUDIT</code>, <code>HEURISTIC-SECURITY-DEBT</code>, <code>CIS-BENCHMARK-AUDIT</code> — nunca se envían al LLM: van directo al motor heurístico, que ya tiene la respuesta correcta y específica para cada uno. Se detectó en vivo que pedirle a un LLM genérico que "corrija" un hallazgo sintético como <code>HOST-CONTAINMENT-REQUEST</code> lo hacía alucinar un script de infraestructura no relacionado (marcado como automatizable) en vez de generar el bloqueo de firewall real — un riesgo real si un operador lo hubiera aprobado sin leerlo con cuidado.</p>
 
       <h3>Qué genera la IA</h3>
       <div class="table-wrap">
@@ -685,7 +689,7 @@
 
     <section id="salud">
       <h2>Salud del ecosistema y reportes</h2>
-      <p>El dashboard tiene una vista de "Salud del Ecosistema" (<code>GET /api/health</code>) que reporta el estado real de cada motor y servicio — no valores fijos. Para los bucles que corren en segundo plano (feed CTI, revalidación de EPSS/KEV, latido de Zeek), el estado se infiere de evidencia real reciente en la base de datos, no de si el módulo simplemente se pudo importar. Para capacidades que solo se ejecutan bajo demanda (CIS Benchmarks, contención de emergencia), se reporta honestamente como <i>"Disponible (bajo demanda, aún sin ejecutar)"</i> en vez de un falso "Online" antes de haberse usado — ese estado se muestra en color ámbar en el dashboard, no en rojo como una falla real ni en verde como si ya hubiera corrido.</p>
+      <p>El dashboard tiene una vista de "Salud del Ecosistema" (<code>GET /api/health</code>) que reporta el estado real de cada motor y servicio — no valores fijos. Para los bucles que corren en segundo plano (feed CTI, revalidación de EPSS/KEV, latido de Zeek, CIS Benchmarks), el estado se infiere de evidencia real reciente en la base de datos, no de si el módulo simplemente se pudo importar. CIS Benchmarks corre solo cada 7 días por activo (además de poder dispararse bajo demanda), así que en un despliegue nuevo, antes de su primer ciclo, se reporta honestamente como <i>"Disponible (bajo demanda, aún sin ejecutar)"</i> en vez de un falso "Online". Contención de emergencia, al ser una acción deliberadamente manual (nunca automática, por diseño), se mantiene siempre como <i>"Disponible (bajo demanda)"</i> — ese estado se muestra en color ámbar en el dashboard, no en rojo como una falla real ni en verde como si ya hubiera corrido.</p>
       <p>Dos reportes PDF están disponibles desde el dashboard:</p>
       <ul>
         <li><b>Reporte Ejecutivo</b> (<code>/api/reports/executive</code>) — nivel de riesgo global calculado a partir del Centinela Risk Score real (no solo un conteo de severidades), conteo de hallazgos con CISA KEV confirmado, incumplimientos de SLA, y las 5 técnicas MITRE ATT&CK más frecuentes.</li>

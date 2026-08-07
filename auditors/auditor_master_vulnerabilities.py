@@ -191,7 +191,7 @@ def run_master_vulnerability_scan(target_dir: str = "/opt/centinela-ai", asset_i
 
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
-                    "sast-native", url_path=location, open_status="OPEN"
+                    "sast-native", url_path=location, open_status="OPEN", preserve_status=True
                 )
     except Exception as db_err:
         print(f"⚠️ [Master-Auditor] Could not log findings to DB: {db_err}")

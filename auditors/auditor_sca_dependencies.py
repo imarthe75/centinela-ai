@@ -322,7 +322,7 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
                     "sca-native", url_path=location, open_status="OPEN",
-                    reachability_status=reachability
+                    reachability_status=reachability, preserve_status=True
                 )
     except Exception as db_err:
         print(f"⚠️ [SCA-Auditor] Could not log findings to DB: {db_err}")

@@ -69,95 +69,104 @@ VALKEY_CONFIG = {
     "db": 0
 }
 
-# Initialize AI based on Provider
-provider = get_secret("AI_PROVIDER", "google_genai").lower()
-model_name = get_secret("AI_MODEL", "meta/llama-3-70b-instruct")
+# Initialize AI providers. Each of Groq / NVIDIA NIM / Google Gemini is initialized
+# independently (not "first configured one wins") so correlate_vulnerability() can cascade
+# through all three at call time, in that order, before falling back to the deterministic
+# heuristic engine. Previously only ONE provider was ever initialized for the process's whole
+# lifetime (whichever came first in AI_PROVIDER_ORDER with a valid key) -- e.g. once Groq's
+# small daily token quota was exhausted mid-day, every single subsequent finding fell straight
+# to the heuristic engine for the rest of the day, even though NVIDIA/Gemini keys were also
+# configured and never got a chance to try.
+model_name = get_secret("AI_MODEL", "llama-3.3-70b-versatile")
 google_model_name = get_secret("AI_MODEL_GOOGLE", "gemini-1.5-flash-latest")
-llm = None
-genai_client = None
+nvidia_model_name = get_secret("AI_MODEL_NVIDIA", "meta/llama-3.1-70b-instruct")
 
-def try_init_provider(p):
-    global llm, genai_client
-    try:
-        print(f"🤖 [Centinela-AI] Attempting provider: {p}, model={model_name}")
-        if p in ("google_genai", "vertex_ai") and genai is not None:
-            api_key = get_secret("GOOGLE_API_KEY")
-            project = get_secret("GOOGLE_CLOUD_PROJECT")
-            location = get_secret("GCP_LOCATION", "us-central1")
-            use_model = google_model_name
-            if p == "vertex_ai" and project:
-                genai_client = genai.Client(vertexai=True, project=project, location=location)
-                print(f"✨ [Centinela-AI] Using GenAI SDK with Vertex AI (GCP)")
-                return True
-            elif api_key:
-                genai_client = genai.Client(api_key=api_key)
-                model_name_local = use_model
-                print(f"✨ [Centinela-AI] Using GenAI SDK (Google AI Studio) with model {model_name_local}")
-                return True
-        elif p == "groq" and ChatOpenAI is not None:
-            api_key = get_secret("GROQ_API_KEY")
-            if api_key:
-                llm = ChatOpenAI(
-                    openai_api_base="https://api.groq.com/openai/v1",
-                    openai_api_key=api_key,
-                    model_name=model_name
-                )
-                return True
-        elif p == "ollama" and ChatOllama is not None:
-            base_url = get_secret("OLLAMA_BASE_URL", "http://ollama:11434")
-            llm = ChatOllama(base_url=base_url, model=model_name)
-            return True
-        elif p == "nvidia_nim" and ChatOpenAI is not None:
-            api_key = get_secret("NVIDIA_NIM_API_KEY")
-            base_url = get_secret("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-            # AI_MODEL is typically a Groq-style name (e.g. "llama-3.3-70b-versatile") that
-            # doesn't exist on NVIDIA's catalog and 404s at invoke time — use a separate,
-            # NVIDIA-specific model id, same pattern as AI_MODEL_GOOGLE for google_genai.
-            use_model = get_secret("AI_MODEL_NVIDIA", "meta/llama-3.1-70b-instruct")
-            if api_key:
-                # ChatOpenAI may call chat/completions; NVIDIA integrate may expect different endpoints.
-                # We still initialize ChatOpenAI but prefer Google GenAI when available.
-                llm = ChatOpenAI(
-                    openai_api_base=base_url,
-                    openai_api_key=api_key,
-                    model_name=use_model
-                )
-                return True
-        elif p == "openrouter" and ChatOpenAI is not None:
-            api_key = get_secret("OPENROUTER_API_KEY") or get_secret("OPENROUTER_KEY") or get_secret("OPENROUTER_APIKEY")
-            base = get_secret("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            if api_key:
-                llm = ChatOpenAI(
-                    openai_api_base=base,
-                    openai_api_key=api_key,
-                    model_name=model_name
-                )
-                return True
-    except Exception as e:
-        print(f"⚠️ [Centinela-AI] Provider {p} init failed: {e}")
-    return False
+groq_llm = None
+nvidia_llm = None
+gemini_client = None
 
-# Determine provider order. The explicitly configured AI_PROVIDER always goes first —
-# AI_PROVIDER_ORDER is only the fallback sequence if that one fails to initialize or
-# isn't set. Previously AI_PROVIDER_ORDER's hardcoded default put nvidia_nim first
-# regardless of AI_PROVIDER, so setting AI_PROVIDER=groq never actually tried Groq.
-order_str = get_secret("AI_PROVIDER_ORDER", "nvidia_nim,openrouter,google_genai,groq,ollama")
-providers_order = [x.strip().lower() for x in order_str.split(",") if x.strip()]
-if provider in providers_order:
-    providers_order.remove(provider)
-providers_order.insert(0, provider)
+if ChatOpenAI is not None:
+    groq_key = get_secret("GROQ_API_KEY")
+    if groq_key:
+        try:
+            groq_llm = ChatOpenAI(
+                openai_api_base="https://api.groq.com/openai/v1",
+                openai_api_key=groq_key,
+                model_name=model_name
+            )
+            print(f"✅ [Centinela-AI] Groq provider initialized (model={model_name}).")
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] Groq init failed: {e}")
 
-initialized = False
-for p in providers_order:
-    if try_init_provider(p):
-        initialized = True
-        active_provider = p
-        break
+    nvidia_key = get_secret("NVIDIA_NIM_API_KEY")
+    if nvidia_key:
+        try:
+            nvidia_llm = ChatOpenAI(
+                openai_api_base=get_secret("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+                openai_api_key=nvidia_key,
+                model_name=nvidia_model_name
+            )
+            print(f"✅ [Centinela-AI] NVIDIA NIM provider initialized (model={nvidia_model_name}).")
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] NVIDIA NIM init failed: {e}")
 
-if not initialized:
-    print(f"⚠️ [Centinela-AI] No AI provider initialized from order: {providers_order}. Correlation disabled.")
-else:
-    print(f"✅ [Centinela-AI] AI Provider '{active_provider}' initialized successfully.")
+if genai is not None:
+    google_key = get_secret("GOOGLE_API_KEY")
+    if google_key:
+        try:
+            gemini_client = genai.Client(api_key=google_key)
+            print(f"✅ [Centinela-AI] Google Gemini provider initialized (model={google_model_name}).")
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] Google Gemini init failed: {e}")
+
+if not (groq_llm or nvidia_llm or gemini_client):
+    print("⚠️ [Centinela-AI] No AI provider initialized (Groq/NVIDIA/Gemini all unavailable or missing keys). Correlation will use the heuristic engine only.")
+
+
+def call_ai_cascade(prompt_text, want_json=True):
+    """
+    Tries each configured LLM provider in order -- Groq -> NVIDIA NIM -> Google Gemini -- and
+    returns the text of the first one that actually responds. Returns None if every provider is
+    unavailable/unconfigured or errors out (invalid key, rate limit, etc), in which case the
+    caller falls back to the deterministic heuristic engine.
+    """
+    if groq_llm:
+        try:
+            response = groq_llm.invoke(prompt_text)
+            content = (response.content if hasattr(response, "content") else str(response)).strip()
+            if content:
+                print("🧠 [Centinela-AI] Using LLM provider 'groq'...")
+                return content
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] Groq call failed: {e}")
+
+    if nvidia_llm:
+        try:
+            response = nvidia_llm.invoke(prompt_text)
+            content = (response.content if hasattr(response, "content") else str(response)).strip()
+            if content:
+                print("🧠 [Centinela-AI] Using LLM provider 'nvidia_nim'...")
+                return content
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] NVIDIA NIM call failed: {e}")
+
+    if gemini_client:
+        try:
+            from google.genai import types
+            config = types.GenerateContentConfig(response_mime_type="application/json") if want_json else None
+            response = gemini_client.models.generate_content(
+                model=google_model_name,
+                contents=prompt_text,
+                config=config
+            )
+            content = response.text.strip()
+            if content:
+                print("🧠 [Centinela-AI] Using LLM provider 'google_genai'...")
+                return content
+        except Exception as e:
+            print(f"⚠️ [Centinela-AI] Google Gemini call failed: {e}")
+
+    return None
 
 # get_db_connection moved to db_manager.py
 
@@ -640,7 +649,7 @@ def generate_heuristic_analysis(vuln):
             "No existe una corrección automatizable para este hallazgo específico -- revisar la descripción técnica y aplicar manualmente."
         )
 
-    if cve_u in ('SCAN-AUDIT',) or any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido')):
+    if cve_u in ('SCAN-AUDIT', 'CIS-BENCHMARK-AUDIT') or any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido', 'auditoría cis benchmarks completada')):
         return (
             "Sin hallazgo técnico (mensaje informativo de escaneo)",
             "Ninguno -- esta entrada documenta el resultado de un escaneo, no una vulnerabilidad.",
@@ -702,12 +711,24 @@ def correlate_vulnerability(vuln):
     """
     Use AI to correlate vulnerability data and suggest remediation.
     """
-    if not llm and not genai_client:
-        return None
-        
     print(f"🤖 [Centinela-AI] Senior Audit analysis for {vuln['cve_id']} on {vuln['asset_name']}...")
 
     is_repo_finding = str(vuln.get('asset_type', '')).upper() == 'GITLAB-REPO'
+
+    # These cve_id values are Centinela's own synthetic/system markers, not real
+    # scanner-detected vulnerabilities -- there's no real technical substance for a generic
+    # security-auditor LLM prompt to reason about, and testing this live surfaced exactly the
+    # failure mode that risk implies: asked to fix "HOST-CONTAINMENT-REQUEST", Groq hallucinated
+    # an unrelated WildFly/JMX script with can_automate=true, which would have been offered for
+    # one-click execution against a host that may not even run WildFly. generate_heuristic_script()
+    # already has correct, purpose-built logic for each of these (real firewall lockdown for
+    # HOST-CONTAINMENT-REQUEST, real IP block for CTI-IOC-MATCH, etc) -- skip the LLM entirely
+    # for these and go straight to it instead of risking a plausible-sounding wrong answer.
+    cve_upper = str(vuln.get('cve_id', '')).upper()
+    is_synthetic_marker = (
+        cve_upper.startswith('CTI-IOC-MATCH') or cve_upper.startswith('BLOODHOUND-PATH')
+        or cve_upper in ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT')
+    )
 
     if is_repo_finding:
         # A bash "remediation_script" makes no sense here -- there's no live host to SSH into
@@ -788,27 +809,8 @@ def correlate_vulnerability(vuln):
     
     content = ""
     try:
-        if genai_client:
-            try:
-                from google.genai import types
-                response = genai_client.models.generate_content(
-                    model=google_model_name,
-                    contents=prompt_text,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
-                )
-                content = response.text.strip()
-            except Exception as ge:
-                print(f"⚠️ [Centinela-AI] GenAI call failed: {ge}")
-
-        if not content and llm:
-            try:
-                print(f"🧠 [Centinela-AI] Using LLM provider '{provider}' for {vuln['cve_id']} on {vuln['asset_name']}...")
-                response = llm.invoke(prompt_text)
-                content = (response.content if hasattr(response, "content") else str(response)).strip()
-            except Exception as le:
-                print(f"⚠️ [Centinela-AI] LLM ('{provider}') call failed: {le}")
+        if not is_synthetic_marker:
+            content = call_ai_cascade(prompt_text) or ""
 
         if not content:
             # Fallback deterministic Security Engine Generator
@@ -982,43 +984,14 @@ def correlate_vulnerability(vuln):
         print(f"❌ Error in correlation call: {str(e)}")
         import traceback
         traceback.print_exc()
-        if "429" in str(e) or "rate_limit" in str(e).lower():
-            # Attempt fallback to Groq if available
-            groq_key = os.getenv('GROQ_API_KEY')
-            if groq_key and os.getenv('AI_PROVIDER') != 'groq':
-                print(f"🔄 [Centinela-AI] Vertex limit reached. Falling back to Groq for speed...")
-                try:
-                    from groq import Groq
-                    groq_client = Groq(api_key=groq_key)
-                    # Use a stable Llama 3 model for fallback
-                    chat_completion = groq_client.chat.completions.create(
-                        messages=[{"role": "user", "content": prompt}],
-                        model="llama-3.3-70b-versatile",
-                    )
-                    content = chat_completion.choices[0].message.content
-                    # Reuse JSON parsing logic
-                    try:
-                        if "```json" in content:
-                            content = content.split("```json")[1].split("```")[0].strip()
-                        return json.loads(content, strict=False)
-                    except:
-                        return None
-                except Exception as groq_e:
-                    print(f"❌ Groq fallback also failed: {groq_e}")
-            
-            print(f"⏳ [Centinela-AI] Rate limit hit details: {e}")
-            return "RATE_LIMIT"
         return None
 
 def generate_ai_remediation_report(cve_id, log_output):
     """
     Use AI to generate a professional remediation report based on the technical execution log.
     """
-    if not llm and not genai_client:
-        return f"Remediation for {cve_id} completed.\n\nTechnical Log:\n{log_output}"
-        
     print(f"🤖 [Centinela-AI] Generating final remediation report for {cve_id}...")
-    
+
     prompt_text = f"""
         Actúa como el CISO de CASMARTS. Redacta un reporte ejecutivo de remediación técnica.
         VULNERABILIDAD: {cve_id}
@@ -1033,23 +1006,11 @@ def generate_ai_remediation_report(cve_id, log_output):
 
         Mantén un tono profesional, tecnológico y minimalista.
     """
-    
-    try:
-        if genai_client:
-            from google.genai import types
-            response = genai_client.models.generate_content(
-                model=model_name,
-                contents=prompt_text
-            )
-            return response.text.strip()
-        else:
-            prompt = ChatPromptTemplate.from_template("{text}")
-            chain = prompt | llm
-            response = chain.invoke({"text": prompt_text})
-            return response.content.strip()
-    except Exception as e:
-        print(f"⚠️ [Centinela-AI] AI Report generation failed: {e}")
-        return f"Remediation for {cve_id} completed successfully.\n\nTechnical Log:\n{log_output}"
+
+    content = call_ai_cascade(prompt_text, want_json=False)
+    if content:
+        return content
+    return f"Remediation for {cve_id} completed successfully.\n\nTechnical Log:\n{log_output}"
 
 def process_falco_alerts():
     """Consume Falco alerts from Valkey and store in DB"""
@@ -1251,7 +1212,8 @@ def process_zeek_conn_log():
                         if asset:
                             deduplication_engine.log_finding_deduplicated(
                                 cur, asset[0], "CTI-IOC-MATCH-RUNTIME", "CRITICAL", desc,
-                                "cti-feed", url_path=f"conn-{record.get('uid', ip)}", open_status="PENDING"
+                                "cti-feed", url_path=f"conn-{record.get('uid', ip)}", open_status="PENDING",
+                                preserve_status=True
                             )
                     print(f"🚨 [Centinela-AI] Zeek+CTI: real connection to confirmed C2 IP {ip} ({ioc.get('malware')}).")
         except Exception as e:
@@ -1336,7 +1298,7 @@ def process_bloodhound_paths():
                         if res:
                             deduplication_engine.log_finding_deduplicated(
                                 cur, res[0], "BLOODHOUND-PATH-AD", "CRITICAL", desc,
-                                "bloodhound", open_status="PENDING"
+                                "bloodhound", open_status="PENDING", preserve_status=True
                             )
                             print("🚨 [Centinela-AI] Critical Attack Path logged in DB!")
                         else:
@@ -1456,6 +1418,59 @@ def run_threat_intel_enrichment_loop():
             time.sleep(60)
 
 
+def run_cis_benchmark_loop():
+    """
+    Periodically runs the real CIS Level 1 hardening check subset (auditors/auditor_cis_benchmarks.py)
+    over SSH against every SERVER/AppServer asset. Previously this only ever ran when a human hit
+    POST /api/cis-benchmark/check/{asset_name} by hand -- the health check honestly reported
+    "Available (On-Demand, Not Yet Run)" because nothing ever actually triggered it. All checks
+    are read-only (file permissions, sshd_config, systemctl is-active, etc); nothing is modified
+    on the target host. log_cis_findings() always writes a CIS-BENCHMARK-AUDIT completion marker
+    (pass or fail) so "never checked" can be told apart from "checked N days ago, all green" via
+    its own detected_at, the same pattern threat_intel_checked_at uses above.
+    """
+    from auditors.auditor_cis_benchmarks import run_cis_audit, log_cis_findings
+    RECHECK_INTERVAL_DAYS = 7
+    while True:
+        try:
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT i.id, i.asset_name, i.endpoint
+                    FROM infra_inventory i
+                    LEFT JOIN vulnerability_log v
+                        ON v.asset_id = i.id AND v.cve_id = 'CIS-BENCHMARK-AUDIT'
+                    WHERE i.asset_type IN ('SERVER', 'AppServer')
+                        AND i.endpoint != 'remote-agent'
+                    GROUP BY i.id, i.asset_name, i.endpoint
+                    HAVING MAX(v.detected_at) IS NULL
+                        OR MAX(v.detected_at) < NOW() - (%s || ' days')::interval
+                    ORDER BY MAX(v.detected_at) ASC NULLS FIRST
+                    LIMIT 5
+                """, (RECHECK_INTERVAL_DAYS,))
+                due_assets = cur.fetchall()
+
+            if not due_assets:
+                time.sleep(3600)
+                continue
+
+            for asset in due_assets:
+                try:
+                    print(f"🛡️ [Centinela-AI] Running CIS Benchmark audit on {asset['asset_name']}...")
+                    result = run_cis_audit(asset["asset_name"], asset["endpoint"])
+                    log_cis_findings(asset["id"], result)
+                    print(f"✅ [Centinela-AI] CIS Benchmark on {asset['asset_name']}: grade {result['grade']} ({result['percentage']}%)")
+                except Exception as asset_err:
+                    # Most commonly: no SSH credentials stored in Vault for this asset yet --
+                    # skip it and let the next asset in the batch proceed rather than stalling
+                    # the whole loop on one host.
+                    print(f"⚠️ [Centinela-AI] CIS Benchmark on {asset['asset_name']} failed (likely missing SSH credentials): {asset_err}")
+                time.sleep(10)
+
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error in CIS Benchmark loop: {e}")
+            time.sleep(60)
+
+
 def run_cti_correlation_loop():
     """
     Real CTI/IoC correlation against abuse.ch's Feodo Tracker (live, active C2 server IPs).
@@ -1491,7 +1506,7 @@ def run_cti_correlation_loop():
                             )
                             deduplication_engine.log_finding_deduplicated(
                                 cur, asset["id"], "CTI-IOC-MATCH-ASSET", "CRITICAL", desc,
-                                "cti-feed", url_path=ip, open_status="PENDING"
+                                "cti-feed", url_path=ip, open_status="PENDING", preserve_status=True
                             )
                             hits += 1
 
@@ -1515,7 +1530,8 @@ def run_cti_correlation_loop():
                             )
                             deduplication_engine.log_finding_deduplicated(
                                 cur, alert["asset_id"], "CTI-IOC-MATCH-RUNTIME", "CRITICAL", desc,
-                                "cti-feed", url_path=f"alert-{alert['id']}-{ip}", open_status="PENDING"
+                                "cti-feed", url_path=f"alert-{alert['id']}-{ip}", open_status="PENDING",
+                                preserve_status=True
                             )
                             hits += 1
 
@@ -1556,6 +1572,10 @@ def main_loop():
     cti_thread = threading.Thread(target=run_cti_correlation_loop, daemon=True)
     cti_thread.start()
 
+    # Real CIS Level 1 hardening checks over SSH, previously on-demand only
+    cis_thread = threading.Thread(target=run_cis_benchmark_loop, daemon=True)
+    cis_thread.start()
+
     # External Auditor Thread
     from auditors import auditor_ext
     threading.Thread(target=auditor_ext.main, daemon=True).start()
@@ -1564,7 +1584,7 @@ def main_loop():
         try:
             with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT v.id, v.cve_id, v.severity, v.description, i.asset_name, i.asset_type, i.endpoint
+                    SELECT v.id, v.cve_id, v.severity, v.description, v.url_path, i.asset_name, i.asset_type, i.endpoint
                     FROM vulnerability_log v
                     JOIN infra_inventory i ON v.asset_id = i.id
                     LEFT JOIN remediation_history r ON v.id = r.vuln_id
@@ -1582,13 +1602,20 @@ def main_loop():
                 pending_vulns = cur.fetchall()
                 
                 if not pending_vulns:
-                    # Run native master audits periodically during idle loop
+                    # Run native master audits (SAST/SCA/Standards) periodically during idle loop.
+                    # Was calling run_master_vulnerability_scan() etc. with no args, which defaults
+                    # to target_dir="/opt/centinela-ai" (Centinela's own source, not any of the 66
+                    # registered GitLab-Repo customer assets) and asset_id=None -- so this branch
+                    # never actually audited a real GitLab project, only ever the platform's own
+                    # code. GitLabIntegrator.scan_all_projects() (already used, working, and
+                    # auth'd via GITLAB_TOKEN, by the manual POST /api/gitlab/scan endpoint) clones
+                    # each real project and calls the same three auditors with the correct
+                    # target_dir/asset_id per repo.
                     try:
-                        from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards
-                        print("🔍 [Centinela-AI] Running background Omni-Audit scans (SAST, SCA, DevSecOps, Standards)...")
-                        auditor_master_vulnerabilities.run_master_vulnerability_scan()
-                        auditor_sca_dependencies.run_sca_audit()
-                        auditor_compliance_standards.run_compliance_standards_audit()
+                        from auditors.gitlab_integration import GitLabIntegrator
+                        print("🔍 [Centinela-AI] Running background Omni-Audit scans on GitLab projects (SAST, SCA, Standards)...")
+                        summary = GitLabIntegrator().scan_all_projects()
+                        print(f"✅ [Centinela-AI] Omni-Audit scan complete: {summary.get('scanned_projects')}/{summary.get('total_projects')} projects, {summary.get('total_vulnerabilities')} findings.")
                     except Exception as audit_err:
                         print(f"⚠️ [Centinela-AI] Omni-Audit scan error: {audit_err}")
 
