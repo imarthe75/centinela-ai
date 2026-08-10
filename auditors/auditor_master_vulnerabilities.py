@@ -83,6 +83,47 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
                     "description": f"{desc} Line {idx}: {line.strip()}"
                 })
 
+    # 5. Advanced Backend DB & Performance Security (SpringBoot, Python, ORM N+1 & Antipatterns)
+    backend_db_patterns = [
+        (r'\.(raw|extra)\s*\(\s*f?["\'].*?\{', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection via raw/extra query interpolation."),
+        (r'sequelize\.query\s*\(\s*f?["\'].*?\+', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection in Node.js Sequelize."),
+        (r'(postgres|mysql)://[^\s"\']+@[^\s"\']+', "DB-UNENCRYPTED-CONN-STRING", "MEDIUM", "Database Connection string detected in code without explicit TLS/SSL parameters."),
+        # N+1 Query Antipatterns (Python Django/SQLAlchemy/SpringBoot)
+        (r'for\s+\w+\s+in\s+.*?\.(all|filter)\(\):?\s*\n\s*.*?\.\w+', "ORM-N-PLUS-ONE-QUERY", "MEDIUM", "Potential N+1 Query antipattern inside loop. Use select_related/prefetch_related or join fetch."),
+        (r'@Query\s*\([^)]*nativeQuery\s*=\s*true', "SPRINGBOOT-NATIVE-QUERY-RISK", "MEDIUM", "SpringBoot native SQL query bypasses JPA parameter escaping safety.")
+    ]
+    for idx, line in enumerate(lines, 1):
+        for pattern, rule_id, severity, desc in backend_db_patterns:
+            if re.search(pattern, line, re.IGNORECASE):
+                findings.append({
+                    "cve_id": rule_id,
+                    "severity": severity,
+                    "file": file_path,
+                    "line": idx,
+                    "description": f"{desc} Line {idx}: {line.strip()}"
+                })
+
+    # 6. Advanced Frontend Security (React, Angular, SpringBoot & DOM XSS)
+    if filename.endswith((".js", ".ts", ".jsx", ".tsx", ".html", ".java")):
+        frontend_patterns = [
+            (r'(VITE_|NEXT_PUBLIC_|REACT_APP_)(DB_|DATABASE_|POSTGRES_|MYSQL_)', "FRONTEND-EXPOSED-DB-CREDENTIAL", "CRITICAL", "Exposed Database credential or connection URL in Frontend public environment variable."),
+            (r'localStorage\.setItem\s*\(\s*["\'](token|jwt|session|auth_token)["\']', "FRONTEND-JWT-LOCALSTORAGE", "MEDIUM", "Storing authentication token in localStorage makes it vulnerable to XSS extraction. Use httpOnly cookies."),
+            # React & Angular Specific Security Antipatterns
+            (r'dangerouslySetInnerHTML', "REACT-DANGEROUSLY-SET-INNER-HTML", "HIGH", "React dangerouslySetInnerHTML antipattern detected (DOM XSS risk)."),
+            (r'\[innerHTML\]\s*=\s*', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular [innerHTML] binding bypassing sanitization DOM XSS risk."),
+            (r'bypassSecurityTrust(Html|Script|ResourceUrl)', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular explicit security sanitization bypass (DomSanitizer).")
+        ]
+        for idx, line in enumerate(lines, 1):
+            for pattern, rule_id, severity, desc in frontend_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    findings.append({
+                        "cve_id": rule_id,
+                        "severity": severity,
+                        "file": file_path,
+                        "line": idx,
+                        "description": f"{desc} Line {idx}: {line.strip()}"
+                    })
+
     # 5. AST Cognitive Complexity Check (Python files)
     if filename.endswith(".py"):
         try:

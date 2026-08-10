@@ -60,3 +60,9 @@ def run_shadow_api_audit(main_app_file: str = "/opt/centinela-ai/main.py") -> Li
         print(f"⚠️ [ShadowAPI-Auditor] Could not log findings to DB: {db_err}")
 
     return findings
+
+
+def run(asset_id: int = None, endpoint: str = "") -> List[Dict[str, Any]]:
+    """Wrapper function for auditor_ext compatibility."""
+    print(f"🌐 [Auditor-ShadowAPI] Auditing API Gateway or Shadow API routes: {endpoint}")
+    return run_shadow_api_audit()

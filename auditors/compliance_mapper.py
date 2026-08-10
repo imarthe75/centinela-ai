@@ -15,6 +15,79 @@ COMPLIANCE_MAPPING_MATRIX = {
         "SOC_2": "CC6.1 (Logical Access Security)",
         "GDPR": "Art 32 (Security of Processing)"
     },
+    "ORM-RAW-QUERY-INJECTION": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "SI-10 (Information Input Validation)",
+        "PCI_DSS": "Req 6.5.1 (Injection Flaws)",
+        "SOC_2": "CC6.1 (Logical Access Security)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "FRONTEND-EXPOSED-DB-CREDENTIAL": {
+        "ISO_27001": "A.8.24 (Use of Cryptography)",
+        "NIST_800_53": "SC-28 (Protection at Rest)",
+        "PCI_DSS": "Req 8.3 (Strong Credentials)",
+        "SOC_2": "CC6.1 (Credentials Management)",
+        "GDPR": "Art 32 (Cryptographic Protection)"
+    },
+    "FRONTEND-JWT-LOCALSTORAGE": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "AC-3 (Access Control)",
+        "PCI_DSS": "Req 8.3 (Strong Authentication)",
+        "SOC_2": "CC6.1 (Logical Access Security)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "REACT-DANGEROUSLY-SET-INNER-HTML": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "SI-10 (Input Validation)",
+        "PCI_DSS": "Req 6.5.7 (XSS Flaws)",
+        "SOC_2": "CC6.1 (Logical Access Security)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "ANGULAR-BYPASS-SECURITY-TRUST": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "SI-10 (Input Validation)",
+        "PCI_DSS": "Req 6.5.7 (XSS Flaws)",
+        "SOC_2": "CC6.1 (Logical Access Security)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "SPRINGBOOT-NATIVE-QUERY-RISK": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "SI-10 (Input Validation)",
+        "PCI_DSS": "Req 6.5.1 (Injection Flaws)",
+        "SOC_2": "CC6.1 (Logical Access Security)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "CMMI-CAR-SWALLOWED-EXCEPTION": {
+        "ISO_27001": "A.8.28 (Secure Coding)",
+        "NIST_800_53": "SI-11 (Error Handling)",
+        "PCI_DSS": "Req 10.2 (Automated Audit)",
+        "SOC_2": "CC7.2 (System Monitoring)",
+        "GDPR": "Art 32 (Resilience & Reliability)",
+        "CMMI_V3": "CAR (Causal Analysis & Resolution Level 5)"
+    },
+    "CMMI-MSR-HARDCODED-SLEEP": {
+        "ISO_27001": "ISO 25010 (Maintainability)",
+        "NIST_800_53": "SC-5 (DoS Protection)",
+        "PCI_DSS": "Req 2.2 (System Hardening)",
+        "SOC_2": "CC7.2 (Monitoring)",
+        "GDPR": "Art 32 (Performance)",
+        "CMMI_V3": "MSR (Measurement & Performance Level 5)"
+    },
+    "CMMI-PQA-DEBT-TODO": {
+        "ISO_27001": "A.8.9 (Configuration Management)",
+        "NIST_800_53": "CM-6 (Configuration Settings)",
+        "PCI_DSS": "Req 6.5 (Software Quality)",
+        "SOC_2": "CC6.8 (Hardening)",
+        "GDPR": "Art 32 (Quality Control)",
+        "CMMI_V3": "PQA (Process Quality Assurance Level 5)"
+    },
+    "ORM-N-PLUS-ONE-QUERY": {
+        "ISO_27001": "ISO 25010 (Performance Efficiency)",
+        "NIST_800_53": "SC-5 (Denial of Service Protection)",
+        "PCI_DSS": "Req 2.2 (System Hardening)",
+        "SOC_2": "CC7.2 (Performance Monitoring)",
+        "GDPR": "Art 32 (Availability & Resilience)"
+    },
     "CMD-INJECTION": {
         "ISO_27001": "A.8.28 (Secure Coding)",
         "NIST_800_53": "SI-10 (Information Input Validation)",
@@ -30,6 +103,22 @@ COMPLIANCE_MAPPING_MATRIX = {
         "PCI_DSS": "Req 2.2 (System Hardening Standards)",
         "SOC_2": "CC6.8 (Software & System Hardening)",
         "GDPR": "Art 32 (Security of Processing)"
+    },
+
+    # Database Hardening & Security
+    "DB-NO-TLS-ENCRYPTION": {
+        "ISO_27001": "A.8.24 (Use of Cryptography)",
+        "NIST_800_53": "SC-8 (Transmission Confidentiality and Integrity)",
+        "PCI_DSS": "Req 4.1 (Protect Cardholder Data in Transit)",
+        "SOC_2": "CC6.6 (Transmission Encryption)",
+        "GDPR": "Art 32 (Encryption of Personal Data)"
+    },
+    "DB-DEFAULT-PORT-EXPOSED": {
+        "ISO_27001": "A.8.9 (Configuration Management)",
+        "NIST_800_53": "CM-6 (Configuration Settings)",
+        "PCI_DSS": "Req 2.2 (System Hardening)",
+        "SOC_2": "CC6.8 (System Hardening)",
+        "GDPR": "Art 32 (Technical Measures)"
     },
 
     # STRIDE & JWT Secrets

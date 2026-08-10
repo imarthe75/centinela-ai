@@ -243,12 +243,19 @@ def scan_repo(asset_id, repo):
 
 def scan_database(asset_id, endpoint):
     print(f"🗄️ [Auditor-Ext] Scanning SQL Database: {endpoint}")
-    # SQLMap for SQL DBs
+    # Run SQLMap for SQL DBs
     result = subprocess.run(['sqlmap', '-u', endpoint, '--batch', '--banner'], capture_output=True, text=True)
     if "banner:" in result.stdout.lower():
          log_vulnerability(asset_id, "DB-BANNER-LEAK", "Low", f"Database {endpoint} leaked version banner.")
     else:
         log_audit(asset_id, f"Verificación de base de datos {endpoint} completada. No se detectaron vulnerabilidades de inyección o fugas de información.")
+
+    # Deep DB Hardening (TLS, Ports, Misconfig)
+    try:
+        from auditors.auditor_db_hardening import audit_database_security
+        audit_database_security(asset_id, endpoint, "SQL")
+    except Exception as e:
+        print(f"⚠️ [Auditor-Ext] DB Hardening Audit error: {e}")
 
 def scan_nosql(asset_id, endpoint):
     print(f"🍃 [Auditor-Ext] Scanning NoSQL (Mongo/Cassandra): {endpoint}")
@@ -266,6 +273,13 @@ def scan_nosql(asset_id, endpoint):
     
     if not found_vulns:
         log_audit(asset_id, f"Escaneo NoSQL completado para {endpoint}. No se detectaron bases de datos expuestas sin autenticación.")
+
+    # Deep DB Hardening for NoSQL
+    try:
+        from auditors.auditor_db_hardening import audit_database_security
+        audit_database_security(asset_id, endpoint, "NoSQL")
+    except Exception as e:
+        print(f"⚠️ [Auditor-Ext] NoSQL Hardening Audit error: {e}")
 
 def scan_cache(asset_id, endpoint):
     print(f"⚡ [Auditor-Ext] Scanning Cache (Redis/Valkey): {endpoint}")
@@ -415,15 +429,32 @@ def handle_asset_discovered(data):
         scan_cache(asset_id, endpoint)
     elif a_type == 'Container':
         scan_container(asset_id, endpoint)
-    elif a_type == 'AppServer' or a_type == 'SERVER':
-        if endpoint == 'remote-agent':
-            log_audit(asset_id, "Wazuh Agent detectado pero no reporta IP aún. Escaneo externo omitido hasta que el agente sincronice su red.")
-        else:
-            scan_appserver(asset_id, endpoint)
-            # Cloud scan disabled for local Linux servers
-            pass
-    elif a_type in ['KUBERNETES', 'Datacenter']:
-        pass
+    elif a_type in ('AppServer', 'SERVER', 'KUBERNETES', 'Datacenter'):
+        scan_appserver(asset_id, endpoint)
+    elif a_type == 'AI-LLM-Endpoint':
+        try:
+            from auditors import auditor_llm_governance, auditor_medusa
+            auditor_llm_governance.run(asset_id, endpoint)
+            auditor_medusa.run(asset_id, endpoint)
+        except Exception as e:
+            print(f"⚠️ [Auditor-Ext] Error scanning AI-LLM-Endpoint: {e}")
+    elif a_type == 'API-Gateway':
+        try:
+            from auditors import auditor_shadow_api
+            auditor_shadow_api.run(asset_id, endpoint)
+            scan_url(asset_id, endpoint)
+        except Exception as e:
+            print(f"⚠️ [Auditor-Ext] Error scanning API-Gateway: {e}")
+    elif a_type == 'Cloud-Serverless':
+        try:
+            from auditors import auditor_cloud
+            auditor_cloud.run(asset_id, endpoint)
+        except Exception as e:
+            print(f"⚠️ [Auditor-Ext] Error scanning Cloud-Serverless: {e}")
+    elif a_type == 'Identity-IdP':
+        scan_url(asset_id, endpoint)
+    elif a_type == 'CICD-Pipeline':
+        scan_repo(asset_id, endpoint)
 
 def handle_osint_enrichment(data):
     a_type = data["type"]
@@ -458,7 +489,7 @@ def main():
     while True:
         try:
             with db_manager.get_db_cursor() as cur:
-                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter')")
+                cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter', 'AI-LLM-Endpoint', 'API-Gateway', 'CICD-Pipeline', 'Cloud-Serverless', 'Identity-IdP')")
                 assets = cur.fetchall()
             
             # Connection is returned to pool after context manager ends
@@ -489,7 +520,7 @@ def main():
                 time.sleep(10)
                 try:
                     with db_manager.get_db_cursor() as cur:
-                        cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter')")
+                        cur.execute("SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN ('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter', 'AI-LLM-Endpoint', 'API-Gateway', 'CICD-Pipeline', 'Cloud-Serverless', 'Identity-IdP')")
                         current_assets = cur.fetchall()
                     
                     previous_ids = {a[0] for a in assets}

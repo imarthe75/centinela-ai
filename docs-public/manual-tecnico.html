@@ -468,7 +468,8 @@
             <tr><td>Nuclei</td><td>—</td><td>Web / red</td><td>CVEs conocidos y malas configuraciones vía plantillas comunitarias</td></tr>
             <tr><td>Semgrep</td><td><code>semgrep</code></td><td>SAST — código fuente</td><td>Patrones de código inseguro, multi-lenguaje</td></tr>
             <tr><td>Motor SAST propio</td><td><code>sast-native</code></td><td>SAST — código fuente</td><td>eval() peligroso, inyección SQL/comandos, SSRF, secretos hardcodeados, complejidad cognitiva</td></tr>
-            <tr><td>Motor SCA propio</td><td><code>sca-native</code></td><td>Dependencias</td><td>Paquetes npm/pip vulnerables — consulta OSV.dev en vivo por cada paquete y versión exacta</td></tr>
+            <tr><td>Motor SCA propio</td><td><code>sca-native</code></td><td>Dependencias Multi-Lenguaje</td><td>Paquetes vulnerables npm, pip, Maven (Java `pom.xml`), Go (`go.mod`) y Packagist (PHP `composer.json`) — consulta OSV.dev en vivo por paquete y versión exacta con análisis de alcanzabilidad</td></tr>
+            <tr><td>Auditor IaC K8s & TF (propio)</td><td><code>iac-native</code></td><td>Infraestructura como Código</td><td>Contenedores privilegiados en Kubernetes (`privileged: true`), montajes hostPath inseguros y buckets S3/Security Groups públicos en Terraform (`.tf`)</td></tr>
             <tr><td>Motor de estándares propio</td><td><code>standards-audit</code></td><td>Calidad y arquitectura</td><td>ISO/IEC 25010 (mantenibilidad) y modelo de amenazas STRIDE</td></tr>
             <tr><td>Trivy / Grype / Syft</td><td><code>grype</code></td><td>Contenedores / SBOM</td><td>CVEs en imágenes Docker y sus capas de dependencias</td></tr>
             <tr><td>TruffleHog</td><td>—</td><td>Secretos</td><td>Credenciales y llaves filtradas en el historial de Git</td></tr>
@@ -480,6 +481,9 @@
             <tr><td>SpiderFoot</td><td><code>spiderfoot</code></td><td>OSINT</td><td>Subdominios, WHOIS, huella digital de tecnología</td></tr>
             <tr><td>BloodHound / Neo4j</td><td><code>bloodhound</code></td><td>Active Directory</td><td>Rutas de escalamiento de privilegios en el dominio — motor real, en espera de datos reales (ver Omni-XDR más abajo)</td></tr>
             <tr><td>CIS Benchmarks (propio)</td><td><code>cis-benchmark</code></td><td>Hardening de SO</td><td>Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH; automático cada 7 días por activo, o bajo demanda</td></tr>
+            <tr><td>Auditor DB Hardening (propio)</td><td><code>db-hardening</code></td><td>Seguridad & Hardening DB</td><td>Cifrado TLS en tránsito, verificación TDE (IaC), exposición de puertos por defecto y prueba de inyección SQL (SQLMap)</td></tr>
+            <tr><td>SAST Backend/Frontend DB (propio)</td><td><code>sast-native</code></td><td>Código Fuente GitLab</td><td>Inyecciones en ORMs (Django/Sequelize), credenciales DB en variables de entorno cliente (VITE/NEXT) y storage inseguro de tokens JWT</td></tr>
+            <tr><td>Auditor CMMI V3.0 Level 5 (propio)</td><td><code>cmmi-audit</code></td><td>Procesos & Calidad CMMI</td><td>Auditoría de prevención de defectos CAR, predictibilidad MSR y aseguramiento de calidad de software PQA</td></tr>
           </tbody>
         </table>
       </div>

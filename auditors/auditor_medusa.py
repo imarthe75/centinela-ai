@@ -156,6 +156,10 @@ def run_medusa_scan(repo_path, asset_id):
         print(f"❌ [Auditor-Medusa] Unexpected error during scan: {e}")
         return False
 
+def run(asset_id: int, repo_path: str = ""):
+    """Wrapper function for auditor_ext compatibility."""
+    return run_medusa_scan(repo_path, asset_id)
+
 if __name__ == "__main__":
     # Test scan if run directly
     if len(sys.argv) > 2:
