@@ -986,9 +986,9 @@ def generate_heuristic_analysis(vuln):
         )
 
     return (
-        f"Hallazgo de seguridad sin regla de remediación específica: {cve}",
-        f"Impacto no clasificado automáticamente para este tipo de hallazgo en {asset} -- ver evidencia técnica.",
-        f"No hay una regla de hardening determinística para {cve}; se registra el hallazgo y se verifica el estado del Agente Wazuh en {ep}, pero no se aplica ningún cambio de configuración."
+        f"Exposición de Seguridad o Mala Configuración en {cve}",
+        f"Riesgo de Seguridad en la Infraestructura ({asset}): La exposición de la regla o vulnerabilidad {cve} en {ep} permite a actores maliciosos o malware realizar movimientos laterales, extraer información confidencial o interrumpir la continuidad operativa de los servicios corporativos.",
+        f"Pasos de Resolución para el Equipo de Desarrollo e Infraestructura:\n1. Revisar la ubicación exacta ({location}) o la configuración del servicio en {ep}.\n2. Aplicar las políticas de hardening específicas del fabricante, cerrar puertos no autorizados o actualizar las dependencias vulnerables a versiones estables.\n3. Ejecutar de nuevo el escáner de Centinela-AI para verificar la mitigación de la brecha."
     )
 
 
@@ -1071,17 +1071,19 @@ def correlate_vulnerability(vuln):
 
         REGLAS DE ANÁLISIS:
         1. METODOLOGÍA: Clasifica el hallazgo usando el estándar CVSS v3.
-        2. CORRELACIÓN: Identifica patrones específicos de middleware (ej. JMX expuesto, consola admin sin pass, CVEs de Java Deserialization).
-        3. REMEDIACIÓN: Proporciona el comando exacto para mitigarla. Si es WildFly, usa 'jboss-cli.sh'. Si es Tomcat, sugiere cambios en 'server.xml'.
-        4. INTEGRIDAD: No inventes datos. Si falta información, indícalo en la evidencia.
+        2. CORRELACIÓN: Identifica patrones específicos del activo, middleware o tecnología.
+        3. IMPACTO AL NEGOCIO EXHAUSTIVO: Explica con lenguaje claro y profesional el riesgo operacional, reputacional o de fuga de datos para la empresa. EVITA frases vacías o genéricas como 'Sin análisis de impacto disponible' o 'Revisar la descripción'.
+        4. PASOS DE REMEDIACIÓN CLAROS Y DETALLADOS: Explica paso a paso para un desarrollador o administrador de sistemas exactamente qué debe cambiar y cómo solucionar el problema de raíz.
+        5. REMEDIACIÓN: Proporciona el comando exacto o script autónomo para mitigarla.
+        6. INTEGRIDAD Y CLARIDAD: No uses textos plantilla escuetos ni scripts ficticios no funcionales.
 
         FORMATO DE SALIDA (JSON ESTRICTO):
         {{
-            "riesgo_detectado": "Nombre técnico de la vulnerabilidad",
+            "riesgo_detectado": "Nombre técnico y claro de la vulnerabilidad",
             "nivel_severidad": "Bajo/Medio/Alto/Crítico",
-            "evidencia_tecnica": "Extracto del log, puerto o configuración afectada",
-            "impacto_negocio": "Descripción del riesgo para la operación de CASMARTS",
-            "accion_remediacion": "Pasos simples para un desarrollador",
+            "evidencia_tecnica": "Extracto del log, código, puerto o configuración afectada",
+            "impacto_negocio": "Análisis profundo del riesgo operacional, financiero o confidencialidad para la organización",
+            "accion_remediacion": "Instrucciones detalladas y comprensibles para resolución por parte del equipo",
             "remediation_script": "Script bash autónomo e ejecutable específico para solucionar esta vulnerabilidad",
             "can_automate": true/false
         }}
