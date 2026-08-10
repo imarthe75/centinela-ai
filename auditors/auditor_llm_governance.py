@@ -74,3 +74,9 @@ def run_llm_governance_audit(target_dir: str = "/opt/centinela-ai") -> List[Dict
         print(f"⚠️ [LLM-Auditor] Could not log findings to DB: {db_err}")
 
     return all_findings
+
+
+def run(asset_id: int = None, endpoint: str = "") -> List[Dict[str, Any]]:
+    """Wrapper function for auditor_ext compatibility."""
+    print(f"🤖 [Auditor-LLM-Governance] Auditing AI/LLM endpoint or codebase: {endpoint}")
+    return run_llm_governance_audit()

@@ -107,8 +107,16 @@ class GitLabIntegrator:
             sast_findings = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir, asset_id=asset_id)
             sca_findings = auditor_sca_dependencies.run_sca_audit(target_dir, asset_id=asset_id)
             std_findings = auditor_compliance_standards.run_compliance_standards_audit(target_dir, asset_id=asset_id)
+            
+            try:
+                from auditors import auditor_iac_k8s, auditor_cmmi_v3
+                iac_findings = auditor_iac_k8s.run_iac_scan(target_dir)
+                cmmi_findings = auditor_cmmi_v3.run_cmmi_audit(target_dir)
+            except Exception:
+                iac_findings = []
+                cmmi_findings = []
 
-            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings)
+            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings)
             summary["scanned_projects"] += 1
             summary["total_vulnerabilities"] += total_findings
             summary["projects_breakdown"].append({

@@ -215,6 +215,52 @@ def audit_package_json(file_path: str, content: str) -> List[Dict[str, Any]]:
     return _findings_from_osv(deps_with_lines, "npm", "package.json", file_path)
 
 
+def audit_pom_xml(file_path: str, content: str) -> List[Dict[str, Any]]:
+    """Audits Java pom.xml Maven manifest against OSV.dev (Maven ecosystem)."""
+    deps_with_lines: Dict[str, Tuple[str, int]] = {}
+    # Simple regex XML parsing for <dependency> blocks
+    artifacts = re.findall(r'<dependency>[\s\S]*?<groupId>(.*?)</groupId>[\s\S]*?<artifactId>(.*?)</artifactId>[\s\S]*?(?:<version>(.*?)</version>)?[\s\S]*?</dependency>', content)
+    for idx, (group, artifact, version) in enumerate(artifacts, 1):
+        pkg_name = f"{group.strip()}:{artifact.strip()}".lower()
+        clean_version = version.strip() if version else "1.0.0"
+        deps_with_lines[pkg_name] = (clean_version, idx)
+
+    return _findings_from_osv(deps_with_lines, "Maven", "pom.xml", file_path)
+
+
+def audit_go_mod(file_path: str, content: str) -> List[Dict[str, Any]]:
+    """Audits Go go.mod manifest against OSV.dev (Go ecosystem)."""
+    deps_with_lines: Dict[str, Tuple[str, int]] = {}
+    for idx, line in enumerate(content.splitlines(), 1):
+        clean_line = line.strip()
+        if clean_line.startswith("require") or (not clean_line.startswith("//") and len(clean_line.split()) >= 2):
+            parts = clean_line.replace("require", "").strip().split()
+            if len(parts) >= 2 and "/" in parts[0]:
+                pkg_name = parts[0].strip()
+                version = parts[1].strip().lstrip("v")
+                deps_with_lines[pkg_name.lower()] = (version, idx)
+
+    return _findings_from_osv(deps_with_lines, "Go", "go.mod", file_path)
+
+
+def audit_composer_json(file_path: str, content: str) -> List[Dict[str, Any]]:
+    """Audits PHP composer.json manifest against OSV.dev (Packagist ecosystem)."""
+    try:
+        data = json.loads(content)
+        raw_deps = {**data.get("require", {}), **data.get("require-dev", {})}
+    except Exception:
+        return []
+
+    deps_with_lines: Dict[str, Tuple[str, int]] = {}
+    for pkg_name, version in raw_deps.items():
+        if pkg_name.lower() == "php" or "/" not in pkg_name:
+            continue
+        clean_version = re.sub(r'^[v\^~>=<\s]+', '', str(version))
+        deps_with_lines[pkg_name.lower()] = (clean_version, 1)
+
+    return _findings_from_osv(deps_with_lines, "Packagist", "composer.json", file_path)
+
+
 def check_reachability(target_dir: str, package: str, manifest: str) -> str:
     """
     Real (if simplified) reachability check: is this dependency actually imported anywhere in
@@ -282,6 +328,12 @@ def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -
                     all_findings.extend(audit_requirements_txt(full_path, content))
                 elif file == "package.json":
                     all_findings.extend(audit_package_json(full_path, content))
+                elif file == "pom.xml":
+                    all_findings.extend(audit_pom_xml(full_path, content))
+                elif file == "go.mod":
+                    all_findings.extend(audit_go_mod(full_path, content))
+                elif file == "composer.json":
+                    all_findings.extend(audit_composer_json(full_path, content))
             except Exception as e:
                 print(f"⚠️ [SCA-Auditor] Could not read {full_path}: {e}")
 

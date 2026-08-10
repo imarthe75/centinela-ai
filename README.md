@@ -68,7 +68,15 @@ Auditoría y control de seguridad específico para aplicaciones que consumen LLM
 - **Detección de Shadow APIs**: Escaneo comparativo entre el código fuente (rutas FastAPI, Express, Spring) y la documentación oficial declarada (`openapi.json` / Swagger) para detectar endpoints "fantasma" expuestos sin documentación.
 - **API Drift & Parametrización Insegura**: Identificación de parámetros no documentados o esquemas de respuesta que filtran campos internos del sistema.
 
-### 6. 📜 Mapeo de Estándares Maestros de Auditoría y Cumplimiento Normativo
+### 6. 🗄️ Auditoría y Hardening de Bases de Datos (SQL, NoSQL, Cache)
+Centinela-AI audita la superficie de persistencia (PostgreSQL, MySQL/MariaDB, MongoDB, Cassandra, Redis, Valkey) combinando análisis de código, perimetral, infraestructura como código y el módulo nativo `auditor_db_hardening.py`:
+- **Inyección de SQL (SAST & DAST)**: Detección estática en código AST y pruebas activas en tiempo de ejecución vía SQLMap.
+- **Cifrado TLS/SSL en Tránsito**: Inspección del puerto de la base de datos para garantizar handshake seguro y evitar transmisión de datos en texto plano (`DB-NO-TLS-ENCRYPTION`).
+- **Cifrado TDE en Reposo (IaC / Nube)**: Verificación mediante Checkov y Prowler de cifrado de almacenamiento (`storage_encrypted=True`) y llaves KMS.
+- **Puertos Predeterminados & Exposición**: Alertas sobre exposición abierta de puertos por defecto (`5432`, `3306`, `27017`, `6379`) y bases de datos anónimas sin autenticación.
+- **Secretos & Connection Strings**: Detección de cadenas de conexión embebidas con contraseñas en código o repositorios Git.
+
+### 7. 📜 Mapeo de Estándares Maestros de Auditoría y Cumplimiento Normativo
 Cada hallazgo detectado en el ecosistema es mapeado de forma automática hacia controles oficiales y matrices de amenaza:
 
 | Estándar / Marco | Controles y Reglas Auditadas |
@@ -80,6 +88,7 @@ Cada hallazgo detectado en el ecosistema es mapeado de forma automática hacia c
 | **PCI-DSS v4.0** | Requerimientos 2.2 (Hardening), 6.5.1 (Injection Flaws), 8.3 (Autenticación Fuerte), 10.2 (Auditoría Automatizada). |
 | **SOC 2 Type II** | Criterios CC6.1 (Seguridad Acceso Lógico), CC6.8 (Hardening de Sistemas), CC7.2 (Monitoreo de Infraestructura). |
 | **GDPR** | Artículos 30 (Registro de Actividades de Tratamiento) y 32 (Seguridad del Tratamiento y Cifrado PII). |
+| **CMMI® V3.0 (Level 5)** | Áreas de Práctica CAR (Causal Analysis & Resolution - Prevención de Defectos), MSR (Measurement & Performance - Predictibilidad) y PQA (Process Quality Assurance). |
 
 ---
 
