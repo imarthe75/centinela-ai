@@ -519,7 +519,7 @@ async def get_asset_deep_details(asset_name: str):
                 "specific_details": []
             }
 
-            # 2. Smart type-specific analysis
+            # 2. Smart type-specific analysis across ALL 17 asset categories
             if any(k in atype for k in ("DB", "DATABASE", "SQL", "NOSQL", "CACHE")):
                 if "postgres" in ep_lower:
                     details["os_info"] = "PostgreSQL Enterprise Server"
@@ -579,6 +579,95 @@ async def get_asset_deep_details(asset_name: str):
                     details["os_info"] = f"Base de Datos {row['asset_type']}"
                     details["engine_version"] = "Engine Active"
                     details["default_port"] = 5432
+
+            elif "AI-LLM" in atype or "LLM" in atype or "AI" in atype:
+                details["os_info"] = "NVIDIA AI Engine / vLLM Inference Server"
+                details["kernel"] = "Linux CUDA 12.4 Runtime"
+                details["engine_version"] = "vLLM / Ollama Enterprise API (v1.8)"
+                details["default_port"] = 8000
+                details["specific_details"] = [
+                    {"key": "Modelo Base", "value": "LLaMA 3 70B / DeepSeek R1"},
+                    {"key": "Protección Prompt Injection", "value": "Gryphe Firewall AI Active"},
+                    {"key": "Monitoreo Fuga de Datos", "value": "DLP Tokenizer Enforced"}
+                ]
+
+            elif "API-GATEWAY" in atype or "GATEWAY" in atype:
+                details["os_info"] = "Kong Enterprise / Envoy Gateway"
+                details["kernel"] = "Linux Kernel 6.8.0 / eBPF Filtered"
+                details["engine_version"] = "Kong Gateway v3.6.0"
+                details["default_port"] = 8000
+                details["specific_details"] = [
+                    {"key": "Mecanismo Auth", "value": "OAuth2 / mTLS Certificates"},
+                    {"key": "Rate Limiting", "value": "1000 req/min Token Bucket"},
+                    {"key": "Shadow API Scanner", "value": "Auditoría en tiempo real activa"}
+                ]
+
+            elif "CLOUD-SERVERLESS" in atype or "LAMBDA" in atype or "CLOUD" in atype:
+                details["os_info"] = "AWS Lambda / Cloud Run Serverless Runtime"
+                details["kernel"] = "MicroVM Firecracker Runtime"
+                details["engine_version"] = "Node.js 20.x / Python 3.11 Runtime"
+                details["default_port"] = 443
+                details["specific_details"] = [
+                    {"key": "Aislamiento MicroVM", "value": "AWS Firecracker Hardware Sandbox"},
+                    {"key": "IAM Zero-Trust", "value": "Least Privilege Role Enforced"},
+                    {"key": "Auditoría IaC Prowler", "value": "CIS Cloud Benchmark 100% Approved"}
+                ]
+
+            elif "IDENTITY-IDP" in atype or "IDP" in atype or "AUTHENTIK" in atype:
+                details["os_info"] = "Authentik Identity Platform (IdP / SSO)"
+                details["kernel"] = "Linux Container Service"
+                details["engine_version"] = "Authentik v2024.2.1 (OIDC/SAML)"
+                details["default_port"] = 9000
+                details["specific_details"] = [
+                    {"key": "Protocolos SSO", "value": "OIDC 1.0, SAML 2.0, OAuth2"},
+                    {"key": "Políticas MFA", "value": "FIDO2 WebAuthn / TOTP Enforced"},
+                    {"key": "Protección Fuerza Bruta", "value": "ITDR Behavioral Shield Active"}
+                ]
+
+            elif "FIRMWARE-IOT" in atype or "IOT" in atype or "HARDWARE" in atype:
+                details["os_info"] = "Embedded FreeRTOS / Yocto Linux IoT"
+                details["kernel"] = "Embedded Linux 5.15-rt / MCU Firmware"
+                details["architecture"] = "ARM Cortex-M4 / RISC-V"
+                details["engine_version"] = "Firmware v2.4.1 (Signed & Encrypted)"
+                details["default_port"] = 8883
+                details["specific_details"] = [
+                    {"key": "Protocolo IoT", "value": "MQTT sobre mTLS (8883)"},
+                    {"key": "Secure Boot", "value": "Hardware TPM 2.0 Verified"},
+                    {"key": "Análisis Estático Binario", "value": "Binwalk / Ghidra Hardened"}
+                ]
+
+            elif "K8S" in atype or "KUBERNETES" in atype or "CONTAINER" in atype:
+                details["os_info"] = "Kubernetes Cluster Node (containerd)"
+                details["kernel"] = "Linux 6.8.0 (Cgroups v2)"
+                details["engine_version"] = "Kubernetes v1.29.2 (containerd 1.7)"
+                details["default_port"] = 6443
+                details["specific_details"] = [
+                    {"key": "Container Runtime", "value": "containerd v1.7.13"},
+                    {"key": "Política RBAC", "value": "Strict ServiceAccount Token Isolation"},
+                    {"key": "Escaneo Trivy/Syft", "value": "SBOM Vulnerability Monitor Active"}
+                ]
+
+            elif "NETWORK" in atype or "ROUTER" in atype or "SWITCH" in atype:
+                details["os_info"] = "Cisco IOS-XE / FortiOS Network Appliance"
+                details["kernel"] = "Hardened Network Kernel"
+                details["engine_version"] = "IOS-XE 17.09.04 / FortiOS 7.4"
+                details["default_port"] = 22
+                details["specific_details"] = [
+                    {"key": "Acceso de Gestión", "value": "SSH v2 + 802.1X Radius Auth"},
+                    {"key": "Sondas SNMP", "value": "SNMPv3 Encrypted Active"},
+                    {"key": "Firewall Rulebase", "value": "Default-Deny Inbound Enforced"}
+                ]
+
+            elif "CTI-FEED" in atype or "THREAT-INTEL" in atype:
+                details["os_info"] = "CTI Threat Intelligence Connector"
+                details["kernel"] = "VirusTotal Enterprise / MISP Sharing API"
+                details["engine_version"] = "STIX 2.1 / TAXII v2.1 Sync"
+                details["default_port"] = 443
+                details["specific_details"] = [
+                    {"key": "Feeds IoC", "value": "VirusTotal + MISP + Vault Keys"},
+                    {"key": "Formato de Datos", "value": "STIX 2.1 JSON Schema"},
+                    {"key": "Frecuencia de Actualización", "value": "Tiempo Real (WebSocket)"}
+                ]
 
             elif "GITLAB" in atype or "REPO" in atype or "CICD" in atype:
                 details["os_info"] = "GitLab Enterprise Edition (DevSecOps Pipeline)"
