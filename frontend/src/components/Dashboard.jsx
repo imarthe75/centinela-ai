@@ -3496,24 +3496,50 @@ export default function Dashboard() {
                                     </div>
                                 )}
 
-                                {/* Matriz de Cumplimiento CMMI / ISO 27001 / NIST */}
-                                <div className="space-y-3">
-                                    <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Matriz de Cumplimiento Estándar (ISO 27001 / CMMI Nivel 3-5 / NIST CSF)</p>
+                                {/* Bloque de Cumplimiento ISO por Separado */}
+                                <div className="space-y-2">
+                                    <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest flex items-center gap-1.5">
+                                        <ShieldCheck size={12} /> Cumplimiento Estándares ISO (Seguridad & Calidad de Software)
+                                    </p>
                                     <div className="grid grid-cols-3 gap-2">
-                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/20 text-center">
-                                            <span className="text-[8px] text-slate-500 font-black uppercase block">ISO 27001:2022</span>
-                                            <span className="text-emerald-400 font-bold text-xs">✓ Control A.8.8</span>
-                                            <span className="text-[8px] text-slate-400 block mt-0.5">Gestión de Vulnerabilidades</span>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 27001:2022</span>
+                                            <span className="text-emerald-400 font-bold text-xs">✓ Control A.8.8 & A.8.16</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Gestión de Vulnerabilidades y Monitoreo</span>
                                         </div>
-                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/20 text-center">
-                                            <span className="text-[8px] text-slate-500 font-black uppercase block">CMMI v2.0 (Level 3-5)</span>
-                                            <span className="text-indigo-400 font-bold text-xs">✓ CAR / SAM</span>
-                                            <span className="text-[8px] text-slate-400 block mt-0.5">Causal Analysis & Security</span>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 25010 / 25001</span>
+                                            <span className="text-emerald-400 font-bold text-xs">✓ Calidad & Mantenibilidad</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Rendimiento, Seguridad & Cero Deuda</span>
                                         </div>
-                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-cyan-500/20 text-center">
-                                            <span className="text-[8px] text-slate-500 font-black uppercase block">NIST CSF 2.0</span>
-                                            <span className="text-cyan-400 font-bold text-xs">✓ PR.PS-01 / DE.CM</span>
-                                            <span className="text-[8px] text-slate-400 block mt-0.5">Protección & Monitoreo</span>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 27017</span>
+                                            <span className="text-emerald-400 font-bold text-xs">✓ Seguridad Cloud</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Protección de Datos & Aislamiento</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Bloque de Cumplimiento CMMI v2.0 por Separado */}
+                                <div className="space-y-2">
+                                    <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-1.5">
+                                        <CheckCircle2 size={12} /> Cumplimiento Modelo CMMI v2.0 (Nivel 3 & Nivel 5)
+                                    </p>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI CAR (Level 5)</span>
+                                            <span className="text-indigo-400 font-bold text-xs">✓ Causal Analysis</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Análisis de Causa Raíz por IA</span>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI SAM (Level 3-5)</span>
+                                            <span className="text-indigo-400 font-bold text-xs">✓ Supplier Management</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Auditoría de Proveedores & SCA</span>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
+                                            <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI MSR & PQA (Level 5)</span>
+                                            <span className="text-indigo-400 font-bold text-xs">✓ Quality Assurance</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Métricas & Calidad de Proceso</span>
                                         </div>
                                     </div>
                                 </div>
