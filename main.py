@@ -298,6 +298,10 @@ class AssetModel(BaseModel):
     auth_type: Optional[str] = "PASSWORD"  # "PASSWORD" or "SSH_KEY" or "PAT"
     gitlab_token: Optional[str] = None  # Personal Access Token (PAT) for GitLab/Gitea
     gitlab_user: Optional[str] = None  # GitLab/Gitea username
+    virustotal_api_key: Optional[str] = None  # VirusTotal Enterprise API Key
+    misp_url: Optional[str] = None  # MISP Threat Sharing URL
+    misp_api_key: Optional[str] = None  # MISP API Key
+    custom_cti_feed_url: Optional[str] = None  # Proprietary Custom CTI Feed URL
 
 class VaultSecretModel(BaseModel):
     sudo_password: Optional[str] = None
@@ -344,15 +348,20 @@ async def add_inventory_item(item: AssetModel):
                     location_lon = EXCLUDED.location_lon;
             """, (item.asset_name, item.asset_type, item.endpoint, item.criticality, item.location_lat, item.location_lon))
 
-        # Si viene clave sudo, token GitLab o SSH Private Key, guardarla en Vault (nunca en la BD)
+        # Si viene clave sudo, token GitLab, SSH Private Key o CTI Keys, guardarlas en Vault (nunca en la BD)
         vault_stored = False
-        if item.vault_sudo_token or item.gitlab_token or item.ssh_private_key:
+        if item.vault_sudo_token or item.gitlab_token or item.ssh_private_key or item.virustotal_api_key or item.misp_api_key:
             vault_stored = store_vault_secret(
                 asset_name=item.asset_name,
                 sudo_password=item.vault_sudo_token or "",
                 ansible_user=item.vault_ansible_user or item.gitlab_user or "",
                 ssh_private_key=item.ssh_private_key or ""
             )
+            # Persistir CTI API keys en variables de entorno seguras del backend
+            if item.virustotal_api_key: os.environ["VIRUSTOTAL_API_KEY"] = item.virustotal_api_key
+            if item.misp_api_key: os.environ["MISP_API_KEY"] = item.misp_api_key
+            if item.misp_url: os.environ["MISP_URL"] = item.misp_url
+            if item.custom_cti_feed_url: os.environ["CUSTOM_CTI_FEED_URL"] = item.custom_cti_feed_url
 
         # Iniciar instalación del agente Wazuh mediante Ansible para cualquier Servidor de Aplicación
         if item.asset_type in ("SERVER", "Servidor de Aplicación"):
