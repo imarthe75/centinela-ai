@@ -463,7 +463,7 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      // 1. Fetch essential data to render the dashboard immediately
+      // Fetch core datasets in parallel
       const [resStats, resVulns, resMap, resAlerts, resRisk, resInv, resRem] = await Promise.all([
         axios.get(`${API_BASE}/stats/extended`),
         axios.get(`${API_BASE}/stats`),
@@ -482,9 +482,9 @@ export default function Dashboard() {
       setInventory(Array.isArray(resInv.data) ? resInv.data : [])
       setRemediationLog(Array.isArray(resRem.data) ? resRem.data : [])
       setLastSync(new Date())
-      setLoading(false)
+      setLoading(false) // Release full UI lock immediately after core metrics
 
-      // 2. Fetch secondary metrics asynchronously in background without blocking UI
+      // Secondary async load for heavy metrics
       Promise.all([
         axios.get(`${API_BASE}/health`),
         axios.get(`${API_BASE}/stats/daily-detections`),
