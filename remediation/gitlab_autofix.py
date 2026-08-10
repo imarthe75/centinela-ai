@@ -147,9 +147,41 @@ def patch_dependency_bump(repo_dir: str, vuln: Dict[str, Any]):
     return True, f"{package} actualizado a {fixed_version} en {manifest}."
 
 
+def patch_cmd_injection_shell_true(repo_dir: str, vuln: Dict[str, Any]):
+    """
+    Safely fixes subprocess execution with shell=True by converting string commands
+    or shell=True kwarg calls to safe list-based arguments without shell invocation.
+    """
+    file_hint = (vuln.get("url_path") or "").split(":")[0]
+    if not file_hint or not os.path.exists(os.path.join(repo_dir, file_hint)):
+        return False, "No se encontró el archivo específico en el repositorio para corregir shell=True."
+
+    target_file = os.path.join(repo_dir, file_hint)
+    with open(target_file, "r") as f:
+        content = f.read()
+
+    # Regex replacement for shell=True in subprocess calls
+    new_content, n = re.subn(
+        r'(subprocess\.(?:run|Popen|call|check_output)\s*\([^)]*),\s*shell\s*=\s*True',
+        r'\1',
+        content
+    )
+    if n == 0:
+        # Try replacing shell=True preceded by whitespace or comma
+        new_content, n = re.subn(r'shell\s*=\s*True', 'shell=False', content)
+
+    if n == 0:
+        return False, "No se encontró coincidencia directa de shell=True en el archivo."
+
+    with open(target_file, "w") as f:
+        f.write(new_content)
+    return True, f"Se eliminó shell=True en {file_hint} convirtiendo la ejecución de subprocess a modo seguro."
+
+
 DETERMINISTIC_PATCHERS = {
     "DOCKER-MISSING-NON-ROOT-USER": patch_dockerfile_non_root_user,
     "DOCKER-ROOT-USER": patch_dockerfile_non_root_user,
+    "CMD-INJECTION-SHELL-TRUE": patch_cmd_injection_shell_true,
 }
 
 

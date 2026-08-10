@@ -605,8 +605,8 @@ fi
         body = f"""# {cve} es un hallazgo de código fuente en el repositorio {asset}, no de infraestructura.
 echo 'ℹ️ Ubicación exacta: {location}'
 echo 'ℹ️ No hay un host remoto que "endurecer" -- la corrección real es un cambio de código en el repositorio.'
-echo 'Si esta regla tiene parche automático soportado (Dockerfile USER, versión de dependencia), Sentinel abrirá un Merge Request al aprobar.'
-echo 'Si no, aplica manualmente el cambio indicado en la descripción del hallazgo en {location} y aprueba luego para marcarlo resuelto.'
+echo 'Al aprobar en SOAR, Centinela clonará el repositorio, creará una rama de corrección y abrirá un Merge Request en GitLab.'
+echo 'Soporta parches automáticos para Dockerfile USER, actualización de dependencias SCA y prevención de Command Injection (shell=True).'
 """
     elif 'PORT' in cve or 'OPEN' in cve or 'EXPOSED' in cve or 'NET' in cve:
         body = f"""# Remediar exposición de puertos en {ep}
