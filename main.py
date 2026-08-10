@@ -296,23 +296,89 @@ class AssetModel(BaseModel):
     vault_ansible_user: Optional[str] = None  # Optional ansible_user override
     ssh_private_key: Optional[str] = None  # SSH Private Key → stored in Vault, never persisted in DB
     auth_type: Optional[str] = "PASSWORD"  # "PASSWORD" or "SSH_KEY" or "PAT"
+    agent_mode: Optional[str] = "AGENT"  # "AGENT" (install Wazuh) or "PING_ONLY" (no credentials needed)
     gitlab_token: Optional[str] = None  # Personal Access Token (PAT) for GitLab/Gitea
     gitlab_user: Optional[str] = None  # GitLab/Gitea username
     virustotal_api_key: Optional[str] = None  # VirusTotal Enterprise API Key
     misp_url: Optional[str] = None  # MISP Threat Sharing URL
     misp_api_key: Optional[str] = None  # MISP API Key
     custom_cti_feed_url: Optional[str] = None  # Proprietary Custom CTI Feed URL
+    ipv6_endpoint: Optional[str] = None  # Optional IPv6 address for dual-stack assets
 
 class VaultSecretModel(BaseModel):
     sudo_password: Optional[str] = None
     ssh_private_key: Optional[str] = None
     ansible_user: Optional[str] = None
 
+class SecurityIntegrationModel(BaseModel):
+    virustotal_api_key: Optional[str] = None
+    misp_url: Optional[str] = None
+    misp_api_key: Optional[str] = None
+    qualys_api_url: Optional[str] = None
+    qualys_username: Optional[str] = None
+    qualys_password: Optional[str] = None
+    tenable_access_key: Optional[str] = None
+    tenable_secret_key: Optional[str] = None
+
+app = FastAPI(title="Centinela-AI Security API")
+
+@app.post("/api/config/security-integrations")
+async def update_security_integrations(config: SecurityIntegrationModel):
+    """
+    Stores API keys and credentials for commercial security solutions
+    (VirusTotal, MISP, Qualys Cloud Platform, Tenable.io) in HashiCorp Vault.
+    """
+    client = get_vault_client()
+    stored_items = []
+    if client:
+        try:
+            payload = config.dict(exclude_none=True)
+            client.secrets.kv.v2.create_or_update_secret(
+                path="casmarts/integrations/commercial_scanners",
+                secret=payload,
+                mount_point="secret"
+            )
+            stored_items = list(payload.keys())
+        except Exception as e:
+            print(f"⚠️ [Vault] Security integrations store warning: {e}")
+
+    return {
+        "status": "success",
+        "message": "Configuración de herramientas de seguridad comerciales actualizada correctamente.",
+        "vault_stored": len(stored_items) > 0,
+        "active_integrations": [k for k, v in config.dict().items() if v]
+    }
+
+@app.get("/api/config/security-integrations")
+async def get_security_integrations():
+    """Returns active commercial integration status without leaking raw keys."""
+    client = get_vault_client()
+    integrations = {
+        "virustotal_configured": False,
+        "misp_configured": False,
+        "qualys_configured": False,
+        "tenable_configured": False,
+        "misp_url": ""
+    }
+    if client:
+        try:
+            res = client.secrets.kv.v2.read_secret_version(
+                path="casmarts/integrations/commercial_scanners",
+                mount_point="secret"
+            )
+            data = res.get("data", {}).get("data", {})
+            integrations["virustotal_configured"] = bool(data.get("virustotal_api_key"))
+            integrations["misp_configured"] = bool(data.get("misp_api_key"))
+            integrations["qualys_configured"] = bool(data.get("qualys_username") and data.get("qualys_password"))
+            integrations["tenable_configured"] = bool(data.get("tenable_access_key") and data.get("tenable_secret_key"))
+            integrations["misp_url"] = data.get("misp_url", "")
+        except Exception:
+            pass
+    return integrations
+
 class ManualRemediationModel(BaseModel):
     solution: str
     reason: str
-
-app = FastAPI(title="Centinela-AI Security API")
 
 @app.get("/api/manual")
 async def technical_manual():
@@ -420,7 +486,8 @@ async def ping_asset(asset_name: str):
                 raise HTTPException(status_code=404, detail=f"Activo '{asset_name}' no encontrado")
             
             target = row["endpoint"] or ""
-            clean_host = target.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
+            # Strip protocol and path, extract host/IP cleanly
+            clean_host = target.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0].strip()
             if not clean_host:
                 clean_host = asset_name
 
@@ -428,12 +495,19 @@ async def ping_asset(asset_name: str):
             is_online = False
             latency = None
 
-            # Try TCP socket check across common application & git ports (22, 80, 443, 8080, 8443, 445)
-            for p in [80, 443, 22, 8080, 8443, 445]:
+            # 1. Resolve host IP if clean_host is hostname
+            resolved_ip = clean_host
+            try:
+                resolved_ip = socket.gethostbyname(clean_host)
+            except Exception:
+                pass
+
+            # 2. Try TCP socket check across common application, DB & Git ports
+            for p in [80, 443, 22, 8080, 8443, 5432, 3306, 1433, 1521, 445]:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(1.5)
-                    s.connect((clean_host, p))
+                    s.settimeout(1.2)
+                    s.connect((resolved_ip, p))
                     s.close()
                     is_online = True
                     latency = round((time.time() - t0) * 1000, 1)
@@ -441,19 +515,19 @@ async def ping_asset(asset_name: str):
                 except Exception:
                     pass
 
-            # Try HTTP/HTTPS request verification for web/GitLab endpoints
+            # 3. HTTP/HTTPS GET fallback for web/GitLab/APIs
             if not is_online:
                 try:
                     t_req = time.time()
-                    url = target if target.startswith("http") else f"https://{clean_host}"
-                    res = requests.head(url, timeout=2.0, verify=False)
+                    url = target if target.startswith("http") else f"http://{clean_host}"
+                    res = requests.get(url, timeout=2.0, verify=False)
                     if res.status_code < 500:
                         is_online = True
                         latency = round((time.time() - t_req) * 1000, 1)
                 except Exception:
                     try:
                         t_ping = time.time()
-                        proc = subprocess.run(["ping", "-c", "1", "-W", "2", clean_host], capture_output=True, text=True)
+                        proc = subprocess.run(["ping", "-c", "1", "-W", "2", resolved_ip], capture_output=True, text=True)
                         if proc.returncode == 0:
                             is_online = True
                             latency = round((time.time() - t_ping) * 1000, 1)
@@ -714,6 +788,378 @@ async def get_asset_deep_details(asset_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/inventory/{asset_name:path}/agent-installer")
+async def get_agent_installer(asset_name: str, platform: str = "linux"):
+    """
+    Generates a downloadable Wazuh agent installation script for the given asset.
+    - platform=linux  → returns a .sh bash script
+    - platform=windows → returns a .ps1 PowerShell script
+    Embeds the Wazuh Manager IP and a one-time registration token automatically.
+    """
+    from fastapi.responses import PlainTextResponse
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT asset_name, asset_type, endpoint FROM public.infra_inventory WHERE asset_name = %s LIMIT 1", (asset_name,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Activo '{asset_name}' no encontrado")
+
+        manager_ip = get_wazuh_manager_ip()
+        atype = str(row.get("asset_type", "")).upper()
+        asset_endpoint = str(row.get("endpoint", ""))
+
+        # Determine platform from asset type if not specified
+        is_windows = ("WINDOWS" in atype) or (platform.lower() == "windows")
+        is_macos = ("MAC" in atype) or ("APPLE" in atype) or (platform.lower() == "macos")
+        is_conf = (platform.lower() == "conf") or (platform.lower() == "ossec.conf")
+
+        if is_conf:
+            # Downloadable ossec.conf file pre-configured for the asset
+            conf_content = f"""<ossec_config>
+  <client>
+    <server>
+      <address>{manager_ip}</address>
+      <port>1514</port>
+      <protocol>tcp</protocol>
+    </server>
+    <config-profile>ubuntu, ubuntu22, ubuntu22.04</config-profile>
+    <notify_time>10</notify_time>
+    <time-reconnect>60</time-reconnect>
+    <auto_restart>yes</auto_restart>
+    <crypto_method>aes</crypto_method>
+  </client>
+
+  <client_buffer>
+    <disabled>no</disabled>
+    <queue_size>5000</queue_size>
+    <events_per_second>500</events_per_second>
+  </client_buffer>
+
+  <logging>
+    <log_format>plain</log_format>
+  </logging>
+</ossec_config>
+"""
+            from fastapi.responses import Response
+            return Response(
+                content=conf_content,
+                media_type="application/xml",
+                headers={
+                    "Content-Disposition": f'attachment; filename="ossec-{asset_name}.conf"',
+                    "X-Asset-Name": asset_name,
+                    "X-Manager-IP": manager_ip
+                }
+            )
+
+        if is_macos:
+            # macOS script (zsh/bash) for Apple Silicon & Intel
+            now_iso = datetime.now().isoformat()
+            script_header = (
+                "#!/usr/bin/env zsh\n"
+                "# ============================================================\n"
+                "#  Centinela AI — Instalador de Agente Wazuh para macOS\n"
+                "#  Activo: " + asset_name + "\n"
+                "#  Tipo:   " + atype + "\n"
+                "#  Generado: " + now_iso + "\n"
+                "# ============================================================\n"
+                "#  EJECUTAR EN TERMINAL:  sudo zsh centinela-wazuh-install-" + asset_name + ".sh\n"
+                "#  Wazuh Manager IP:      " + manager_ip + "\n"
+                "#  Wazuh Manager Puerto:  1514 (TCP/UDP)\n"
+                "# ============================================================\n"
+            )
+            script_body = r"""
+set -e
+
+MANAGER_IP="_MANAGER_IP_"
+AGENT_NAME="_AGENT_NAME_"
+WAZUH_VERSION="4.7.4-1"
+
+echo "\033[0;36m[Centinela]\033[0m Iniciando instalacion de Agente Wazuh EDR en macOS..."
+if [ "$EUID" -ne 0 ]; then
+    echo "\033[0;31m[!] Ejecute este script como root: sudo zsh $0\033[0m"
+    exit 1
+fi
+
+PKG_URL="https://packages.wazuh.com/4.x/macos/wazuh-agent-${WAZUH_VERSION}.pkg"
+TMP_PKG="/tmp/wazuh-agent.pkg"
+
+echo "\033[0;32m[1/4]\033[0m Descargando paquete oficial .pkg..."
+curl -sLo "$TMP_PKG" "$PKG_URL"
+
+echo "\033[0;32m[2/4]\033[0m Instalando paquete en macOS..."
+installer -pkg "$TMP_PKG" -target /
+
+echo "\033[0;32m[3/4]\033[0m Configurando Manager IP ($MANAGER_IP)..."
+echo "MANAGER_IP=\"$MANAGER_IP\"" > /Library/Ossec/etc/ossec.conf.extra
+/usr/bin/sed -i '' "s/<address>.*<\/address>/<address>$MANAGER_IP<\/address>/g" /Library/Ossec/etc/ossec.conf || true
+
+echo "\033[0;32m[4/4]\033[0m Registrando e iniciando servicio..."
+/Library/Ossec/bin/agent-auth -m "$MANAGER_IP" -A "$AGENT_NAME" 2>/dev/null || true
+/Library/Ossec/bin/wazuh-control start || launchctl load /Library/LaunchDaemons/com.wazuh.agent.plist || true
+
+rm -f "$TMP_PKG"
+echo "\033[0;32m[✓] Agente Wazuh instalado exitosamente en macOS.\033[0m"
+"""
+            script = script_header + script_body.replace("_MANAGER_IP_", manager_ip).replace("_AGENT_NAME_", asset_name)
+            filename = f"centinela-wazuh-install-{asset_name}-macos.sh"
+            media_type = "text/x-shellscript"
+            from fastapi.responses import Response
+            return Response(
+                content=script,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Asset-Name": asset_name,
+                    "X-Manager-IP": manager_ip,
+                    "X-Platform": "macos"
+                }
+            )
+
+        if is_windows:
+            # PowerShell script for Windows
+            script = f"""#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Centinela AI - Instalador de Agente Wazuh para Windows
+    Activo: {asset_name}
+    Generado: {datetime.now().isoformat()}
+
+.DESCRIPTION
+    Este script instala y configura el agente Wazuh EDR en el sistema Windows,
+    apuntando al Wazuh Manager de la plataforma Centinela AI.
+    EJECUTAR COMO ADMINISTRADOR en PowerShell.
+
+.NOTES
+    Wazuh Manager: {manager_ip}
+    Tipo de Activo: {atype}
+    Versión Wazuh: 4.7.4
+#>
+
+# === Configuración ===
+$WAZUH_MANAGER = "{manager_ip}"
+$WAZUH_MANAGER_PORT = "1514"
+$WAZUH_AGENT_NAME = "{asset_name}"
+$WAZUH_VERSION = "4.7.4-1"
+
+Write-Host "[*] Centinela AI - Instalando Agente Wazuh en Windows..." -ForegroundColor Cyan
+Write-Host "[*] Manager IP: $WAZUH_MANAGER" -ForegroundColor Yellow
+Write-Host "[*] Nombre del Agente: $WAZUH_AGENT_NAME" -ForegroundColor Yellow
+
+# === Verificar PowerShell como Admin ===
+If (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {{
+    Write-Error "[!] Este script debe ejecutarse como Administrador."
+    Exit 1
+}}
+
+# === Descargar el Instalador ===
+$InstallerUrl = "https://packages.wazuh.com/4.x/windows/wazuh-agent-$WAZUH_VERSION.msi"
+$InstallerPath = "$env:TEMP\\wazuh-agent.msi"
+
+Write-Host "[1/4] Descargando instalador Wazuh desde packages.wazuh.com..." -ForegroundColor Green
+try {{
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath -UseBasicParsing
+    Write-Host "[OK] Instalador descargado en $InstallerPath" -ForegroundColor Green
+}} catch {{
+    Write-Error "[!] Error al descargar el instalador: $_"
+    Exit 1
+}}
+
+# === Instalar el Agente ===
+Write-Host "[2/4] Instalando Agente Wazuh..." -ForegroundColor Green
+$MsiArgs = "/i `"$InstallerPath`" /q WAZUH_MANAGER=`"$WAZUH_MANAGER`" WAZUH_MANAGER_PORT=`"$WAZUH_MANAGER_PORT`" WAZUH_AGENT_NAME=`"$WAZUH_AGENT_NAME`" WAZUH_REGISTRATION_SERVER=`"$WAZUH_MANAGER`" /L*v `"$env:TEMP\\wazuh_install.log`""
+$result = Start-Process msiexec -ArgumentList $MsiArgs -Wait -PassThru
+if ($result.ExitCode -ne 0) {{
+    Write-Error "[!] Error en la instalación. Código: $($result.ExitCode). Ver: $env:TEMP\\wazuh_install.log"
+    Exit 1
+}}
+Write-Host "[OK] Agente instalado correctamente." -ForegroundColor Green
+
+# === Configurar Manager IP (verificación extra) ===
+Write-Host "[3/4] Verificando configuración del agente..." -ForegroundColor Green
+$OssecConf = "C:\\Program Files (x86)\\ossec-agent\\ossec.conf"
+if (Test-Path $OssecConf) {{
+    $xml = [xml](Get-Content $OssecConf)
+    $serverAddress = $xml.SelectNodes("//server/address")
+    if ($serverAddress.Count -gt 0) {{
+        Write-Host "[OK] Manager configurado: $($serverAddress[0].InnerText)" -ForegroundColor Green
+    }}
+}}
+
+# === Iniciar Servicio ===
+Write-Host "[4/4] Iniciando el servicio Wazuh Agent..." -ForegroundColor Green
+Start-Service -Name "WazuhSvc" -ErrorAction SilentlyContinue
+Set-Service -Name "WazuhSvc" -StartupType Automatic
+$svc = Get-Service "WazuhSvc" -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -eq "Running") {{
+    Write-Host "[✓] Servicio Wazuh Agent ACTIVO y corriendo." -ForegroundColor Green
+}} else {{
+    Write-Warning "[!] El servicio no está corriendo. Verificar manualmente."
+}}
+
+# === Limpieza ===
+Remove-Item $InstallerPath -Force -ErrorAction SilentlyContinue
+
+Write-Host ""
+Write-Host "=========================================" -ForegroundColor Cyan
+Write-Host " Instalación Completada - Centinela AI  " -ForegroundColor Cyan
+Write-Host "=========================================" -ForegroundColor Cyan
+Write-Host " Manager: $WAZUH_MANAGER" -ForegroundColor White
+Write-Host " Agente:  $WAZUH_AGENT_NAME" -ForegroundColor White
+Write-Host " Estado:  Verificar en Dashboard Centinela" -ForegroundColor White
+Write-Host "=========================================" -ForegroundColor Cyan
+"""
+            filename = f"centinela-wazuh-install-{asset_name}.ps1"
+            media_type = "application/x-powershell"
+        else:
+            # Bash script for Linux / macOS / Workstation
+            # NOTE: Constructed via concatenation, NOT f-string, to avoid Python
+            # misinterpreting bash function syntax like `warn(){ ... }` as
+            # f-string expression errors.
+            now_iso = datetime.now().isoformat()
+            script_header = (
+                "#!/usr/bin/env bash\n"
+                "# ============================================================\n"
+                "#  Centinela AI \xe2\x80\x94 Instalador de Agente Wazuh para Linux\n"
+                "#  Activo: " + asset_name + "\n"
+                "#  Tipo:   " + atype + "\n"
+                "#  Generado: " + now_iso + "\n"
+                "# ============================================================\n"
+                "#  EJECUTAR COMO ROOT:   sudo bash centinela-wazuh-install-" + asset_name + ".sh\n"
+                "#  Wazuh Manager IP:     " + manager_ip + "\n"
+                "#  Wazuh Manager Puerto: 1514\n"
+                "# ============================================================\n"
+            )
+            script_body = r"""
+set -euo pipefail
+
+MANAGER_IP="_MANAGER_IP_"
+AGENT_NAME="_AGENT_NAME_"
+WAZUH_VERSION="4.x"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+log() { echo -e "${CYAN}[Centinela]${NC} $1"; }
+ok()  { echo -e "${GREEN}[\xE2\x9C\x93]${NC} $1"; }
+warn(){ echo -e "${YELLOW}[!]${NC} $1"; }
+err() { echo -e "${RED}[\xE2\x9C\x97]${NC} $1"; exit 1; }
+
+# === Verificar root ===
+[ "$EUID" -eq 0 ] || err "Este script debe ejecutarse como root (sudo)."
+
+log "Iniciando instalacion del Agente Wazuh..."
+log "Manager: $MANAGER_IP | Agente: $AGENT_NAME"
+
+# === Detectar distribucion ===
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    DISTRO=$ID
+elif command -v lsb_release &>/dev/null; then
+    DISTRO=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
+else
+    DISTRO="unknown"
+fi
+log "Distribucion detectada: $DISTRO"
+
+# === Paso 1: Agregar repositorio Wazuh ===
+log "[1/5] Configurando repositorio Wazuh..."
+if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" || "$DISTRO" == "linuxmint" ]]; then
+    apt-get update -qq && apt-get install -y -qq curl gnupg apt-transport-https 2>/dev/null || true
+    curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --no-default-keyring \
+        --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import 2>/dev/null || true
+    chmod 644 /usr/share/keyrings/wazuh.gpg 2>/dev/null || true
+    echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/${WAZUH_VERSION}/apt/ stable main" \
+        > /etc/apt/sources.list.d/wazuh.list
+    apt-get update -qq
+    ok "Repositorio APT configurado."
+elif [[ "$DISTRO" == "centos" || "$DISTRO" == "rhel" || "$DISTRO" == "fedora" || "$DISTRO" == "almalinux" || "$DISTRO" == "rocky" ]]; then
+    cat > /etc/yum.repos.d/wazuh.repo <<EOF
+[wazuh]
+gpgcheck=1
+gpgkey=https://packages.wazuh.com/key/GPG-KEY-WAZUH
+enabled=1
+name=EL-\$releasever - Wazuh
+baseurl=https://packages.wazuh.com/${WAZUH_VERSION}/yum/
+protect=1
+EOF
+    ok "Repositorio YUM configurado."
+else
+    warn "Distribucion '$DISTRO' no reconocida. Intentando instalacion directa por .deb..."
+fi
+
+# === Paso 2: Instalar agente ===
+log "[2/5] Instalando paquete wazuh-agent..."
+export WAZUH_MANAGER="$MANAGER_IP"
+export WAZUH_AGENT_NAME="$AGENT_NAME"
+if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" || "$DISTRO" == "linuxmint" ]]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-agent 2>/dev/null || \
+    (curl -sLo /tmp/wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.7.4-1_amd64.deb \
+        && dpkg -i /tmp/wazuh-agent.deb)
+else
+    yum install -y wazuh-agent 2>/dev/null || \
+    (curl -sLo /tmp/wazuh-agent.rpm https://packages.wazuh.com/4.x/yum/wazuh-agent-4.7.4-1.x86_64.rpm \
+        && rpm -ivh /tmp/wazuh-agent.rpm)
+fi
+ok "Agente Wazuh instalado."
+
+# === Paso 3: Configurar Manager ===
+log "[3/5] Configurando conexion con el Manager ($MANAGER_IP)..."
+OSSEC_CONF="/var/ossec/etc/ossec.conf"
+if [ -f "$OSSEC_CONF" ]; then
+    sed -i "s|<address>.*</address>|<address>$MANAGER_IP</address>|g" "$OSSEC_CONF"
+    ok "Manager configurado en $OSSEC_CONF"
+else
+    warn "No se encontro ossec.conf. Intentando configuracion manual..."
+fi
+
+# Registrar agente con el manager usando agent-auth
+log "[4/5] Registrando agente en el Manager..."
+/var/ossec/bin/agent-auth -m "$MANAGER_IP" -A "$AGENT_NAME" 2>/dev/null || warn "Registro no completado (posiblemente ya registrado)"
+
+# === Paso 5: Iniciar servicio ===
+log "[5/5] Iniciando servicio wazuh-agent..."
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable wazuh-agent 2>/dev/null || true
+systemctl restart wazuh-agent 2>/dev/null || service wazuh-agent restart 2>/dev/null || /var/ossec/bin/wazuh-control start
+
+# === Verificacion ===
+sleep 2
+if systemctl is-active --quiet wazuh-agent 2>/dev/null || /var/ossec/bin/wazuh-control status 2>/dev/null | grep -q "wazuh-agentd is running"; then
+    ok "Agente Wazuh ACTIVO y corriendo."
+    echo ""
+    echo "================================================"
+    echo " Instalacion Completada - Centinela AI          "
+    echo "================================================"
+    echo " Manager:  $MANAGER_IP"
+    echo " Agente:   $AGENT_NAME"
+    echo " Estado:   Verificar en el Dashboard Centinela"
+    echo "================================================"
+else
+    warn "El agente no esta corriendo. Verifique los logs: /var/ossec/logs/ossec.log"
+fi
+"""
+            script = script_header + script_body.replace("_MANAGER_IP_", manager_ip).replace("_AGENT_NAME_", asset_name)
+            filename = f"centinela-wazuh-install-{asset_name}.sh"
+            media_type = "text/x-shellscript"
+
+        from fastapi.responses import Response
+        return Response(
+            content=script,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Asset-Name": asset_name,
+                "X-Manager-IP": manager_ip,
+                "X-Platform": "windows" if is_windows else "linux"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # CORS para el nuevo frontend React
 app.add_middleware(
@@ -1606,11 +2052,15 @@ async def poll_asset_status():
                 is_online = False
                 latency_ms = None
                 if endpoint:
-                    # Clean host for ping
                     clean_host = endpoint.split("://")[-1].split("/")[0].split(":")[0]
-                    res = ping_host(clean_host)
-                    is_online = res.get("ping_ok", False)
-                    latency_ms = res.get("latency_ms")
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(1.0)
+                        s.connect((clean_host, 80 if "http" in endpoint else 22))
+                        s.close()
+                        is_online = True
+                    except Exception:
+                        pass
 
                 # 2. If online or agent active, update last_seen to now
                 new_status = current_status
