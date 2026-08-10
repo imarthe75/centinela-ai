@@ -16,6 +16,8 @@ import re
 import hvac
 import threading
 import subprocess
+import tempfile
+import stat
 
 
 import socket
@@ -84,6 +86,134 @@ def install_wazuh_agent_background(endpoint: str, user: str, password: Optional[
                 print(f"⚠️ [Centinela-Backend] Failed to update status for {endpoint}: {db_e}")
         else:
             print(f"❌ [Ansible] Could not install Wazuh Agent on {endpoint}. Both Password and SSH Key auth failed or were unavailable.")
+
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+
+
+def get_ansible_credentials(asset_name: str) -> dict:
+    """
+    Reads sudo_password/ansible_user/ssh_private_key for an asset from Vault
+    (secret/casmarts/ansible/{asset_name}, KV v2 with v1 fallback) -- same path
+    store_vault_secret() writes to. Returns a dict with empty strings for any field
+    not found (never raises if Vault is unreachable or the asset has no stored secret).
+    """
+    creds = {"sudo_password": "", "ansible_user": "", "ssh_private_key": ""}
+    client = get_vault_client()
+    if not client:
+        return creds
+    try:
+        result = client.secrets.kv.v2.read_secret_version(
+            path=f"casmarts/ansible/{asset_name}",
+            mount_point="secret"
+        )
+        data = result["data"]["data"]
+    except Exception:
+        try:
+            result = client.secrets.kv.v1.read_secret(
+                path=f"casmarts/ansible/{asset_name}",
+                mount_point="secret"
+            )
+            data = result["data"]
+        except Exception:
+            return creds
+    creds["sudo_password"] = data.get("sudo_password", "")
+    creds["ansible_user"] = data.get("ansible_user", "")
+    creds["ssh_private_key"] = data.get("ssh_private_key", "")
+    return creds
+
+
+def uninstall_wazuh_agent_background(agent_id: str, asset_name: str, endpoint: str, user: str, password: Optional[str] = None, ssh_private_key: Optional[str] = None):
+    """
+    Uninstalls the Wazuh agent from the remote host via Ansible (stop, disable, purge the
+    package, remove /var/ossec), then deregisters it from the Manager via `manage_agents -r`
+    (docker exec, same pattern already used for restart/scan/logs in wazuh_agent_action) so it
+    doesn't linger as a permanently-disconnected agent. Only clears the DB's agent_id/status if
+    both steps succeed -- a partial failure is left visible rather than silently marked clean.
+
+    If ssh_private_key is given (a Vault-stored key, not a path), it's written to a 0600 temp
+    file for the duration of this run and removed in a finally block -- same idiom as
+    sentinel.py's generic Ansible remediation path, so key material never lingers on disk.
+    Falls back to the shared /app/keys/casmarts.key if no per-asset key is stored.
+    """
+    def target():
+        print(f"🗑️ [Centinela-Backend] Background Ansible Wazuh Agent uninstall started for {endpoint} (agent {agent_id})...")
+
+        uninstall_script = (
+            "systemctl stop wazuh-agent || true; "
+            "systemctl disable wazuh-agent || true; "
+            "(apt-get remove --purge -y wazuh-agent || yum remove -y wazuh-agent || true); "
+            "rm -rf /var/ossec"
+        )
+
+        base_cmd = [
+            "ansible", "all", "-i", f"{endpoint},",
+            "-m", "shell",
+            "-a", uninstall_script,
+            "-e", f"ansible_user={user}",
+            "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'",
+            "--become"
+        ]
+
+        success = False
+        if password:
+            cmd_pass = list(base_cmd) + [
+                "-e", f"ansible_ssh_pass={password}",
+                "-e", f"ansible_become_pass={password}"
+            ]
+            print(f"🔑 [Ansible] Attempting Password authentication for {user}@{endpoint} (uninstall)...")
+            res = subprocess.run(cmd_pass, capture_output=True, text=True, timeout=180)
+            if res.returncode == 0:
+                success = True
+                print(f"✅ [Ansible] Wazuh Agent uninstalled from {endpoint} using Password authentication.")
+
+        if not success and ssh_private_key:
+            # Deliberately does NOT fall back to the shared /app/keys/casmarts.key used by
+            # install -- a destructive action should only proceed with a credential the
+            # operator explicitly stored in Vault for this specific asset, never an implicit
+            # shared master key that happens to work on everything.
+            key_file_path = None
+            try:
+                fd, key_file_path = tempfile.mkstemp(prefix="centinela_uninstall_key_")
+                with os.fdopen(fd, "w") as kf:
+                    kf.write(ssh_private_key if ssh_private_key.endswith("\n") else ssh_private_key + "\n")
+                os.chmod(key_file_path, stat.S_IRUSR | stat.S_IWUSR)
+
+                cmd_key = list(base_cmd) + ["-e", f"ansible_ssh_private_key_file={key_file_path}"]
+                print(f"🔑 [Ansible] Attempting SSH Key authentication for {user}@{endpoint} (uninstall)...")
+                res = subprocess.run(cmd_key, capture_output=True, text=True, timeout=180)
+                if res.returncode == 0:
+                    success = True
+                    print(f"✅ [Ansible] Wazuh Agent uninstalled from {endpoint} using SSH Key authentication.")
+            finally:
+                if key_file_path and os.path.exists(key_file_path):
+                    os.remove(key_file_path)
+
+        if not success:
+            print(f"❌ [Ansible] Could not uninstall Wazuh Agent from {endpoint}. Both Password and SSH Key auth failed or were unavailable. Manager registration left untouched.")
+            return
+
+        # Deregister from the Manager so it doesn't linger as a permanently-disconnected agent.
+        try:
+            cmd = ["docker", "exec", "casmarts-core-wazuh-manager", "bash", "-c", f"echo y | /var/ossec/bin/manage_agents -r {agent_id}"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if res.returncode == 0:
+                print(f"✅ [Centinela-Backend] Agent {agent_id} deregistered from the Wazuh Manager.")
+            else:
+                print(f"⚠️ [Centinela-Backend] Host-side uninstall succeeded but Manager deregistration failed for agent {agent_id}: {res.stderr}")
+        except Exception as e:
+            print(f"⚠️ [Centinela-Backend] Host-side uninstall succeeded but Manager deregistration errored for agent {agent_id}: {e}")
+
+        try:
+            with db_manager.get_db_cursor() as cur:
+                cur.execute(
+                    "UPDATE public.infra_inventory SET agent_id = NULL, status = 'inactive' WHERE agent_id = %s",
+                    (agent_id,)
+                )
+            print(f"🔄 [Centinela-Backend] Database updated: agent_id cleared for {asset_name}.")
+        except Exception as db_e:
+            print(f"⚠️ [Centinela-Backend] Failed to clear agent_id for {asset_name}: {db_e}")
 
     thread = threading.Thread(target=target)
     thread.daemon = True
@@ -400,9 +530,12 @@ async def get_inventory():
                     i.asset_type,
                     COALESCE(cat.label, i.asset_type) as asset_type_label,
                     COALESCE(cat.badge_class, 'bg-slate-500/10 text-slate-400 border border-slate-500/20') as asset_type_badge_class,
-                    i.endpoint, 
+                    i.endpoint,
                     i.status,
                     i.agent_id,
+                    i.criticality,
+                    i.last_scanned,
+                    i.last_audit,
                     COALESCE(COUNT(DISTINCT v.id), 0) as vulnerability_count,
                     COALESCE(COUNT(DISTINCT CASE 
                         WHEN v.status = 'RESOLVED' 
@@ -414,7 +547,7 @@ async def get_inventory():
                 LEFT JOIN public.remediation_history rh ON v.id = rh.vuln_id
                 LEFT JOIN public.runtime_alerts r ON i.id = r.asset_id AND r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
                 LEFT JOIN public.cat_asset_types cat ON i.asset_type = cat.code
-                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id
+                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id, i.criticality, i.last_scanned, i.last_audit
             """)
             results = cur.fetchall()
             
@@ -1117,6 +1250,64 @@ Manual Solution Details:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/wazuh/agent/{agent_id}/info")
+async def get_wazuh_agent_info(agent_id: str):
+    """
+    Returns live OS, kernel, Wazuh version, and syscheck details for the agent
+    by running agent_control -i <id> -j inside the Wazuh Manager container.
+    """
+    try:
+        cmd = [
+            "docker", "exec", "casmarts-core-wazuh-manager",
+            "/var/ossec/bin/agent_control", "-i", agent_id, "-j"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if res.returncode != 0 or not res.stdout.strip():
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found or manager unreachable")
+
+        data = json.loads(res.stdout)
+        agent_data = data.get("data", {})
+
+        # The os field from agent_control looks like:
+        # "Linux |Centinela |6.8.0-136-generic |#136~22.04.1-Ubuntu ...|x86_64"
+        os_raw = agent_data.get("os", "")
+        os_parts = [p.strip() for p in os_raw.split("|")]
+        os_name    = os_parts[0] if len(os_parts) > 0 else "—"
+        hostname   = os_parts[1] if len(os_parts) > 1 else "—"
+        kernel     = os_parts[2] if len(os_parts) > 2 else "—"
+        arch       = os_parts[4] if len(os_parts) > 4 else "—"
+
+        # Convert epoch lastKeepAlive to readable local time
+        last_ka_epoch = agent_data.get("lastKeepAlive")
+        last_ka_str = "—"
+        if last_ka_epoch:
+            try:
+                from datetime import datetime
+                last_ka_str = datetime.fromtimestamp(int(last_ka_epoch)).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                last_ka_str = str(last_ka_epoch)
+
+        return {
+            "agent_id":       agent_data.get("id", agent_id),
+            "name":           agent_data.get("name", "—"),
+            "ip":             agent_data.get("ip", "—"),
+            "status":         agent_data.get("status", "—"),
+            "os_name":        os_name,
+            "hostname":       hostname,
+            "kernel":         kernel,
+            "arch":           arch,
+            "wazuh_version":  agent_data.get("version", "—"),
+            "last_keepalive": last_ka_str,
+            "syscheck_time":  agent_data.get("syscheckTime", "—"),
+        }
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Manager returned invalid JSON: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/wazuh/agent/{agent_id}/action")
 async def wazuh_agent_action(agent_id: str, action: str):
     try:
@@ -1154,6 +1345,48 @@ async def wazuh_agent_action(agent_id: str, action: str):
                 raise Exception(res.stderr)
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/wazuh/agent/{agent_id}/uninstall")
+async def uninstall_wazuh_agent(agent_id: str):
+    """
+    Uninstalls the Wazuh agent from its host and deregisters it from the Manager. Requires
+    Ansible credentials (sudo password or SSH key) already stored in Vault for the asset --
+    same requirement as any other Ansible-driven action in this app -- so this never falls
+    back to a shared/default credential for a destructive host-level action.
+    """
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT asset_name, endpoint FROM public.infra_inventory WHERE agent_id = %s", (agent_id,))
+            asset = cur.fetchone()
+
+        if not asset:
+            raise HTTPException(status_code=404, detail="Agent not found in inventory")
+
+        creds = get_ansible_credentials(asset["asset_name"])
+        # Deliberately does not accept the shared /app/keys/casmarts.key as sufficient here --
+        # unlike install, this destructive action requires a credential explicitly stored in
+        # Vault for this specific asset, not an implicit master key that happens to work on
+        # every host.
+        if not creds["sudo_password"] and not creds["ssh_private_key"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No hay credenciales de Ansible en Vault para '{asset['asset_name']}'. Configura una contraseña sudo o llave SSH (botón Vault) antes de desinstalar."
+            )
+
+        uninstall_wazuh_agent_background(
+            agent_id=agent_id,
+            asset_name=asset["asset_name"],
+            endpoint=asset["endpoint"],
+            user=creds["ansible_user"] or "authentik",
+            password=creds["sudo_password"] or None,
+            ssh_private_key=creds["ssh_private_key"] or None
+        )
+        return {"status": "queued", "message": f"Desinstalación del agente {agent_id} en curso. Revisa el estado del activo en unos minutos."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
