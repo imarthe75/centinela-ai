@@ -940,7 +940,7 @@ export default function Dashboard() {
                     color="text-emerald-400" 
                     sub={`${stats?.online_endpoints || 0} En línea • ${stats?.offline_endpoints || 0} Sin conexión`}
                     onClick={() => setCurrentView('inventory')}
-                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} En línea / Sincronizados, ${stats?.offline_endpoints || 0} Sin conexión / Intentando Sincronización). Haz clic para ir.`}
+                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} En línea / Sincronizados, ${stats?.offline_endpoints || 0} Offline / Pendientes). Haz clic para ir.`}
                 />
                 <MetricCard 
                     label="Alertas en Tiempo Real" 
@@ -1837,21 +1837,21 @@ export default function Dashboard() {
                                                     <RefreshCw size={10} className="animate-spin" /> Verificando Ping...
                                                 </p>
                                             ) : pingResults[group.name].ping_ok ? (
-                                                <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1">
+                                                <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Host responde a ICMP Ping en vivo">
                                                     <CheckCircle size={10} /> En línea ({pingResults[group.name].latency_ms}ms)
                                                 </p>
                                             ) : (
-                                                <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message}>
-                                                    <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización
+                                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message || "Host sin respuesta de ICMP Ping"}>
+                                                    <ZapOff size={10} className="text-slate-500" /> Offline (Sin respuesta ICMP)
                                                 </p>
                                             )
-                                        ) : group.status === 'active' ? (
-                                            <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">
-                                                Sincronizado
+                                        ) : (group.status === 'active' || group.agent_id) ? (
+                                            <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado por agente o sondeo">
+                                                <CheckCircle size={10} /> Sincronizado
                                             </p>
                                         ) : (
-                                            <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1">
-                                                <RefreshCw size={10} className="animate-spin" /> Intentando Sincronización
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sin agente Wazuh conectado y sin ping verificado">
+                                                <Clock size={10} className="text-slate-500" /> Offline / Pendiente
                                             </p>
                                         )}
 
@@ -2087,13 +2087,13 @@ export default function Dashboard() {
                                             {group.interfaces[0]?.endpoint || '10.4.3.34'}
                                         </td>
                                         <td className="p-4 text-xs font-bold">
-                                            {pingResults[group.name]?.ping_ok || group.status === 'active' ? (
+                                            {pingResults[group.name]?.ping_ok || group.status === 'active' || group.agent_id ? (
                                                 <span className="text-emerald-400 flex items-center gap-1">
                                                     <CheckCircle size={12} /> Sincronizado (Online)
                                                 </span>
                                             ) : (
-                                                <span className="text-amber-400 flex items-center gap-1">
-                                                    <RefreshCw size={12} className="animate-spin" /> Intentando Sincronización
+                                                <span className="text-slate-400 flex items-center gap-1">
+                                                    <Clock size={12} className="text-slate-500" /> Offline / Pendiente
                                                 </span>
                                             )}
                                         </td>
@@ -3291,7 +3291,7 @@ export default function Dashboard() {
                                     <span className={`font-bold ${(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') ? 'text-emerald-400' : 'text-amber-400'}`}>
                                         {(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') 
                                             ? `En Línea (Sincronizado ${assetDetailsData.ping?.latency_ms ? `- ${assetDetailsData.ping?.latency_ms}ms` : ''})` 
-                                            : 'Intentando Sincronización (Offline)'}
+                                            : 'Offline / Pendiente'}
                                     </span>
                                 </div>
 
