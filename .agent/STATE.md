@@ -1,5 +1,19 @@
 # Estado del Proyecto - Centinela CAI
 
+## 📅 Fecha: 10 de Agosto, 2026
+
+## 🎯 Hitos Recientes (2026-08-10) — Verificador de Activos Vivos, WebSocket en Tiempo Real & Diferenciación Offline
+- **Verificador Continuo de Estado en Segundo Plano (`poll_asset_status`)**:
+  - Implementado bucle worker asíncrono en `main.py` ejecutado en segundo plano cada 10 segundos.
+  - Sincronizado con la base de datos PostgreSQL añadiendo la columna `last_seen` en `public.infra_inventory`.
+  - Transmite actualizaciones dinámicas de conectividad vía WebSockets (`asset_status_update`) a la interfaz de usuario.
+- **Diferenciación de Estados Visuales en Frontend (`Dashboard.jsx`)**:
+  - **`Sincronizado` (Verde)**: Activos en línea monitoreados por agente o respuesta ICMP en tiempo real.
+  - **`Offline (Desconectado)` (Ámbar)**: Activos previamente sincronizados que perdieron conexión, detallando la fecha y hora exacta del último registro en su tooltip (`last_seen`).
+  - **`Offline (Sin Conexión Previa)` (Gris)**: Activos recién registrados en inventario sin historial previo de comunicación.
+- **Actualización Instantánea de Activos**:
+  - En `handleAddAsset()`, se resetean automáticamente los filtros de búsqueda e inventario y se fuerza la navegación asíncrona a la vista del inventario reflejando inmediatamente el nuevo activo registrado.
+
 ## 📅 Fecha: 5 de Agosto, 2026
 
 ## 🎯 Hitos Recientes (2026-08-05, segunda mitad) — "los scripts de remediación no remedian nada"

@@ -230,6 +230,8 @@ flowchart TB
 | `POST` | `/api/host-containment/{asset_name}` | Solicita el aislamiento de red de emergencia de un activo (requiere aprobación humana). |
 | `GET` | `/api/quality-gates/check` | Evalúa los umbrales de calidad reales (críticos/altos, ISO 25010) con grado A-F. |
 | `GET` | `/api/health` | Estado real de cada motor y servicio del ecosistema, con evidencia verificable (no valores fijos). |
+| `GET` | `/api/wazuh/agent/{agent_id}/info` | Consulta en vivo OS, Kernel, hostname, versión y syscheck del agente desde Wazuh Manager. |
+| `POST` | `/api/wazuh/agent/{agent_id}/uninstall` | Desinstala el agente Wazuh vía Ansible en el host y remueve su registro en el Manager. |
 | `GET` | `/api/reports/executive` | Reporte ejecutivo PDF con Centinela Risk Score real, KEV, SLA y top-5 técnicas MITRE ATT&CK. |
 | `GET` | `/api/reports/coverage` | Reporte PDF de cobertura: qué motores corrieron sobre cada activo y con qué resultado. |
 

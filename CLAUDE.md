@@ -430,6 +430,15 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
      call hits Groq; with Groq/Gemini/NVIDIA all monkeypatched to `None`, correctly fell through
      to OpenRouter (12.6s, correct content); with all four `None`, correctly returned `None`
      (heuristic fallback signal). **The cascade now has 4 real LLM tiers**, not 3.
+   9. **Background Asset Live Status Verifier (`poll_asset_status`) & Offline Differentiating Statuses** —
+      **✅ real and live-verified**. Added background worker `poll_asset_status()` in `main.py`
+      running every 10s on `startup_event`. Added `last_seen` timestamp column to `public.infra_inventory`.
+      Performs live ICMP ping checks, updates `last_seen = NOW()` in PostgreSQL whenever an asset is
+      online/active, and broadcasts real-time `asset_status_update` events over WebSockets (`/api/ws/alerts`).
+      Updated `Dashboard.jsx` to process WebSocket status events in real-time without page reload, and
+      differentiate visual status into 3 distinct states: **`Sincronizado`** (online / agent active),
+      **`Offline (Desconectado)`** (previously connected asset with last_seen timestamp in tooltip),
+      and **`Offline (Sin Conexión Previa)`** (newly registered asset that has never connected).
   6. **One-time backfill launched for findings that only ever got the generic/no-specific-rule
      heuristic fallback text** (`"Hallazgo DAST sin regla determinística"`, `"Hallazgo de código
      fuente:"`, `"Hallazgo de seguridad sin regla de remediación específica"` — 669 rows

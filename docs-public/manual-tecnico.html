@@ -606,6 +606,14 @@
         <li><b>Desinstalar Agente:</b> Elimina y desregistra el agente EDR de la base de datos de Wazuh Manager (<code>manage_agents -r &lt;agent_id&gt;</code>) y actualiza el inventario en PostgreSQL.</li>
       </ul>
 
+      <h4>Verificador de Activos Vivos & Clasificación de Estado</h4>
+      <p>Centinela ejecuta una tarea de fondo en segundo plano (<code>poll_asset_status</code>) que valida cada 10 segundos la conectividad de los activos registrados (vía ping ICMP y consulta al Manager de Wazuh). La base de datos registra la columna <code>last_seen</code> con el sello de tiempo exacto de la última comunicación exitosa:</p>
+      <ul>
+        <li><b>Sincronizado (Online):</b> El activo responde a sondeos ICMP o cuenta con comunicación activa del agente Wazuh.</li>
+        <li><b>Offline (Desconectado):</b> El activo estuvo previamente conectado en una fecha/hora registrada (<code>last_seen</code>), pero actualmente se encuentra inalcanzable o fuera de línea.</li>
+        <li><b>Offline (Sin Conexión Previa):</b> El activo fue recién añadido o provisionado en el inventario pero jamás ha establecido su primer contacto de red.</li>
+      </ul>
+
       <h4>Identificación de SO e Historial de Instalación</h4>
       <p>Centinela consulta a la API de Wazuh (<code>agent_control -i &lt;agent_id&gt;</code>) para extraer en tiempo real el tipo exacto de sistema operativo del servidor (Linux / Ubuntu / RHEL vs Windows Server), la versión instalada del cliente EDR, la fecha de alta/inscripción del agente y el último pulso de comunicación (keepalive).</p>
 
