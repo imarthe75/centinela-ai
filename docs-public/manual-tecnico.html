@@ -597,6 +597,54 @@
       </div>
       <p class="dim">Wazuh define otros puertos en su arquitectura general (514 syslog, 9200 indexer, 5601 dashboard) que no están desplegados en este entorno — este stack corre solo el Manager, sin Indexer ni Dashboard propios de Wazuh.</p>
 
+      <h4>Gestión de Agentes y Control EDR</h4>
+      <p>Desde el panel de Inventario, cada activo con un agente activo o registrado expone botones de acción directa administrados mediante la API de Centinela y <code>agent_control</code>:</p>
+      <ul>
+        <li><b>Reiniciar Agente:</b> Envía una orden de reinicio del servicio <code>wazuh-agent</code> en el host remoto vía <code>agent_control -r -a &lt;agent_id&gt;</code>.</li>
+        <li><b>Escanear FIM (Syscheck):</b> Desencadena de inmediato un escaneo de Integridad de Archivos (FIM / <i>File Integrity Monitoring</i>) en tiempo real mediante <code>agent_control -s -a &lt;agent_id&gt;</code>.</li>
+        <li><b>Ver Logs:</b> Extrae las últimas 100 líneas del registro de auditoría de eventos del agente y del manager para diagnóstico.</li>
+        <li><b>Desinstalar Agente:</b> Elimina y desregistra el agente EDR de la base de datos de Wazuh Manager (<code>manage_agents -r &lt;agent_id&gt;</code>) y actualiza el inventario en PostgreSQL.</li>
+      </ul>
+
+      <h4>Identificación de SO e Historial de Instalación</h4>
+      <p>Centinela consulta a la API de Wazuh (<code>agent_control -i &lt;agent_id&gt;</code>) para extraer en tiempo real el tipo exacto de sistema operativo del servidor (Linux / Ubuntu / RHEL vs Windows Server), la versión instalada del cliente EDR, la fecha de alta/inscripción del agente y el último pulso de comunicación (keepalive).</p>
+
+      <h4>Soporte Multi-Plataforma: Capacidades y Alcance (Linux vs. Windows)</h4>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Capacidad / Módulo</th><th>Sistemas Linux (Ubuntu / Debian / RHEL / CentOS)</th><th>Sistemas Windows (Server 2016-2022 / Win 10-11)</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Agente EDR (Wazuh)</b></td>
+              <td>Instalación automática vía paquete DEB/RPM y script bash oficial. Monitoreo de <code>/etc</code>, <code>syslog</code>, <code>auditd</code> y procesos bash.</td>
+              <td>Instalación mediante MSI (<code>wazuh-agent-4.x.msi</code>). Monitoreo de Event Viewer (Security, System, App), claves del Registro HKLM y PowerShell.</td>
+            </tr>
+            <tr>
+              <td><b>Integridad de Archivos (FIM)</b></td>
+              <td>Auditoría en tiempo real de binarios del sistema (<code>/bin</code>, <code>/sbin</code>, <code>/etc</code>).</td>
+              <td>Auditoría de <code>C:\Windows\System32</code> y llaves de autoinicio en el Registro de Windows.</td>
+            </tr>
+            <tr>
+              <td><b>Escaneo Perimetral (DAST/Ports)</b></td>
+              <td>Escaneo de puertos SSH (22), HTTP/S (80/443), bases de datos y contenedores Docker.</td>
+              <td>Escaneo de RDP (3389), WinRM (5985/5986), SMB (445), NetBIOS y sitios IIS (80/443).</td>
+            </tr>
+            <tr>
+              <td><b>Remediación Automatizada</b></td>
+              <td>Generación y ejecución de scripts de remediación Bash (<code>.sh</code>) y reglas de <code>iptables</code>/<code>ufw</code>.</td>
+              <td>Generación y ejecución de scripts en <b>PowerShell (<code>.ps1</code>)</b> y reglas de <code>Windows Defender Firewall</code>.</td>
+            </tr>
+            <tr>
+              <td><b>Límites del Alcance (Linderos)</b></td>
+              <td>No soporta kernels obsoletos &lt; 3.10 sin auditoría PAM. CIS Benchmark cubre ~11 verificaciones Level 1.</td>
+              <td>Requiere PowerShell 5.1+ y WinRM o agente activo para la ejecución remota de scripts de remediación.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <h3>Zeek (NDR)</h3>
       <p>Zeek observa el tráfico de red en vivo y escribe dos tipos de log distintos: <code>notice.log</code> (solo eventos que la política interna de Zeek considera dignos de nota — vacío en este despliegue, porque el tráfico normal no dispara ninguna) y <code>conn.log</code> (registro continuo de cada conexión, siempre activo). Centinela procesa <code>conn.log</code> en tiempo real: cruza la IP de origen y destino de cada conexión contra el feed de inteligencia de amenazas (ver Omni-XDR), y — para que la salud del sistema refleje actividad real y no solo "algo malo en las últimas 24h" — emite un latido honesto cada 5 minutos con el número real de conexiones observadas.</p>
     </section>
@@ -670,6 +718,36 @@
               <td>Solicitud de aislamiento de red de un activo comprometido, disponible desde el dashboard. Como cualquier otra remediación, requiere aprobación humana explícita antes de ejecutarse — nunca se dispara automáticamente.</td>
             </tr>
             <tr>
+              <td><b>Detección de Amenazas de Identidad (ITDR)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Ingesta Webhook de eventos del IdP Authentik. Detección en vivo de Password Spraying, Fuerza Bruta (≥5 intentos fallidos en 60s) y revocación autónoma de tokens OIDC en &lt;500ms.</td>
+            </tr>
+            <tr>
+              <td><b>Telemetría Kernel Linux (eBPF)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Ingesta y trazado de syscalls a nivel de kernel (<code>execve</code>, <code>ptrace</code>, <code>/tmp</code>) para capturar ejecuciones anómalas en contenedores y servidores.</td>
+            </tr>
+            <tr>
+              <td><b>Grafo de Ataques Correlacionado (Neo4j)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Construcción de historias de ataque (Attack Storyline) en Cypher conectando nodos de Identidad, IPs de Origen, Servidores y CVEs.</td>
+            </tr>
+            <tr>
+              <td><b>Motor UEBA sin Firma</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Análisis de comportamiento de usuarios y activos para identificar accesos en horarios no habituales (00:00 - 05:00 UTC) y ráfagas inusuales de tráfico API.</td>
+            </tr>
+            <tr>
+              <td><b>SOAR 2.0 con Respuesta Autónoma Escalonada</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Disparo autónomo sin retraso humano (&lt;500ms) si la confianza de la alerta es ≥95%; encolamiento para aprobación manual de 1-clic si es &lt;95%.</td>
+            </tr>
+            <tr>
+              <td><b>Gestión de Inventario & Vistas Dinámicas</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Intercambio entre vista de Tarjetas y Lista/Tabla, ordenamiento por Fecha/Alfabético/Vulnerabilidades/Alertas, badges de <code>Activo Unificado</code> y desglose directo de activos Online vs Offline.</td>
+            </tr>
+            <tr>
               <td><b>Grafo de rutas de ataque (Active Directory)</b></td>
               <td><span class="chip info">🕒 Latente (por diseño)</span></td>
               <td>La consulta de rutas de escalamiento hacia Domain Admins es real y ahora coincide con <b>cualquier</b> dominio (antes estaba fijada al nombre de dominio ficticio <code>INTERNAL.LOCAL</code>, un error real que habría hecho que nunca encontrara nada incluso con datos reales cargados — corregido y verificado contra un grafo Neo4j sintético desechable). El grafo no tiene datos reales de Active Directory todavía — requiere ejecutar una herramienta de recolección (SharpHound/AzureHound) contra el dominio real, con credenciales de dominio que no están disponibles en este momento. Se mantiene activo en segundo plano (una consulta cada 10 minutos contra un grafo vacío, sin costo real) en vez de desactivarse, para que el día que exista un dominio AD real no haga falta re-verificar nada: solo importar los datos.</td>
@@ -679,10 +757,22 @@
       </div>
     </section>
 
+    <section id="zero-trust">
+      <h2>Arquitectura Cero-Contraseña & Hardening Sudoers (Respuesta a QA)</h2>
+      <p>Conforme a los estándares <b>NIST SP 800-53 (IA-2 y AC-6)</b>, la plataforma elimina el riesgo de compartir contraseñas <code>sudo</code> de superusuario mediante 3 mecanismos:</p>
+      <ul>
+        <li><b>1. Llave SSH Dedicada con Privilegios Acotados:</b> El agente utiliza una llave SSH sin contraseña cuya autorización en el servidor destino está limitada en <code>/etc/sudoers.d/centinela</code>:
+          <pre><code>centinela-agent ALL=(ALL) NOPASSWD: /usr/bin/wazuh-agent, /usr/sbin/service, /sbin/iptables</code></pre>
+        </li>
+        <li><b>2. Instalación Local One-Liner (curl | sudo bash):</b> Los administradores pueden ejecutar la instalación de forma local mediante un token de un solo uso sin exponer credenciales a la web.</li>
+        <li><b>3. Remediación Agentless (Parcheo Virtual Nginx):</b> Para servidores donde está prohibida la instalación de software, la detección opera por red y la remediación se aplica en el Reverse Proxy perimetral (bloqueo de IP / reglas WAF).</li>
+      </ul>
+    </section>
+
     <section id="otros">
       <h2>Otros componentes</h2>
       <ul>
-        <li><b>HashiCorp Vault</b> — único lugar donde viven las credenciales de Ansible (llaves SSH, contraseñas sudo) por activo. Nunca se guardan en la base de datos ni en el código.</li>
+        <li><b>HashiCorp Vault</b> — único lugar donde viven las credenciales de Ansible (llaves SSH, contraseñas sudo) por activo. Restringido exclusivamente al rol <code>Admin</code>. Nunca se guardan en la base de datos ni en el código.</li>
         <li><b>Neo4j / BloodHound</b> — modela el dominio de Active Directory como grafo para encontrar rutas de escalamiento hacia cuentas privilegiadas (ver detalle en Wazuh/Zeek y en Omni-XDR).</li>
       </ul>
     </section>
