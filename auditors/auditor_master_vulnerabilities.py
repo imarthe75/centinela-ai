@@ -18,7 +18,7 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     # 1. SQL Injection Detection
     sqli_patterns = [
         (r'execute\s*\(\s*f["\'].*?SELECT.*?\{', "SQL-INJECTION-FSTRING", "HIGH", "SQL Injection via interpolated f-string in query."),
-        (r'execute\s*\(\s*["\'].*?%s.*?["\']\s*%', "SQL-INJECTION-PERCENT", "HIGH", "SQL Injection via string percent formatting."),
+        (r'execute\s*\(\s*["\'].*?SELECT.*?["\']\s*%\s*[^(]', "SQL-INJECTION-PERCENT", "HIGH", "SQL Injection via string percent formatting without parameter tuple."),
         (r'execute\s*\(\s*["\'].*?\+.*?\+', "SQL-INJECTION-CONCAT", "CRITICAL", "SQL Injection via string concatenation.")
     ]
     for idx, line in enumerate(lines, 1):
