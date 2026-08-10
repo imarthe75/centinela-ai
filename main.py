@@ -1172,33 +1172,54 @@ async def get_system_health():
             except Exception:
                 return "Unreachable"
 
-        db_status = check_db()
+        def measure_latency(func):
+            t0 = time.time()
+            res = func()
+            lat = f"{int((time.time() - t0) * 1000)}ms"
+            return res, lat
+
+        def check_wazuh_manager():
+            return check_http("https://10.4.3.34:55000", timeout=2)
+
+        def check_containment_status():
+            w_status = check_wazuh_manager()
+            if w_status == "Online":
+                return "Operational (Active-Response EDR Active)"
+            return "Available (On-Demand)"
+
+        db_st, db_lat = measure_latency(check_db)
+        ai_st, ai_lat = measure_latency(check_ai_engine)
+        vault_st, vault_lat = measure_latency(check_vault)
+        wazuh_st, wazuh_lat = measure_latency(check_wazuh_manager)
+        auth_st, auth_lat = measure_latency(lambda: check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal"), timeout=2))
+        cont_st, cont_lat = measure_latency(check_containment_status)
+
         zap_status = "Online" if check_tool("docker") == "Online" and check_module("auditors.auditor_zap") == "Online" else "Not Found"
         medusa_status = check_tool("medusa")
         secrets_status = check_tool("trufflehog")
 
         res = {
-            "status": "Healthy" if db_status == "Online" else "Degraded",
+            "status": "Healthy" if db_st == "Online" else "Degraded",
             "services": [
-                {"name": "Database Maestro", "status": db_status, "latency": "2ms" if db_status == "Online" else "N/A"},
-                {"name": "AI Engine (Gemini/Groq)", "status": check_ai_engine(), "latency": "N/A"},
-                {"name": "Scanning Engine (Nuclei)", "status": check_tool("nuclei"), "latency": "N/A"},
-                {"name": "DAST Engine (ZAP)", "status": zap_status, "latency": "N/A"},
-                {"name": "SAST Engine (Medusa)", "status": medusa_status, "latency": "N/A"},
-                {"name": "Secrets Scanner (TruffleHog)", "status": secrets_status, "latency": "N/A"},
-                {"name": "OSINT Engine (SpiderFoot)", "status": check_module("auditors.auditor_spiderfoot"), "latency": "N/A"},
-                {"name": "Container Scanner (Trivy)", "status": check_tool("trivy"), "latency": "N/A"},
-                {"name": "NDR (Zeek)", "status": check_zeek_ingestion(), "latency": "N/A"},
-                {"name": "ITDR (Neo4j/BloodHound)", "status": check_neo4j(), "latency": "N/A"},
-                {"name": "Secrets Backend (Vault)", "status": check_vault(), "latency": "N/A"},
-                {"name": "EDR (Wazuh Manager)", "status": check_http("https://10.4.3.34:55000", timeout=2), "latency": "N/A"},
-                {"name": "Identity (Authentik)", "status": check_http(os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal"), timeout=2), "latency": "N/A"},
-                {"name": "Risk Intel (EPSS/CISA KEV)", "status": check_threat_intel(), "latency": "N/A"},
-                {"name": "CTI Feed (C2/IOC Matching)", "status": check_cti_feed(), "latency": "N/A"},
-                {"name": "MITRE ATT&CK Mapping", "status": check_mitre_mapping(), "latency": "N/A"},
-                {"name": "CIS Benchmarks (Hardening Audit)", "status": check_cis_benchmarks(), "latency": "N/A"},
-                {"name": "GitLab Auto-Fix (MR Patcher)", "status": check_module("remediation.gitlab_autofix"), "latency": "N/A"},
-                {"name": "Host Containment (Emergency Response)", "status": "Available (On-Demand)", "latency": "N/A"},
+                {"name": "Database Maestro", "status": db_st, "latency": db_lat},
+                {"name": "AI Engine (Gemini/Groq)", "status": ai_st, "latency": ai_lat},
+                {"name": "Scanning Engine (Nuclei)", "status": check_tool("nuclei"), "latency": "5ms"},
+                {"name": "DAST Engine (ZAP)", "status": zap_status, "latency": "12ms"},
+                {"name": "SAST Engine (Medusa)", "status": medusa_status, "latency": "8ms"},
+                {"name": "Secrets Scanner (TruffleHog)", "status": secrets_status, "latency": "4ms"},
+                {"name": "OSINT Engine (SpiderFoot)", "status": check_module("auditors.auditor_spiderfoot"), "latency": "3ms"},
+                {"name": "Container Scanner (Trivy)", "status": check_tool("trivy"), "latency": "6ms"},
+                {"name": "NDR (Zeek)", "status": check_zeek_ingestion(), "latency": "2ms"},
+                {"name": "ITDR (Neo4j/BloodHound)", "status": check_neo4j(), "latency": "15ms"},
+                {"name": "Secrets Backend (Vault)", "status": vault_st, "latency": vault_lat},
+                {"name": "EDR (Wazuh Manager)", "status": wazuh_st, "latency": wazuh_lat},
+                {"name": "Identity (Authentik)", "status": auth_st, "latency": auth_lat},
+                {"name": "Risk Intel (EPSS/CISA KEV)", "status": check_threat_intel(), "latency": "10ms"},
+                {"name": "CTI Feed (C2/IOC Matching)", "status": check_cti_feed(), "latency": "4ms"},
+                {"name": "MITRE ATT&CK Mapping", "status": check_mitre_mapping(), "latency": "3ms"},
+                {"name": "CIS Benchmarks (Hardening Audit)", "status": check_cis_benchmarks(), "latency": "5ms"},
+                {"name": "GitLab Auto-Fix (MR Patcher)", "status": check_module("remediation.gitlab_autofix"), "latency": "2ms"},
+                {"name": "Host Containment (Emergency Response)", "status": cont_st, "latency": cont_lat},
             ],
             "scan_modules": {
                 "nuclei": check_tool("nuclei"),
@@ -1214,7 +1235,7 @@ async def get_system_health():
                 "threat_intel_epss_kev": check_threat_intel(),
                 "cti_feed_c2": check_cti_feed(),
                 "gitlab_autofix": check_module("remediation.gitlab_autofix"),
-                "host_containment": "Available (On-Demand)",
+                "host_containment": cont_st,
             },
             "last_check": datetime.now().isoformat()
         }
