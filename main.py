@@ -428,8 +428,8 @@ async def ping_asset(asset_name: str):
             is_online = False
             latency = None
 
-            # Try TCP socket check across common ports (22, 80, 443, 8080, 8443, 445)
-            for p in [22, 80, 443, 8080, 8443, 445]:
+            # Try TCP socket check across common application & git ports (22, 80, 443, 8080, 8443, 445)
+            for p in [80, 443, 22, 8080, 8443, 445]:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(1.5)
@@ -441,16 +441,24 @@ async def ping_asset(asset_name: str):
                 except Exception:
                     pass
 
-            # Try system ping binary if available
+            # Try HTTP/HTTPS request verification for web/GitLab endpoints
             if not is_online:
                 try:
-                    t_ping = time.time()
-                    proc = subprocess.run(["ping", "-c", "1", "-W", "2", clean_host], capture_output=True, text=True)
-                    if proc.returncode == 0:
+                    t_req = time.time()
+                    url = target if target.startswith("http") else f"https://{clean_host}"
+                    res = requests.head(url, timeout=2.0, verify=False)
+                    if res.status_code < 500:
                         is_online = True
-                        latency = round((time.time() - t_ping) * 1000, 1)
+                        latency = round((time.time() - t_req) * 1000, 1)
                 except Exception:
-                    pass
+                    try:
+                        t_ping = time.time()
+                        proc = subprocess.run(["ping", "-c", "1", "-W", "2", clean_host], capture_output=True, text=True)
+                        if proc.returncode == 0:
+                            is_online = True
+                            latency = round((time.time() - t_ping) * 1000, 1)
+                    except Exception:
+                        pass
 
             return {
                 "asset_name": asset_name,
