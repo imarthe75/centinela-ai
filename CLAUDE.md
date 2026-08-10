@@ -2,7 +2,39 @@
 
 SOC/SOAR platform for the CASMARTS ("Casmart") infrastructure: continuous vulnerability
 scanning across many scanner engines, an AI correlation/remediation engine, a Wazuh EDR
-integration, and a React dashboard. Spanish is the primary language for UI copy, DB content, and in-repo docs/comments, with strictly-defined technical exceptions (CVE, SOAR, ITDR, EDR, FIM, NIDS, CVSS severity codes in DB, protocol acronyms, product names). The platform implements a 4-Tier NIST SP 800-53 / ISO 27001 RBAC model: Admin, Analyst, Auditor, and Viewer.
+
+## REGLAS STRICTAS DE EJECUCIÓN, TESTEO, VERACIDAD Y ENTREGA DE CÓDIGO
+
+### 1. PRINCIPIO DE HONESTIDAD TÉCNICA Y NO SIMULACIÓN
+- Queda estrictamente PROHIBIDO declarar una tarea como completada si el código contiene:
+  - Mocks, datos simulados o respuestas "hardcodeadas" (salvo especificación explícita en los requerimientos).
+  - Comentarios del tipo `# TODO`, `// TODO`, `pass` en funciones principales, o bloques de código vacíos.
+  - Stubs, funciones sintácticamente correctas pero sin lógica de negocio funcional real, o interfaces no conectadas a servicios de fondo.
+- Si por limitaciones de tiempo, contexto o dependencias no se implementa la lógica real, DEBES declarar el componente como INCOMPLETO o PARCIAL.
+
+### 2. CRITERIO OBLIGATORIO DE ACEPTACIÓN: VALIDACIÓN POR PRUEBAS
+Ningún desarrollo o revisión de código se considerará "COMPLETADO 100%" sin evidencia directa de ejecución de pruebas o comprobaciones funcionales:
+1. **Entorno Python / Scripts / Servicios:** Debes escribir e invocar tests unitarios o de integración mediante `pytest` (o scripts de validación en Python) que ejecuten el flujo completo.
+2. **Entorno PostgreSQL / Persistencia:** Debes ejecutar o proporcionar scripts de verificación SQL (`SELECT`, validación de esquemas, vistas o transacciones) que demuestren que las consultas y mutaciones operan sin errores.
+3. **Entornos de Infraestructura / SSH / Linux:** Debes verificar la ejecución de comandos, permisos y respuestas de red o servicios en el entorno real antes de reportar un cambio de configuración como exitoso.
+4. **Registro de Ejecución:** El informe final DEBE incluir el log o la salida real obtenida al ejecutar las pruebas en la terminal del entorno.
+
+### 3. PROTOCOLO DE AUDITORÍA OBLIGATORIA (BEFORE REPORTING)
+Antes de generar el Walkthrough o informe final, estás OBLIGADO a cumplir los siguientes tres pasos:
+1. **Auditoría de Diffs:** Inspecciona los cambios reales (`git diff` o inspección de archivos) para garantizar que no existan remanentes de código temporal o declaraciones no implementadas.
+2. **Ejecución de Pruebas:** Corre la suite de validación (`pytest`, `psql`, o scripts de prueba) y comprueba que no existen errores de sintaxis o excepciones no controladas.
+3. **Cálculo de Avance Objetivo:** Asigna el porcentaje de avance basándote **únicamente** en requerimientos con pruebas ejecutadas y aprobadas, no en la cantidad de archivos creados.
+
+### 4. FORMATO OBLIGATORIO DE ENTREGA (WALKTHROUGH)
+Cualquier entrega final o reporte de avance DEBE apegarse strictly a la siguiente estructura:
+- **Resumen Ejecutivo de Estado** (`[COMPLETADO 100% / PARCIAL / FALLIDO]`)
+- **Matriz de Veracidad y Evidencia de Pruebas** (Tabla de requisitos, estado real y evidencia de comandos ejecutados)
+- **Registro de Salida de Pruebas (Test Output Log)**
+- **Deuda Técnica y Pendientes (Truthful Disclosures)**
+
+### 5. PENALIZACIÓN POR FALSA COMPLETITUD
+- Presentar un Walkthrough declarando un estado de "Completado" cuando existan mocks, funciones inconclusas o falta de pruebas ejecutadas se considera un **FALLO CRÍTICO**. Ante cualquier duda o imposibilidad de probar el código en el entorno, DEBES reportar un estado "PARCIAL" e indicar el porcentaje real correspondiente.
+
 
 ## Omni-XDR 2.0 Architectural Vision & Standards
 
