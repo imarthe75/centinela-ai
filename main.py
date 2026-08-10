@@ -630,6 +630,7 @@ async def get_inventory():
                     i.criticality,
                     i.last_scanned,
                     i.last_audit,
+                    i.last_seen,
                     MAX(i.id) as max_id,
                     CASE 
                         WHEN i.status = 'active' OR i.agent_id IS NOT NULL THEN
@@ -651,7 +652,7 @@ async def get_inventory():
                 LEFT JOIN public.remediation_history rh ON v.id = rh.vuln_id
                 LEFT JOIN public.runtime_alerts r ON i.id = r.asset_id AND r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
                 LEFT JOIN public.cat_asset_types cat ON i.asset_type = cat.code
-                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id, i.criticality, i.last_scanned, i.last_audit
+                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id, i.criticality, i.last_scanned, i.last_audit, i.last_seen
                 ORDER BY MAX(i.id) DESC
 
             """)
@@ -1279,9 +1280,65 @@ async def poll_new_alerts():
             print(f"⚠️ [WS-Poller] Error polling alerts: {e}")
         await asyncio.sleep(2)
 
+async def poll_asset_status():
+    """
+    Background worker that continuously verifies asset connectivity (ICMP ping & Wazuh status),
+    updates last_seen timestamp in the DB whenever an asset is online/active, and broadcasts
+    asset status updates to connected WebSocket clients in real-time.
+    """
+    while True:
+        try:
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT id, asset_name, endpoint, status, agent_id, last_seen FROM public.infra_inventory")
+                assets = cur.fetchall()
+
+            for asset in assets:
+                asset_id = asset["id"]
+                asset_name = asset["asset_name"]
+                endpoint = asset["endpoint"]
+                current_status = asset["status"]
+                agent_id = asset["agent_id"]
+                prev_last_seen = asset["last_seen"]
+
+                # 1. Ping check
+                is_online = False
+                latency_ms = None
+                if endpoint:
+                    # Clean host for ping
+                    clean_host = endpoint.split("://")[-1].split("/")[0].split(":")[0]
+                    res = ping_host(clean_host)
+                    is_online = res.get("ping_ok", False)
+                    latency_ms = res.get("latency_ms")
+
+                # 2. If online or agent active, update last_seen to now
+                new_status = current_status
+                if is_online or current_status == "active" or agent_id:
+                    with db_manager.get_db_cursor() as cur_up:
+                        cur_up.execute(
+                            "UPDATE public.infra_inventory SET last_seen = NOW() WHERE id = %s",
+                            (asset_id,)
+                        )
+
+                # Broadcast status update if ping checked
+                await manager_ws.broadcast({
+                    "type": "asset_status_update",
+                    "data": {
+                        "asset_name": asset_name,
+                        "endpoint": endpoint,
+                        "status": current_status,
+                        "ping_ok": is_online,
+                        "latency_ms": latency_ms,
+                        "last_seen": datetime.now().isoformat() if (is_online or current_status == "active" or agent_id) else (prev_last_seen.isoformat() if prev_last_seen and isinstance(prev_last_seen, datetime) else None)
+                    }
+                })
+        except Exception as e:
+            print(f"⚠️ [Asset-Verifier] Error verifying asset statuses: {e}")
+        await asyncio.sleep(10)
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(poll_new_alerts())
+    asyncio.create_task(poll_asset_status())
 
 class TicketModel(BaseModel):
     title: str

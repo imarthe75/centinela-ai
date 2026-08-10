@@ -295,6 +295,26 @@ export default function Dashboard() {
           if (payload.type === 'new_alert') {
             setAlerts(prev => [payload.data, ...prev].slice(0, 100));
             showNotification(payload.data);
+          } else if (payload.type === 'asset_status_update') {
+            const update = payload.data;
+            if (update && update.asset_name) {
+              setPingResults(prev => ({
+                ...prev,
+                [update.asset_name]: {
+                  status: update.ping_ok ? 'ONLINE' : 'OFFLINE',
+                  ping_ok: update.ping_ok,
+                  latency_ms: update.latency_ms,
+                  loading: false
+                }
+              }));
+              if (update.ping_ok) {
+                setInventory(prev => prev.map(item => 
+                  item.asset_name === update.asset_name 
+                    ? { ...item, status: 'active', last_seen: update.last_seen || item.last_seen }
+                    : item
+                ));
+              }
+            }
           }
         } catch (err) {
           console.error("WS message parse error:", err);
@@ -734,7 +754,8 @@ export default function Dashboard() {
         interfaces: [],
         status: item.status,
         agent_id: item.agent_id,
-        has_vault_secret: item.has_vault_secret
+        has_vault_secret: item.has_vault_secret,
+        last_seen: item.last_seen
       }
     }
     acc[item.asset_name].max_id = Math.max(acc[item.asset_name].max_id, parseInt(item.max_id || item.id || 0))
@@ -1849,9 +1870,13 @@ export default function Dashboard() {
                                             <p className="text-[10px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado por agente o sondeo">
                                                 <CheckCircle size={10} /> Sincronizado
                                             </p>
+                                        ) : group.last_seen ? (
+                                            <p className="text-[10px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={`Desconectado. Última conexión: ${new Date(group.last_seen).toLocaleString('es-MX')}`}>
+                                                <ZapOff size={10} className="text-amber-400" /> Offline (Desconectado)
+                                            </p>
                                         ) : (
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sin agente Wazuh conectado y sin ping verificado">
-                                                <Clock size={10} className="text-slate-500" /> Offline / Pendiente
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter flex items-center gap-1" title="Activo registrado pero nunca se ha conectado ni sincronizado">
+                                                <Clock size={10} className="text-slate-500" /> Offline (Sin Conexión Previa)
                                             </p>
                                         )}
 
