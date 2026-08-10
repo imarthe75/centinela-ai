@@ -826,6 +826,34 @@ async def get_remediation_history(asset: Optional[str] = None):
                 else:
                     r["detection_engine"] = "External Auditor"
 
+                # Si falta el análisis de IA o el impacto de negocio, invocar centinela.correlate_vulnerability para generarlo en vivo
+                if not r.get("executive_summary") or not r.get("business_impact") or "Evaluando impacto" in str(r.get("business_impact")):
+                    try:
+                        import centinela
+                        ai_res = centinela.correlate_vulnerability({
+                            "id": r.get("id"),
+                            "cve_id": cve,
+                            "severity": sev,
+                            "description": r.get("description") or f"Hallazgo {cve} en {r.get('asset_name')}",
+                            "asset_name": r.get("asset_name"),
+                            "asset_type": r.get("asset_type", "SERVER"),
+                            "endpoint": r.get("endpoint", "127.0.0.1"),
+                            "url_path": r.get("url_path", "")
+                        })
+                        if ai_res:
+                            r["executive_summary"] = ai_res.get("executive_summary")
+                            r["business_impact"] = ai_res.get("business_impact")
+                            r["developer_steps"] = ai_res.get("developer_steps")
+                            # Persistir en la BD para que no tenga que regenerarse en subsiguientes llamadas
+                            with db_manager.get_db_cursor() as update_cur:
+                                update_cur.execute("""
+                                    UPDATE public.vulnerability_log
+                                    SET executive_summary = %s, business_impact = %s, developer_steps = %s
+                                    WHERE id = %s
+                                """, (r["executive_summary"], r["business_impact"], r["developer_steps"], r["id"]))
+                    except Exception as ai_e:
+                        print(f"⚠️ [/api/remediation] Live IA correlation failed for {cve}: {ai_e}")
+
                 # SLA & Risk Score calculation
                 detected_dt = r.get("detected_at")
                 if not r.get("sla_due_date") and detected_dt:
