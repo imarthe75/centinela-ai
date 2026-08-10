@@ -153,6 +153,11 @@ export default function Dashboard() {
   const [showAssetDetailsModal, setShowAssetDetailsModal] = useState(false)
   const [assetDetailsData, setAssetDetailsData] = useState(null)
   const [assetDetailsLoading, setAssetDetailsLoading] = useState(false)
+  // Agent installer modal
+  const [showAgentModal, setShowAgentModal] = useState(false)
+  const [agentModalAsset, setAgentModalAsset] = useState(null)  // { name, type, endpoint }
+  const [agentModalTab, setAgentModalTab] = useState('download')  // 'download' | 'guide' | 'verify'
+  const [agentDownloading, setAgentDownloading] = useState(false)
 
 
   // Manual Remediation Modal
@@ -506,17 +511,55 @@ export default function Dashboard() {
   const handleAddAsset = async (e) => {
     e.preventDefault()
     try {
-        await axios.post(`${API_BASE}/inventory`, newAsset)
+        const payload = { ...newAsset }
+        // If ping-only mode, clear credentials so they are not sent
+        if (newAsset.agent_mode === 'PING_ONLY') {
+            payload.vault_sudo_token = ''
+            payload.vault_ansible_user = ''
+            payload.ssh_private_key = ''
+        }
+        const res = await axios.post(`${API_BASE}/inventory`, payload)
         setShowAddModal(false)
-        setNewAsset({ asset_name: '', asset_type: '', endpoint: '', criticality: 'MEDIUM', vault_sudo_token: '', vault_ansible_user: '', auth_type: 'PASSWORD', ssh_private_key: '', gitlab_user: '', gitlab_token: '' })
+        const addedName = newAsset.asset_name
+        const addedType = newAsset.asset_type
+        setNewAsset({ asset_name: '', asset_type: '', endpoint: '', criticality: 'MEDIUM', vault_sudo_token: '', vault_ansible_user: '', auth_type: 'PASSWORD', ssh_private_key: '', gitlab_user: '', gitlab_token: '', agent_mode: 'AGENT', ipv6_endpoint: '' })
         setInventorySearch('')
         setInventoryTypeFilter('')
         setAssetStatusFilter('ALL')
         setCurrentView('inventory')
         await fetchData()
+        // Offer agent download for agent-capable asset types registered in AGENT mode
+        if (payload.agent_mode === 'AGENT' && ['SERVER_LINUX','SERVER_WINDOWS','WORKSTATION'].includes(addedType)) {
+            setAgentModalAsset({ name: addedName, type: addedType, endpoint: payload.endpoint })
+            setAgentModalTab('guide')
+            setShowAgentModal(true)
+        }
     } catch (error) {
         console.error("Error adding asset:", error)
-        alert("Error al registrar el activo")
+        alert("Error al registrar el activo: " + (error.response?.data?.detail || error.message))
+    }
+  }
+
+  const handleDownloadAgent = async (assetName, platform) => {
+    setAgentDownloading(true)
+    try {
+        const res = await axios.get(`${API_BASE}/inventory/${encodeURIComponent(assetName)}/agent-installer?platform=${platform}`, {
+            responseType: 'blob'
+        })
+        const ext = platform === 'windows' ? '.ps1' : '.sh'
+        const filename = `centinela-wazuh-install-${assetName}${ext}`
+        const url = window.URL.createObjectURL(new Blob([res.data]))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        window.URL.revokeObjectURL(url)
+    } catch (err) {
+        alert('Error al generar el script de instalación: ' + (err.response?.data?.detail || err.message))
+    } finally {
+        setAgentDownloading(false)
     }
   }
 
@@ -2569,7 +2612,7 @@ export default function Dashboard() {
                                     {/* Endpoint / Dirección */}
                                     <div>
                                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
-                                            {newAsset.asset_type === 'GITLAB' ? 'URL del Repositorio GitLab / Gitea' : 'Dirección / Endpoint (IP / FQDN / URL)'}
+                                            {newAsset.asset_type === 'GITLAB' ? 'URL del Repositorio GitLab / Gitea' : 'Dirección / Endpoint (IPv4, IPv6 o FQDN)'}
                                         </label>
                                         <input
                                             type="text"
@@ -2579,16 +2622,20 @@ export default function Dashboard() {
                                                 newAsset.asset_type === 'GITLAB'
                                                     ? 'ej. http://10.4.3.10 o https://gitlab.casmart.internal'
                                                     : newAsset.asset_type === 'WORKSTATION'
-                                                    ? 'ej. 10.4.3.105, 192.168.1.15 o mi-laptop.local'
+                                                    ? 'ej. 192.168.1.15, 2001:db8::1 o mi-laptop.local'
                                                     : newAsset.asset_type === 'CISCO_NETWORK'
-                                                    ? 'ej. 192.168.1.1 (IP del Switch / Router)'
+                                                    ? 'ej. 192.168.1.1 o [2001:db8::1] (IP del Switch)'
                                                     : newAsset.asset_type === 'VMWARE_ESXI'
-                                                    ? 'ej. 10.4.2.17 (IP del host ESXi)'
-                                                    : 'ej. 192.168.1.50, postgresql://db..., https://api...'
+                                                    ? 'ej. 10.4.2.17 o 2001:db8::10 (IP del host ESXi)'
+                                                    : 'ej. 192.168.1.50, [2001:db8::1], postgres://db..., https://api...'
                                             }
                                             value={newAsset.endpoint}
                                             onChange={(e) => setNewAsset({...newAsset, endpoint: e.target.value})}
                                         />
+                                        <p className="text-[9px] text-slate-500 mt-1.5 flex items-center gap-2 font-medium">
+                                            <Globe size={10} className="text-[#06B6D4]" />
+                                            Soporta <span className="text-[#06B6D4]">IPv4</span> (192.168.1.1), <span className="text-[#06B6D4]">IPv6</span> (2001:db8::1 o [::1]) y <span className="text-[#06B6D4]">FQDN</span> (servidor.local)
+                                        </p>
                                     </div>
 
                                     {/* ── Credenciales según tipo ── */}
@@ -2610,12 +2657,11 @@ export default function Dashboard() {
                                             <div>
                                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
                                                     <Lock size={12} className="text-[#06B6D4]" />
-                                                    Personal Access Token (PAT)
+                                                    Personal Access Token (PAT) <span className="text-slate-600 font-medium">(Opcional)</span>
                                                 </label>
                                                 <div className="relative">
                                                     <input
                                                         type="password"
-                                                        required
                                                         className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
                                                         placeholder="glpat-xxxxxxxxxxxxxxxxxxxx"
                                                         value={newAsset.gitlab_token || ''}
@@ -2631,127 +2677,212 @@ export default function Dashboard() {
                                                 </p>
                                             </div>
                                         </>
-                                    ) : ['SERVER_LINUX', 'SERVER_WINDOWS', 'WORKSTATION', 'CISCO_NETWORK', 'VMWARE_ESXI'].includes(newAsset.asset_type) ? (
+                                    ) : ['SERVER_LINUX', 'SERVER_WINDOWS', 'WORKSTATION'].includes(newAsset.asset_type) ? (
                                         <>
-                                            {/* Usuario de conexión: sólo si el tipo requiere agente/SSH */}
+                                            {/* ── Modo de Monitoreo: AGENT vs PING_ONLY ── */}
+                                            <div>
+                                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-3">
+                                                    Modo de Monitoreo
+                                                </label>
+                                                <div className="grid grid-cols-2 gap-3 mb-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setNewAsset({...newAsset, agent_mode: 'AGENT'})}
+                                                        className={`flex flex-col items-center gap-2 p-4 rounded-2xl border-2 text-xs font-bold transition-all ${
+                                                            (newAsset.agent_mode || 'AGENT') === 'AGENT'
+                                                                ? 'bg-[#06B6D4]/10 border-[#06B6D4] text-[#06B6D4]'
+                                                                : 'bg-[#0F172A] border-slate-800 text-slate-500 hover:border-slate-600'
+                                                        }`}
+                                                    >
+                                                        <Shield size={20} />
+                                                        <span>Con Agente Wazuh</span>
+                                                        <span className="text-[9px] font-medium opacity-70">EDR + Telemetría completa</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setNewAsset({...newAsset, agent_mode: 'PING_ONLY', vault_sudo_token: '', vault_ansible_user: '', ssh_private_key: ''})}
+                                                        className={`flex flex-col items-center gap-2 p-4 rounded-2xl border-2 text-xs font-bold transition-all ${
+                                                            newAsset.agent_mode === 'PING_ONLY'
+                                                                ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400'
+                                                                : 'bg-[#0F172A] border-slate-800 text-slate-500 hover:border-slate-600'
+                                                        }`}
+                                                    >
+                                                        <Radio size={20} />
+                                                        <span>Solo Ping / En Línea</span>
+                                                        <span className="text-[9px] font-medium opacity-70">Sin credenciales</span>
+                                                    </button>
+                                                </div>
+                                                {newAsset.agent_mode === 'PING_ONLY' && (
+                                                    <div className="flex items-start gap-3 p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl mt-2">
+                                                        <CheckCircle2 size={14} className="text-emerald-400 mt-0.5 shrink-0" />
+                                                        <p className="text-[9px] text-emerald-300/80 font-medium leading-relaxed">
+                                                            El activo se registra sin credenciales. Centinela solo verificará su conectividad (ping TCP). Podrás instalar el agente más tarde desde el panel del activo.
+                                                        </p>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Credenciales solo si modo AGENT */}
+                                            {(newAsset.agent_mode || 'AGENT') === 'AGENT' && (
+                                                <>
+                                                    {/* Usuario de conexión */}
+                                                    <div>
+                                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Usuario con privilegios para instalar el agente Wazuh o ejecutar comandos Ansible">
+                                                            <Users size={12} className="text-[#06B6D4]" />
+                                                            Usuario de Conexión SSH / Ansible
+                                                            <span className="text-slate-600 font-medium text-[9px]">(Opcional)</span>
+                                                        </label>
+                                                        <input
+                                                            type="text"
+                                                            className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700"
+                                                            placeholder="ej. ubuntu, centinela, root"
+                                                            value={newAsset.vault_ansible_user || ''}
+                                                            onChange={(e) => setNewAsset({...newAsset, vault_ansible_user: e.target.value})}
+                                                        />
+                                                        <p className="text-[9px] text-slate-500 mt-1.5 font-medium">
+                                                            Credencial almacenada de forma encriptada en HashiCorp Vault. Nunca se guarda en texto plano.
+                                                        </p>
+                                                    </div>
+
+                                                    {/* Método de autenticación */}
+                                                    <div className="space-y-4">
+                                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2" title="Selecciona cómo Ansible autenticará la conexión SSH al servidor">
+                                                            Método de Autenticación SSH <span className="text-slate-600 font-medium text-[9px]">(Opcional)</span>
+                                                        </label>
+                                                        <div className="flex gap-3 mb-4">
+                                                            <button
+                                                                type="button"
+                                                                title="Usar contraseña sudo para autenticación"
+                                                                onClick={() => setNewAsset({...newAsset, auth_type: 'PASSWORD'})}
+                                                                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type !== 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
+                                                            >
+                                                                🔑 Contraseña Sudo
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                title="Usar llave privada SSH (.pem / RSA) para autenticación sin contraseña"
+                                                                onClick={() => setNewAsset({...newAsset, auth_type: 'SSH_KEY'})}
+                                                                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type === 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
+                                                            >
+                                                                📜 Llave SSH (.pem / RSA)
+                                                            </button>
+                                                        </div>
+
+                                                        {newAsset.auth_type === 'SSH_KEY' ? (
+                                                            <div>
+                                                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                                                    <KeyRound size={12} className="text-[#06B6D4]" />
+                                                                    Llave Privada SSH (RSA / OpenSSH / PEM)
+                                                                </label>
+                                                                <textarea
+                                                                    rows={4}
+                                                                    className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-mono text-xs focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 resize-none"
+                                                                    placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEowIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                                                                    value={newAsset.ssh_private_key || ''}
+                                                                    onChange={(e) => setNewAsset({...newAsset, ssh_private_key: e.target.value})}
+                                                                />
+                                                                <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                                                    <CheckCircle2 size={10} />
+                                                                    La llave privada se cifra con AES-256 y se almacena exclusivamente en HashiCorp Vault.
+                                                                </p>
+                                                            </div>
+                                                        ) : (
+                                                            <div>
+                                                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Contraseña de superusuario (sudo) del servidor Linux/Windows">
+                                                                    <Lock size={12} className="text-[#06B6D4]" />
+                                                                    Contraseña Sudo del Servidor <span className="text-slate-600 font-medium text-[9px]">(Opcional)</span>
+                                                                </label>
+                                                                <div className="relative">
+                                                                    <input
+                                                                        type="password"
+                                                                        className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
+                                                                        placeholder="••••••••••••  (dejar vacío para instalar agente manualmente)"
+                                                                        value={newAsset.vault_sudo_token || ''}
+                                                                        onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
+                                                                    />
+                                                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
+                                                                        <Shield size={16} />
+                                                                    </div>
+                                                                </div>
+                                                                <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                                                    <CheckCircle2 size={10} />
+                                                                    Almacenada encriptada en Vault. No se expone al frontend ni se guarda en la BD.
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </>
+                                            )}
+
+                                            {/* Guía de instalación de agente */}
+                                            <div className="flex items-start gap-3 p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl">
+                                                <Download size={16} className="text-indigo-400 mt-0.5 shrink-0" />
+                                                <div className="flex-1">
+                                                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">Instalación Manual del Agente</p>
+                                                    <p className="text-[9px] text-slate-400 font-medium leading-relaxed mb-2">
+                                                        Puedes descargar el script de instalación del Agente Wazuh para instalarlo manualmente sin credenciales SSH.
+                                                    </p>
+                                                    {newAsset.asset_name && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                if (newAsset.asset_name) {
+                                                                    setAgentModalAsset({ name: newAsset.asset_name, type: newAsset.asset_type, endpoint: newAsset.endpoint })
+                                                                    setAgentModalTab('guide')
+                                                                    setShowAgentModal(true)
+                                                                } else {
+                                                                    alert('Introduce el nombre del activo primero.')
+                                                                }
+                                                            }}
+                                                            className="text-[9px] font-black text-indigo-300 flex items-center gap-1.5 hover:text-white transition-colors"
+                                                        >
+                                                            <Download size={10} /> Ver guía y descargar script de instalación
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </>
+                                    ) : ['CISCO_NETWORK', 'VMWARE_ESXI'].includes(newAsset.asset_type) ? (
+                                        <>
+                                            {/* Usuario de conexión Cisco/VMware */}
                                             <div>
                                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Usuario con privilegios para instalar el agente Wazuh o ejecutar comandos Ansible">
                                                     <Users size={12} className="text-[#06B6D4]" />
-                                                    {newAsset.asset_type === 'CISCO_NETWORK' ? 'Usuario SNMP / SSH del Dispositivo' :
-                                                     newAsset.asset_type === 'VMWARE_ESXI' ? 'Usuario Administrador vSphere / SSH' :
-                                                     'Usuario de Conexión SSH / Ansible'}
+                                                    {newAsset.asset_type === 'CISCO_NETWORK' ? 'Usuario SNMP / SSH del Dispositivo' : 'Usuario Administrador vSphere / SSH'}
+                                                    <span className="text-slate-600 font-medium text-[9px]">(Opcional)</span>
                                                 </label>
                                                 <input
                                                     type="text"
                                                     className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700"
-                                                    placeholder={
-                                                        newAsset.asset_type === 'CISCO_NETWORK' ? 'ej. admin o cisco-ro' :
-                                                        newAsset.asset_type === 'VMWARE_ESXI' ? 'ej. root o administrator@vsphere.local' :
-                                                        'ej. ubuntu, centinela, root'
-                                                    }
+                                                    placeholder={newAsset.asset_type === 'CISCO_NETWORK' ? 'ej. admin o cisco-ro' : 'ej. root o administrator@vsphere.local'}
                                                     value={newAsset.vault_ansible_user || ''}
                                                     onChange={(e) => setNewAsset({...newAsset, vault_ansible_user: e.target.value})}
                                                 />
-                                                <p className="text-[9px] text-slate-500 mt-1.5 font-medium">
-                                                    Credencial almacenada de forma encriptada en HashiCorp Vault. Nunca se guarda en texto plano.
+                                            </div>
+                                            {/* Para Cisco/VMware: contraseña/token */}
+                                            <div>
+                                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Contraseña o token API del dispositivo de red">
+                                                    <Lock size={12} className="text-[#06B6D4]" />
+                                                    {newAsset.asset_type === 'CISCO_NETWORK' ? 'Contraseña SSH / Comunidad SNMP' : 'Contraseña / Token API vSphere'}
+                                                    <span className="text-slate-600 font-medium text-[9px]">(Opcional)</span>
+                                                </label>
+                                                <div className="relative">
+                                                    <input
+                                                        type="password"
+                                                        className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
+                                                        placeholder="••••••••••••"
+                                                        value={newAsset.vault_sudo_token || ''}
+                                                        onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
+                                                    />
+                                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
+                                                        <Shield size={16} />
+                                                    </div>
+                                                </div>
+                                                <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
+                                                    <CheckCircle2 size={10} />
+                                                    Credencial cifrada en Vault. Las sondas de red no requieren instalar agente en el dispositivo.
                                                 </p>
                                             </div>
-
-                                            {/* Método de autenticación — sólo para servidores Linux/Windows/Workstation */}
-                                            {['SERVER_LINUX', 'SERVER_WINDOWS', 'WORKSTATION'].includes(newAsset.asset_type) && (
-                                                <div className="space-y-4">
-                                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2" title="Selecciona cómo Ansible autenticará la conexión SSH al servidor">
-                                                        Método de Autenticación SSH
-                                                    </label>
-                                                    <div className="flex gap-3 mb-4">
-                                                        <button
-                                                            type="button"
-                                                            title="Usar contraseña sudo para autenticación"
-                                                            onClick={() => setNewAsset({...newAsset, auth_type: 'PASSWORD'})}
-                                                            className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type !== 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
-                                                        >
-                                                            🔑 Contraseña Sudo
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            title="Usar llave privada SSH (.pem / RSA) para autenticación sin contraseña"
-                                                            onClick={() => setNewAsset({...newAsset, auth_type: 'SSH_KEY'})}
-                                                            className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border ${newAsset.auth_type === 'SSH_KEY' ? 'bg-[#06B6D4]/20 border-[#06B6D4] text-[#06B6D4]' : 'bg-[#0F172A] border-slate-800 text-slate-400'}`}
-                                                        >
-                                                            📜 Llave SSH (.pem / RSA)
-                                                        </button>
-                                                    </div>
-
-                                                    {newAsset.auth_type === 'SSH_KEY' ? (
-                                                        <div>
-                                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
-                                                                <KeyRound size={12} className="text-[#06B6D4]" />
-                                                                Llave Privada SSH (RSA / OpenSSH / PEM)
-                                                            </label>
-                                                            <textarea
-                                                                rows={4}
-                                                                className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-mono text-xs focus:ring-2 focus:ring-[#06B6D4] outline-none placeholder-slate-700 resize-none"
-                                                                placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEowIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
-                                                                value={newAsset.ssh_private_key || ''}
-                                                                onChange={(e) => setNewAsset({...newAsset, ssh_private_key: e.target.value})}
-                                                            />
-                                                            <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
-                                                                <CheckCircle2 size={10} />
-                                                                La llave privada se cifra con AES-256 y se almacena exclusivamente en HashiCorp Vault.
-                                                            </p>
-                                                        </div>
-                                                    ) : (
-                                                        <div>
-                                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Contraseña de superusuario (sudo) del servidor Linux/Windows">
-                                                                <Lock size={12} className="text-[#06B6D4]" />
-                                                                Contraseña Sudo del Servidor
-                                                            </label>
-                                                            <div className="relative">
-                                                                <input
-                                                                    type="password"
-                                                                    className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
-                                                                    placeholder="••••••••••••"
-                                                                    value={newAsset.vault_sudo_token || ''}
-                                                                    onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
-                                                                />
-                                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
-                                                                    <Shield size={16} />
-                                                                </div>
-                                                            </div>
-                                                            <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
-                                                                <CheckCircle2 size={10} />
-                                                                Almacenada encriptada en Vault. No se expone al frontend ni se guarda en la BD.
-                                                            </p>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-
-                                            {/* Para Cisco/VMware: contraseña/token en lugar de sudo */}
-                                            {['CISCO_NETWORK', 'VMWARE_ESXI'].includes(newAsset.asset_type) && (
-                                                <div>
-                                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2" title="Contraseña o token API del dispositivo de red">
-                                                        <Lock size={12} className="text-[#06B6D4]" />
-                                                        {newAsset.asset_type === 'CISCO_NETWORK' ? 'Contraseña SSH / Comunidad SNMP' : 'Contraseña / Token API vSphere'}
-                                                    </label>
-                                                    <div className="relative">
-                                                        <input
-                                                            type="password"
-                                                            className="w-full bg-[#0F172A] border border-[#06B6D4]/30 rounded-2xl p-4 text-[#06B6D4] font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none pr-12 placeholder-slate-700"
-                                                            placeholder="••••••••••••"
-                                                            value={newAsset.vault_sudo_token || ''}
-                                                            onChange={(e) => setNewAsset({...newAsset, vault_sudo_token: e.target.value})}
-                                                        />
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[#06B6D4]/50">
-                                                            <Shield size={16} />
-                                                        </div>
-                                                    </div>
-                                                    <p className="text-[9px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
-                                                        <CheckCircle2 size={10} />
-                                                        Credencial cifrada en Vault. Las sondas de red no requieren instalar agente en el dispositivo.
-                                                    </p>
-                                                </div>
-                                            )}
                                         </>
                                     ) : (
                                         /* Para tipos sin agente (URL, IP, DB, Cloud, Container, K8s) */
@@ -3272,15 +3403,17 @@ export default function Dashboard() {
 
         {showAssetDetailsModal && assetDetailsData && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#0F172A]/90 backdrop-blur-md animate-in fade-in duration-300">
-                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-indigo-500/20 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
-                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-indigo-500/10 to-transparent flex justify-between items-center">
+                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-indigo-500/20 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500 flex flex-col max-h-[85vh]">
+                    <div className="p-8 border-b border-slate-800 bg-gradient-to-br from-indigo-500/10 to-transparent flex justify-between items-center shrink-0">
                         <div className="flex items-center gap-3">
                             <div className="p-3 bg-indigo-500/10 rounded-2xl text-indigo-400 border border-indigo-500/20">
-                                <Laptop size={24} />
+                                <AssetIcon type={assetDetailsData.group.interfaces[0]?.asset_type} />
                             </div>
                             <div>
                                 <h3 className="text-white font-bold text-xl tracking-tight">{assetDetailsData.group.name}</h3>
-                                <p className="text-[10px] text-indigo-400 font-black uppercase tracking-widest mt-0.5">Características del Sistema Operativo & Hardware</p>
+                                <p className="text-[10px] text-indigo-400 font-black uppercase tracking-widest mt-0.5">
+                                    {assetDetailsData.group.interfaces[0]?.asset_type_label || assetDetailsData.group.interfaces[0]?.asset_type} — Telemetría del Sistema
+                                </p>
                             </div>
                         </div>
                         <button onClick={() => setShowAssetDetailsModal(false)} className="text-slate-500 hover:text-white transition-all">
@@ -3288,69 +3421,183 @@ export default function Dashboard() {
                         </button>
                     </div>
 
-                    <div className="p-8 space-y-6">
+                    <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
                         {assetDetailsLoading ? (
                             <div className="flex items-center justify-center py-12 text-indigo-400 gap-3">
                                 <Activity size={24} className="animate-spin" />
                                 <span className="text-xs font-bold uppercase tracking-widest">Consultando telemetría del sistema...</span>
                             </div>
                         ) : (
-                            <div className="grid grid-cols-2 gap-4 text-xs">
-                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Nombre del Activo</span>
-                                    <span className="text-white font-bold">{assetDetailsData.group.name}</span>
-                                </div>
-                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Tipo de Activo</span>
-                                    <span className="text-indigo-400 font-bold">{assetDetailsData.group.interfaces[0]?.asset_type_label || assetDetailsData.group.interfaces[0]?.asset_type}</span>
-                                </div>
-                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Dirección / Endpoint</span>
-                                    <code className="text-[#06B6D4] font-bold">{assetDetailsData.group.interfaces[0]?.endpoint}</code>
-                                </div>
-                                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Estado de Conectividad</span>
-                                    <span className={`font-bold ${(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                        {(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') 
-                                            ? `En Línea (Sincronizado ${assetDetailsData.ping?.latency_ms ? `- ${assetDetailsData.ping?.latency_ms}ms` : ''})` 
-                                            : 'Offline / Pendiente'}
-                                    </span>
+                            <>
+                                {/* Base info grid */}
+                                <div className="grid grid-cols-2 gap-4 text-xs">
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Nombre del Activo</span>
+                                        <span className="text-white font-bold">{assetDetailsData.group.name}</span>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Tipo de Activo</span>
+                                        <span className="text-indigo-400 font-bold">{assetDetailsData.group.interfaces[0]?.asset_type_label || assetDetailsData.group.interfaces[0]?.asset_type}</span>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Dirección / Endpoint</span>
+                                        <code className="text-[#06B6D4] font-bold break-all">{assetDetailsData.group.interfaces[0]?.endpoint}</code>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Estado de Conectividad</span>
+                                        <span className={`font-bold ${(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active') ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                            {(assetDetailsData.ping?.ping_ok || assetDetailsData.group.status === 'active')
+                                                ? `En Línea${assetDetailsData.ping?.latency_ms ? ` — ${assetDetailsData.ping?.latency_ms}ms` : ''}`
+                                                : 'Offline / Pendiente'}
+                                        </span>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Criticidad</span>
+                                        <span className={`font-bold text-xs ${
+                                            assetDetailsData.info?.criticality === 'CRITICAL' ? 'text-red-400' :
+                                            assetDetailsData.info?.criticality === 'HIGH' ? 'text-orange-400' :
+                                            assetDetailsData.info?.criticality === 'MEDIUM' ? 'text-amber-400' : 'text-slate-400'
+                                        }`}>{assetDetailsData.info?.criticality || assetDetailsData.group.interfaces[0]?.criticality || 'N/A'}</span>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Último Escaneo</span>
+                                        <span className="text-slate-400 font-bold text-[10px]">
+                                            {assetDetailsData.info?.last_scanned
+                                                ? new Date(assetDetailsData.info.last_scanned).toLocaleString('es-MX')
+                                                : 'Pendiente de escaneo'}
+                                        </span>
+                                    </div>
                                 </div>
 
+                                {/* OS & System Details */}
                                 {assetDetailsData.info && (
-                                    <>
-                                        <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800 space-y-1">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block">Sistema Operativo & Edición / Motor</span>
-                                            <p className="text-white font-bold text-xs">{assetDetailsData.info.os_info || 'Linux / POSIX (Enterprise)'}</p>
-                                        </div>
-                                        <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión Kernel / Build</span>
-                                            <span className="text-slate-300 font-mono font-bold">{assetDetailsData.info.kernel || '6.8.0-generic'}</span>
-                                        </div>
-                                        <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Arquitectura Hardware</span>
-                                            <span className="text-indigo-400 font-bold">{assetDetailsData.info.architecture || 'x86_64'}</span>
-                                        </div>
-                                        {assetDetailsData.info.engine_version !== 'N/A' && (
+                                    <div className="space-y-3">
+                                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Sistema Operativo & Plataforma</p>
+                                        <div className="grid grid-cols-2 gap-3 text-xs">
                                             <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión de Motor / EDR</span>
-                                                <span className="text-emerald-400 font-bold">{assetDetailsData.info.engine_version}</span>
+                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Sistema Operativo / Motor</span>
+                                                <p className="text-white font-bold">{assetDetailsData.info.os_info || 'Linux Enterprise'}</p>
                                             </div>
-                                        )}
-                                        {Array.isArray(assetDetailsData.info.specific_details) && assetDetailsData.info.specific_details.map((item, i) => (
-                                            <div key={i} className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">{item.key}</span>
-                                                <span className="text-slate-200 font-bold">{item.value}</span>
+                                            <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Kernel / Build</span>
+                                                <span className="text-slate-300 font-mono font-bold text-[11px]">{assetDetailsData.info.kernel || 'N/A'}</span>
                                             </div>
-                                        ))}
-                                    </>
+                                            <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Arquitectura</span>
+                                                <span className="text-indigo-400 font-bold">{assetDetailsData.info.architecture || 'x86_64'}</span>
+                                            </div>
+                                            {assetDetailsData.info.engine_version && assetDetailsData.info.engine_version !== 'N/A' && (
+                                                <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión de Motor / EDR</span>
+                                                    <span className="text-emerald-400 font-bold">{assetDetailsData.info.engine_version}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
                                 )}
-                            </div>
+
+                                {/* Matriz de Cumplimiento CMMI / ISO 27001 / NIST */}
+                                <div className="space-y-3">
+                                    <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Matriz de Cumplimiento Estándar (ISO 27001 / CMMI Nivel 3-5 / NIST CSF)</p>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/20 text-center">
+                                            <span className="text-[8px] text-slate-500 font-black uppercase block">ISO 27001:2022</span>
+                                            <span className="text-emerald-400 font-bold text-xs">✓ Control A.8.8</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Gestión de Vulnerabilidades</span>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/20 text-center">
+                                            <span className="text-[8px] text-slate-500 font-black uppercase block">CMMI v2.0 (Level 3-5)</span>
+                                            <span className="text-indigo-400 font-bold text-xs">✓ CAR / SAM</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Causal Analysis & Security</span>
+                                        </div>
+                                        <div className="bg-[#0F172A] p-3 rounded-xl border border-cyan-500/20 text-center">
+                                            <span className="text-[8px] text-slate-500 font-black uppercase block">NIST CSF 2.0</span>
+                                            <span className="text-cyan-400 font-bold text-xs">✓ PR.PS-01 / DE.CM</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Protección & Monitoreo</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Specific Details (type-specific) */}
+                                {assetDetailsData.info && Array.isArray(assetDetailsData.info.specific_details) && assetDetailsData.info.specific_details.length > 0 && (
+                                    <div className="space-y-3">
+                                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Detalles Específicos del Activo</p>
+                                        <div className="grid grid-cols-2 gap-3 text-xs">
+                                            {assetDetailsData.info.specific_details.map((item, i) => (
+                                                <div key={i} className={`bg-[#0F172A] p-4 rounded-2xl border border-slate-800 ${item.key?.length > 20 ? 'col-span-2' : ''}`}>
+                                                    <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">{item.key}</span>
+                                                    <span className="text-slate-200 font-bold">{item.value}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Multiple interfaces (multi-IP) */}
+                                {assetDetailsData.group.interfaces?.length > 1 && (
+                                    <div className="space-y-3">
+                                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Interfaces y Endpoints Registrados</p>
+                                        <div className="space-y-2">
+                                            {assetDetailsData.group.interfaces.map((iface, i) => (
+                                                <div key={i} className="flex items-center justify-between bg-[#0F172A] p-3 rounded-xl border border-slate-800">
+                                                    <div className="flex items-center gap-2">
+                                                        <Globe size={12} className="text-[#06B6D4]" />
+                                                        <code className="text-[#06B6D4] text-[11px] font-bold">{iface.endpoint}</code>
+                                                    </div>
+                                                    <span className="text-[9px] text-slate-500 font-black uppercase">{iface.asset_type}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Agent download action for agent-capable types */}
+                                {['SERVER_LINUX', 'SERVER_WINDOWS', 'WORKSTATION', 'SERVER'].includes(assetDetailsData.group.interfaces[0]?.asset_type) && (
+                                    <div className="flex items-center gap-3 p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl">
+                                        <Download size={16} className="text-indigo-400 shrink-0" />
+                                        <div className="flex-1">
+                                            <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-0.5">Agente Wazuh EDR</p>
+                                            <p className="text-[9px] text-slate-500 font-medium">
+                                                {assetDetailsData.group.agent_id
+                                                    ? `Agente instalado y activo (ID: ${assetDetailsData.group.agent_id})`
+                                                    : 'Instala el agente para habilitar monitoreo EDR completo.'}
+                                            </p>
+                                        </div>
+                                        {!assetDetailsData.group.agent_id && (
+                                            <button
+                                                onClick={() => {
+                                                    setShowAssetDetailsModal(false)
+                                                    setAgentModalAsset({
+                                                        name: assetDetailsData.group.name,
+                                                        type: assetDetailsData.group.interfaces[0]?.asset_type,
+                                                        endpoint: assetDetailsData.group.interfaces[0]?.endpoint
+                                                    })
+                                                    setAgentModalTab('guide')
+                                                    setShowAgentModal(true)
+                                                }}
+                                                className="shrink-0 py-2 px-4 bg-indigo-500 text-white font-black uppercase text-[9px] tracking-widest rounded-xl hover:bg-indigo-400 transition-all flex items-center gap-1.5"
+                                            >
+                                                <Download size={12} /> Instalar Agente
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </>
                         )}
+                    </div>
+
+                    <div className="p-6 bg-[#0F172A] border-t border-white/5 flex justify-end shrink-0">
+                        <button
+                            onClick={() => setShowAssetDetailsModal(false)}
+                            className="px-10 py-4 bg-[#06B6D4] text-[#0F172A] font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-white transition-all"
+                        >
+                            Cerrar
+                        </button>
                     </div>
                 </div>
             </div>
         )}
+
 
         {/* Toast Container */}
         <div className="fixed bottom-6 right-6 z-[120] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
@@ -3451,6 +3698,277 @@ export default function Dashboard() {
                 </div>
             </div>
         )}
+        {/* ─── Agent Installer Modal ─── */}
+        {showAgentModal && agentModalAsset && (
+            <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#0F172A]/95 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-indigo-500/30 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500 flex flex-col max-h-[90vh]">
+                    {/* Header */}
+                    <div className="p-8 border-b border-white/5 bg-gradient-to-br from-indigo-500/10 to-transparent flex justify-between items-center shrink-0">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                                <Download size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-bold text-xl tracking-tight">Instalación de Agente Wazuh</h3>
+                                <p className="text-[10px] text-indigo-400 font-black uppercase tracking-widest mt-0.5">
+                                    {agentModalAsset.name} — {agentModalAsset.type?.replace('SERVER_', '').replace('_', ' ')}
+                                </p>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowAgentModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+
+                    {/* Tabs */}
+                    <div className="flex border-b border-white/5 shrink-0">
+                        {[
+                            { id: 'download', label: '📥 Descarga', icon: Download },
+                            { id: 'guide', label: '📋 Guía', icon: FileText },
+                            { id: 'verify', label: '✅ Verificar', icon: CheckCircle2 }
+                        ].map(tab => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setAgentModalTab(tab.id)}
+                                className={`flex-1 py-4 text-xs font-bold uppercase tracking-wider transition-all border-b-2 ${
+                                    agentModalTab === tab.id
+                                        ? 'border-indigo-400 text-indigo-400 bg-indigo-500/5'
+                                        : 'border-transparent text-slate-500 hover:text-slate-300'
+                                }`}
+                            >
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                        {agentModalTab === 'download' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Descarga el script de instalación del Agente Wazuh EDR preconfigurado para conectarse automáticamente al Manager de Centinela AI.
+                                </p>
+                                <div className="grid grid-cols-1 gap-4">
+                                    {/* Linux Script */}
+                                    {['SERVER_LINUX', 'WORKSTATION'].includes(agentModalAsset.type) || !agentModalAsset.type?.includes('WINDOWS') ? (
+                                        <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-400 text-lg">🐧</div>
+                                                <div>
+                                                    <p className="text-white font-bold text-sm">Script de Instalación Linux</p>
+                                                    <p className="text-[10px] text-slate-500">Bash Script (.sh) — Ubuntu, Debian, CentOS, RHEL, AlmaLinux</p>
+                                                </div>
+                                            </div>
+                                            <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-emerald-400">
+                                                <p className="text-slate-500 mb-1"># Paso 1: Descargar el script</p>
+                                                <p>curl -O /api/inventory/{agentModalAsset.name}/agent-installer</p>
+                                                <p className="text-slate-500 mt-2 mb-1"># Paso 2: Ejecutar como root</p>
+                                                <p>sudo bash centinela-wazuh-install-{agentModalAsset.name}.sh</p>
+                                            </div>
+                                            <button
+                                                onClick={() => handleDownloadAgent(agentModalAsset.name, 'linux')}
+                                                disabled={agentDownloading}
+                                                className="w-full py-3 bg-indigo-500 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-indigo-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                            >
+                                                {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                                Descargar Script Linux (.sh)
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                    {/* Windows Script */}
+                                    {['SERVER_WINDOWS'].includes(agentModalAsset.type) || agentModalAsset.type?.includes('WINDOWS') ? (
+                                        <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 text-lg">🪟</div>
+                                                <div>
+                                                    <p className="text-white font-bold text-sm">Script de Instalación Windows</p>
+                                                    <p className="text-[10px] text-slate-500">PowerShell Script (.ps1) — Windows Server 2019/2022</p>
+                                                </div>
+                                            </div>
+                                            <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-blue-400">
+                                                <p className="text-slate-500 mb-1"># Abrir PowerShell como Administrador:</p>
+                                                <p>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</p>
+                                                <p>.\\centinela-wazuh-install-{agentModalAsset.name}.ps1</p>
+                                            </div>
+                                            <button
+                                                onClick={() => handleDownloadAgent(agentModalAsset.name, 'windows')}
+                                                disabled={agentDownloading}
+                                                className="w-full py-3 bg-blue-500 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-blue-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                            >
+                                                {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                                Descargar Script Windows (.ps1)
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                    {/* macOS Script */}
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-slate-500/10 flex items-center justify-center text-white text-lg">🍎</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Script de Instalación macOS</p>
+                                                <p className="text-[10px] text-slate-500">Zsh Script (.sh) — macOS Sonoma, Ventura, Monterey (M1/M2/M3 & Intel)</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'macos')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-slate-700 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-slate-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Script macOS (.sh)
+                                        </button>
+                                    </div>
+
+                                    {/* ossec.conf direct config download */}
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-lg">⚙️</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Archivo de Configuración Directo (`ossec.conf`)</p>
+                                                <p className="text-[10px] text-slate-500">Pre-configurado con Manager IP: <span className="text-[#06B6D4] font-bold">10.4.3.34</span> y Puerto TCP: <span className="text-[#06B6D4] font-bold">1514</span></p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'conf')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-emerald-600 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-emerald-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Configuración `ossec.conf`
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {agentModalTab === 'guide' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Sigue estos pasos para instalar el Agente Wazuh EDR en el activo <span className="text-white font-bold">{agentModalAsset.name}</span> y conectarlo a Centinela AI.
+                                </p>
+                                <div className="space-y-4">
+                                    {[
+                                        {
+                                            n: 1,
+                                            title: 'Descargar el Script de Instalación',
+                                            desc: 'Ve a la pestaña "Descarga" y descarga el script correspondiente a tu sistema operativo (.sh para Linux, .ps1 para Windows).',
+                                            note: 'El script ya incluye la IP del Manager de Wazuh y los parámetros de registro pre-configurados.',
+                                            color: 'text-[#06B6D4]', bg: 'bg-[#06B6D4]/10', border: 'border-[#06B6D4]/20'
+                                        },
+                                        {
+                                            n: 2,
+                                            title: 'Transferir el Script al Servidor',
+                                            desc: agentModalAsset.type?.includes('WINDOWS')
+                                                ? 'Copia el archivo .ps1 al servidor Windows. Puedes usar RDP, WinSCP, o compartir la carpeta de red.'
+                                                : `Transfiere el script al servidor: scp centinela-wazuh-install-${agentModalAsset.name}.sh usuario@${agentModalAsset.endpoint || 'IP_DEL_SERVIDOR'}:/tmp/`,
+                                            note: agentModalAsset.type?.includes('WINDOWS') ? 'Asegúrate de que el archivo no esté bloqueado por el antivirus durante la instalación.' : 'Asegúrate de que el archivo tiene permisos de ejecución: chmod +x /tmp/centinela-wazuh-*.sh',
+                                            color: 'text-amber-400', bg: 'bg-amber-400/10', border: 'border-amber-400/20'
+                                        },
+                                        {
+                                            n: 3,
+                                            title: 'Ejecutar como Administrador / Root',
+                                            desc: agentModalAsset.type?.includes('WINDOWS')
+                                                ? 'Abre PowerShell como Administrador y ejecuta: Set-ExecutionPolicy Bypass -Scope Process; .\\centinela-wazuh-install.ps1'
+                                                : 'En el servidor Linux, ejecuta el script con privilegios de root: sudo bash /tmp/centinela-wazuh-*.sh',
+                                            note: 'La instalación tomará entre 2 y 5 minutos. El script mostrará el progreso en la terminal.',
+                                            color: 'text-emerald-400', bg: 'bg-emerald-400/10', border: 'border-emerald-400/20'
+                                        },
+                                        {
+                                            n: 4,
+                                            title: 'Verificar Registro en el Manager',
+                                            desc: 'Tras completar la instalación, el agente se registrará automáticamente en el Wazuh Manager de Centinela AI. En 1-2 minutos el activo aparecerá como "Activo" en el Dashboard.',
+                                            note: 'Ve a la pestaña "Verificar" para ver los comandos de diagnóstico en caso de problemas.',
+                                            color: 'text-indigo-400', bg: 'bg-indigo-400/10', border: 'border-indigo-400/20'
+                                        }
+                                    ].map((step) => (
+                                        <div key={step.n} className={`flex gap-4 p-5 ${step.bg} border ${step.border} rounded-2xl`}>
+                                            <div className={`w-8 h-8 rounded-full ${step.bg} border ${step.border} flex items-center justify-center ${step.color} font-black text-sm shrink-0`}>
+                                                {step.n}
+                                            </div>
+                                            <div>
+                                                <p className={`font-black text-xs uppercase tracking-wider ${step.color} mb-1`}>{step.title}</p>
+                                                <p className="text-slate-300 text-xs leading-relaxed mb-2">{step.desc}</p>
+                                                <p className="text-slate-500 text-[10px] leading-relaxed italic">💡 {step.note}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {agentModalTab === 'verify' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Usa estos comandos para verificar que el agente está correctamente instalado y conectado.
+                                </p>
+                                <div className="space-y-4">
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">En el Servidor Linux — Estado del Servicio</p>
+                                        <pre className="font-mono text-xs text-slate-300 bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 overflow-x-auto">
+{`# Verificar estado del servicio
+systemctl status wazuh-agent
+
+# Ver logs del agente
+tail -f /var/ossec/logs/ossec.log
+
+# Verificar conexión al Manager
+/var/ossec/bin/agent-auth -m MANAGER_IP -A AGENT_NAME
+
+# Estado del control
+/var/ossec/bin/wazuh-control status`}</pre>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest">En el Servidor Windows — Estado del Servicio</p>
+                                        <pre className="font-mono text-xs text-slate-300 bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 overflow-x-auto">
+{`# Verificar servicio en PowerShell (como Admin)
+Get-Service WazuhSvc
+
+# Ver logs del agente
+Get-Content "C:\\Program Files (x86)\\ossec-agent\\ossec.log" -Tail 50
+
+# Reiniciar el servicio si es necesario
+Restart-Service WazuhSvc`}</pre>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Indicadores de Éxito</p>
+                                        <div className="space-y-2">
+                                            {[
+                                                'El servicio wazuh-agent aparece como "active (running)" o "Running"',
+                                                'El activo cambia a estado "Activo" en el Dashboard de Inventario',
+                                                'El log muestra "Connected to Manager" sin errores de autenticación',
+                                                'El agente aparece listado en el Manager con status "Active"'
+                                            ].map((item, i) => (
+                                                <div key={i} className="flex items-start gap-2">
+                                                    <CheckCircle2 size={12} className="text-emerald-400 mt-0.5 shrink-0" />
+                                                    <p className="text-xs text-slate-400">{item}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-6 bg-[#0F172A] border-t border-white/5 flex gap-3 shrink-0">
+                        <button
+                            onClick={() => setAgentModalTab(agentModalTab === 'download' ? 'guide' : agentModalTab === 'guide' ? 'verify' : 'download')}
+                            className="flex-1 py-4 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-indigo-500/20 transition-all"
+                        >
+                            {agentModalTab === 'download' ? '→ Ver Guía de Instalación' : agentModalTab === 'guide' ? '→ Ver Verificación' : '→ Ver Descarga'}
+                        </button>
+                        <button
+                            onClick={() => setShowAgentModal(false)}
+                            className="px-8 py-4 bg-slate-800 text-white font-black uppercase text-[10px] tracking-widest rounded-2xl hover:bg-slate-700 transition-all"
+                        >
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
       </main>
     </div>
   )
