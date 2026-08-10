@@ -68,13 +68,14 @@ Auditoría y control de seguridad específico para aplicaciones que consumen LLM
 - **Detección de Shadow APIs**: Escaneo comparativo entre el código fuente (rutas FastAPI, Express, Spring) y la documentación oficial declarada (`openapi.json` / Swagger) para detectar endpoints "fantasma" expuestos sin documentación.
 - **API Drift & Parametrización Insegura**: Identificación de parámetros no documentados o esquemas de respuesta que filtran campos internos del sistema.
 
-### 6. 🗄️ Auditoría y Hardening de Bases de Datos (SQL, NoSQL, Cache)
-Centinela-AI audita la superficie de persistencia (PostgreSQL, MySQL/MariaDB, MongoDB, Cassandra, Redis, Valkey) combinando análisis de código, perimetral, infraestructura como código y el módulo nativo `auditor_db_hardening.py`:
-- **Inyección de SQL (SAST & DAST)**: Detección estática en código AST y pruebas activas en tiempo de ejecución vía SQLMap.
-- **Cifrado TLS/SSL en Tránsito**: Inspección del puerto de la base de datos para garantizar handshake seguro y evitar transmisión de datos en texto plano (`DB-NO-TLS-ENCRYPTION`).
+### 6. 🗄️ Auditoría y Hardening de Bases de Datos (SQL, NoSQL, In-Memory & Query Engines)
+Centinela-AI audita la superficie de persistencia y motores de consulta de los principales proveedores:
+- **Bases de Datos Relacionales (SQL)**: PostgreSQL (5432), MySQL/MariaDB (3306), Oracle Database (1521), Microsoft SQL Server (1433).
+- **Bases de Datos NoSQL & Documentos**: MongoDB (27017), Apache Cassandra (9042), Neo4j Grafo (7687), Búsqueda (Elasticsearch/OpenSearch 9200).
+- **Motores de Consulta Masiva (Query Engines)**: Trino / Presto DB (8080/8443) y Caching (Redis / Valkey 6379).
+- **Inyección de SQL & Trino Query Security**: Detección estática en código AST, ORMs y pruebas activas en tiempo de ejecución vía SQLMap/Nuclei.
+- **Cifrado TLS/SSL en Tránsito**: Inspección nativa del handshake TLS/SSL en todos los puertos de persistencia (`DB-NO-TLS-ENCRYPTION`).
 - **Cifrado TDE en Reposo (IaC / Nube)**: Verificación mediante Checkov y Prowler de cifrado de almacenamiento (`storage_encrypted=True`) y llaves KMS.
-- **Puertos Predeterminados & Exposición**: Alertas sobre exposición abierta de puertos por defecto (`5432`, `3306`, `27017`, `6379`) y bases de datos anónimas sin autenticación.
-- **Secretos & Connection Strings**: Detección de cadenas de conexión embebidas con contraseñas en código o repositorios Git.
 
 ### 7. 📜 Mapeo de Estándares Maestros de Auditoría y Cumplimiento Normativo
 Cada hallazgo detectado en el ecosistema es mapeado de forma automática hacia controles oficiales y matrices de amenaza:

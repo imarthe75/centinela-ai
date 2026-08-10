@@ -31,7 +31,19 @@ def audit_database_security(asset_id: int, endpoint: str, db_type: str = "SQL"):
     cur = conn.cursor()
 
     host = endpoint.replace("http://", "").replace("https://", "").split(":")[0].split("/")[0]
-    port = 5432 if "postgres" in endpoint.lower() else (3306 if "mysql" in endpoint.lower() or "mariadb" in endpoint.lower() else (27017 if "mongo" in endpoint.lower() else 6379))
+    # Mapeo exhaustivo de motores Relacionales, NoSQL, In-Memory y Query Engines
+    ep_lower = endpoint.lower()
+    if "postgres" in ep_lower: port = 5432
+    elif "mysql" in ep_lower or "mariadb" in ep_lower: port = 3306
+    elif "oracle" in ep_lower: port = 1521
+    elif "mssql" in ep_lower or "sqlserver" in ep_lower: port = 1433
+    elif "mongo" in ep_lower: port = 27017
+    elif "cassandra" in ep_lower: port = 9042
+    elif "trino" in ep_lower or "presto" in ep_lower: port = 8080
+    elif "elastic" in ep_lower or "opensearch" in ep_lower: port = 9200
+    elif "neo4j" in ep_lower: port = 7687
+    elif "redis" in ep_lower or "valkey" in ep_lower: port = 6379
+    else: port = 5432
 
     # 1. Verificación TLS/SSL
     tls_res = check_db_tls(host, port)
@@ -44,13 +56,13 @@ def audit_database_security(asset_id: int, endpoint: str, db_type: str = "SQL"):
             asset_id,
             "DB-NO-TLS-ENCRYPTION",
             "HIGH",
-            f"El puerto {port} de la base de datos {endpoint} no exige o no tiene configurado cifrado TLS/SSL en tránsito.",
+            f"El puerto {port} de la base de datos {endpoint} ({db_type}) no exige o no tiene configurado cifrado TLS/SSL en tránsito.",
             "db-hardening",
             "OPEN"
         ))
 
     # 2. Verificación de Exposición de Puertos Predeterminados a Red Abierta
-    if port in [5432, 3306, 27017, 6379, 1433]:
+    if port in [5432, 3306, 1521, 1433, 27017, 9042, 8080, 9200, 7687, 6379]:
         cur.execute("""
             INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, scan_engine, status)
             VALUES (%s, %s, %s, %s, %s, %s)
