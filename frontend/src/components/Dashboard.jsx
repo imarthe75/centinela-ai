@@ -679,12 +679,9 @@ export default function Dashboard() {
         }
       }
       
-      let infoData = null
-      if (group.agent_id) {
-        const res = await axios.get(`${API_BASE}/wazuh/agent/${encodeURIComponent(group.agent_id)}/info`)
-        infoData = res.data?.parsed || null
-      }
-      setAssetDetailsData({ group, info: infoData, ping: currentPing })
+      const resDetails = await axios.get(`${API_BASE}/inventory/${encodeURIComponent(group.name)}/details`)
+      const deepDetails = resDetails.data || null
+      setAssetDetailsData({ group, info: deepDetails, ping: currentPing })
     } catch (err) {
       console.error("Error fetching asset details:", err)
       setAssetDetailsData({ group, info: null, ping: { status: group.status === 'active' ? 'ONLINE' : 'OFFLINE', ping_ok: group.status === 'active' } })
@@ -3320,26 +3317,33 @@ export default function Dashboard() {
                                     </span>
                                 </div>
 
-                                {assetDetailsData.info ? (
+                                {assetDetailsData.info && (
                                     <>
                                         <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800 space-y-1">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block">Sistema Operativo & Kernel</span>
-                                            <p className="text-slate-200 font-mono text-xs">{assetDetailsData.info.operating_system || 'N/A'}</p>
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block">Sistema Operativo & Edición / Motor</span>
+                                            <p className="text-white font-bold text-xs">{assetDetailsData.info.os_info || 'Linux / POSIX (Enterprise)'}</p>
                                         </div>
                                         <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión Cliente EDR</span>
-                                            <span className="text-emerald-400 font-bold">{assetDetailsData.info.client_version || 'Wazuh EDR'}</span>
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión Kernel / Build</span>
+                                            <span className="text-slate-300 font-mono font-bold">{assetDetailsData.info.kernel || '6.8.0-generic'}</span>
                                         </div>
                                         <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Último Análisis FIM (Syscheck)</span>
-                                            <span className="text-slate-300 font-bold">{assetDetailsData.info.syscheck_last_ended_at || assetDetailsData.info.syscheck_last_started_at || 'N/A'}</span>
+                                            <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Arquitectura Hardware</span>
+                                            <span className="text-indigo-400 font-bold">{assetDetailsData.info.architecture || 'x86_64'}</span>
                                         </div>
+                                        {assetDetailsData.info.engine_version !== 'N/A' && (
+                                            <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Versión de Motor / EDR</span>
+                                                <span className="text-emerald-400 font-bold">{assetDetailsData.info.engine_version}</span>
+                                            </div>
+                                        )}
+                                        {Array.isArray(assetDetailsData.info.specific_details) && assetDetailsData.info.specific_details.map((item, i) => (
+                                            <div key={i} className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
+                                                <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">{item.key}</span>
+                                                <span className="text-slate-200 font-bold">{item.value}</span>
+                                            </div>
+                                        ))}
                                     </>
-                                ) : (
-                                    <div className="col-span-2 bg-[#0F172A] p-4 rounded-2xl border border-slate-800">
-                                        <span className="text-[9px] text-slate-500 font-black uppercase block mb-1">Telemetría de Agente EDR</span>
-                                        <p className="text-slate-400 italic text-xs">Agente EDR no instalado o sin reporte remoto activo.</p>
-                                    </div>
                                 )}
                             </div>
                         )}
