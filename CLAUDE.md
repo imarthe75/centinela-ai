@@ -35,6 +35,13 @@ Cualquier entrega final o reporte de avance DEBE apegarse strictly a la siguient
 ### 5. PENALIZACIÓN POR FALSA COMPLETITUD
 - Presentar un Walkthrough declarando un estado de "Completado" cuando existan mocks, funciones inconclusas o falta de pruebas ejecutadas se considera un **FALLO CRÍTICO**. Ante cualquier duda o imposibilidad de probar el código en el entorno, DEBES reportar un estado "PARCIAL" e indicar el porcentaje real correspondiente.
 
+### 6. PROHIBICIÓN DE SILENCIAMIENTO DE EXCEPCIONES Y VERIFICACIÓN DE WORKERS DE FONDO
+- **Queda estrictamente PROHIBIDO** utilizar bloques `try...except Exception:` que capturen errores sin emitir trazas completas de error (`logger.error(..., exc_info=True)` o `traceback.print_exc()`) o que permitan que la función falle en silencio retornando estados falsos de éxito.
+- **Auditoría de Workers y Bucles Asíncronos:** Toda función que corra en segundo plano (`background_tasks`, cron, workers de auditoría o de persistencia SQL) DEBE ser probada explícitamente ejecutando el script/función directamente y verificando la DB mediante consultas SQL reales (`SELECT`), asegurando que:
+  - No existan variables `NULL` no controladas en sentencias SQL (`IS NOT DISTINCT FROM`).
+  - Los administradores de contexto de conexión (`with get_db_connection()`) se usen de forma completa.
+  - La cantidad de filas insertadas corresponda a hallazgos reales sin provocar duplicación masiva o nulos huérfanos.
+
 
 ## Omni-XDR 2.0 Architectural Vision & Standards
 
