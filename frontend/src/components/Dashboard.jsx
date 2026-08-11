@@ -3886,30 +3886,28 @@ export default function Dashboard() {
                                         </div>
                                     ) : null}
                                     {/* Windows Script */}
-                                    {['SERVER_WINDOWS'].includes(agentModalAsset.type) || agentModalAsset.type?.includes('WINDOWS') ? (
-                                        <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 text-lg">🪟</div>
-                                                <div>
-                                                    <p className="text-white font-bold text-sm">Script de Instalación Windows</p>
-                                                    <p className="text-[10px] text-slate-500">PowerShell Script (.ps1) — Windows Server 2019/2022</p>
-                                                </div>
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 text-lg">🪟</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Script de Instalación Windows</p>
+                                                <p className="text-[10px] text-slate-500">PowerShell Script (.ps1) — Windows Server 2019/2022 / Windows 10/11</p>
                                             </div>
-                                            <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-blue-400">
-                                                <p className="text-slate-500 mb-1"># Abrir PowerShell como Administrador:</p>
-                                                <p>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</p>
-                                                <p>.\\centinela-wazuh-install-{agentModalAsset.name}.ps1</p>
-                                            </div>
-                                            <button
-                                                onClick={() => handleDownloadAgent(agentModalAsset.name, 'windows')}
-                                                disabled={agentDownloading}
-                                                className="w-full py-3 bg-blue-500 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-blue-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                                            >
-                                                {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
-                                                Descargar Script Windows (.ps1)
-                                            </button>
                                         </div>
-                                    ) : null}
+                                        <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-blue-400">
+                                            <p className="text-slate-500 mb-1"># Abrir PowerShell como Administrador:</p>
+                                            <p>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</p>
+                                            <p>.\\centinela-wazuh-install-{agentModalAsset.name}.ps1</p>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'windows')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-blue-500 text-white font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-blue-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Script Windows (.ps1)
+                                        </button>
+                                    </div>
                                     {/* macOS Script */}
                                     <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
                                         <div className="flex items-center gap-3">
