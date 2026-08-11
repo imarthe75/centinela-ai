@@ -5,6 +5,9 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
 ---
 
 ### 🌐 Transformación Omni-XDR (Arquitectura Integrada)
+- **CSPM Cloud-Native (AWS, GCP, Azure, Kubernetes)**: Escaneo continuo de la postura de seguridad en nubes híbridas bajo normas **CIS AWS Foundations v3.0**, **CIS GCP v2.0**, **CIS Azure v2.1** y **CIS Kubernetes v1.8**. Auditoría automatizada de buckets S3 públicos, políticas IAM con comadines y manifiestos de contenedores.
+- **eBPF Admission Controller Shield**: Control de admisión en caliente para Kubernetes (Kyverno / OPA Gatekeeper eBPF Shield) con verificación de firmas de imágenes y validación de SBOM antes del paso a producción.
+- **Auditoría CMMI® v3.0 por Activo (Benchmark 2024-2026)**: Reporte cuantitativo empírico por activo para las 7 áreas de práctica de CMMI (CAR, SAM, MSR, PQA, EST, PLAN, VV).
 - **ITDR (Identity Threat Detection & Response)**: Webhook en tiempo real con Authentik IdP para la detección de Password Spraying, Fuerza Bruta (≥5 intentos en <60s) y revocación autónoma de sesiones OIDC en <500ms.
 - **eBPF Kernel Tracing**: Ingesta de llamadas al sistema (syscalls `execve`, `ptrace`, `/tmp`) a nivel de kernel en servidores Linux.
 - **Grafo de Ataques Neo4j (Attack Storyline)**: Correlación en grafos Cypher de nodos de Identidad, IPs de Origen, Servidores de Red y Vulnerabilidades CVE.
@@ -18,7 +21,7 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
   - 👁️ **`Viewer` (Visualizador / Ejecutivo)**: Acceso de solo lectura a los dashboards macro y métricas ejecutivas.
 - **Alternativas Arquitectónicas Cero-Contraseña (Resolución Observación QA / NIST SP 800-53 IA-2 & AC-6)**:
   - 🛡️ **Opción 1 — Llave SSH Dedicada con `sudoers` restringido (`NOPASSWD` acotado)**: Permite ejecutar remediaciones automáticas sin almacenar contraseñas `sudo`. El archivo `/etc/sudoers.d/centinela` limita el privilegio del usuario `centinela-agent` exclusivamente a binarios autorizados (`/usr/bin/wazuh-agent`, `/usr/sbin/service`, `/sbin/iptables`).
-  - ⚡ **Opción 2 — Instalación Local con Comando One-Liner**: El modal de "Añadir Activo" permite generar un comando seguro `curl -sSL https://centinela.casmart.internal/api/agent/install-script?asset=XYZ | sudo bash` que el administrador ejecuta localmente sin exponer credenciales a la web.
+  - ⚡ **Opción 2 — Instalación Multi-OS Desatendida**: Generación automática de scripts de instalación para Linux (`.sh`), Windows (`.ps1` PowerShell), macOS (`.sh` Zsh) y archivo `ossec.conf` directo.
   - 🌐 **Opción 3 — Monitoreo & Remediación Agentless (Parcheo Virtual en Gateway)**: Para activos críticos donde no se permite instalar agentes, la detección opera mediante sondas (SNMP, Nuclei, Zeek) y la remediación se aplica en el Reverse Proxy Nginx (`deny IP` / bloqueo de URL).
 
 > [!IMPORTANT]
