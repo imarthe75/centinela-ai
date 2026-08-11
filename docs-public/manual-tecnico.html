@@ -587,6 +587,12 @@
 
     <section id="wazuh">
       <h2>Wazuh EDR, Multi-OS & Zeek NDR</h2>
+      <h3>¿Qué es EDR vs. XDR en Centinela AI?</h3>
+      <ul>
+        <li><strong>EDR (Endpoint Detection and Response):**</strong> Es la tecnología instalada en el sistema operativo del activo (servidor o workstation). Monitorea procesos, llamadas al sistema, archivos y registro para detectar comportamientos maliciosos a nivel de host. En Centinela se opera vía el agente <strong>Wazuh EDR</strong>.</li>
+        <li><strong>XDR (Extended Detection and Response):**</strong> Es la evolución que trasciende al host individual, correlacionando telemetría de <em>múltiples vectores</em>: agentes EDR + tráfico de red (Zeek NDR) + código fuente (SAST/SCA) + identidad (Authentik ITDR) + seguridad IA. Centinela actúa como un <strong>Omni-XDR unificado</strong>.</li>
+      </ul>
+
       <h3>Estándares de Seguridad EDR/XDR & Monitoreo Híbrido</h3>
       <p>Centinela AI sigue un modelo de <strong>Monitoreo de Mínimo Privilegio (Agentless First)</strong> y <strong>Agente EDR Desatendido</strong>. La plataforma no exige almacenar credenciales administrativas SSH o RDP en el panel central: los agentes Wazuh EDR se instalan mediante scripts desatendidos descargables (.sh para Linux/macOS, .ps1 para Windows), o bien los activos se supervisan de forma <em>Agentless</em> mediante ICMP/TCP probes, SNMPv3, APIs Cloud y conectores CTI.</p>
       
