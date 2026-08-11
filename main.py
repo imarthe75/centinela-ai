@@ -2504,22 +2504,34 @@ async def trigger_gitlab_scan(body: GitLabScanModel):
 
 @app.get("/api/audit/full-spectrum")
 async def trigger_full_spectrum_audit(target_dir: Optional[str] = "/opt/centinela-ai"):
-    """Triggers native SAST, SCA, DevSecOps/IaC, and Master Audit Standards check."""
+    """Triggers native SAST, SCA, DevSecOps/IaC, Master Audit Standards, and CSPM Cloud-Native check."""
     try:
-        from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards
+        from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards, auditor_cspm_cloud
         sast = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir)
         sca = auditor_sca_dependencies.run_sca_audit(target_dir)
         standards = auditor_compliance_standards.run_compliance_standards_audit(target_dir)
+        cspm = auditor_cspm_cloud.audit_cloud_iac_and_cspm(target_dir)
         return {
             "status": "success",
             "counts": {
                 "sast": len(sast),
                 "sca": len(sca),
                 "standards": len(standards),
-                "total": len(sast) + len(sca) + len(standards)
+                "cspm": len(cspm),
+                "total": len(sast) + len(sca) + len(standards) + len(cspm)
             },
-            "findings": {"sast": sast, "sca": sca, "standards": standards}
+            "findings": {"sast": sast, "sca": sca, "standards": standards, "cspm": cspm}
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audit/cspm-summary")
+async def get_cspm_status():
+    """Returns CSPM Cloud-Native Multicloud (AWS/GCP/Azure/K8s) security posture & admission status."""
+    try:
+        from auditors.auditor_cspm_cloud import get_cspm_status_summary
+        summary = get_cspm_status_summary()
+        return {"status": "success", "cspm": summary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
