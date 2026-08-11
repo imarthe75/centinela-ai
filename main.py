@@ -721,6 +721,30 @@ async def get_asset_deep_details(asset_name: str):
                     {"key": "Escaneo Trivy/Syft", "value": "SBOM Vulnerability Monitor Active"}
                 ]
 
+            elif "VMWARE" in atype or "ESXI" in atype or "VSPHERE" in atype or "esxi" in row["asset_name"].lower() or "cisco" in row["asset_name"].lower():
+                if "esxi" in row["asset_name"].lower() or "vmware" in atype:
+                    details["os_info"] = "VMware ESXi Hypervisor 8.0 Update 2"
+                    details["kernel"] = "VMkernel 8.0.2 (Build 22380479)"
+                    details["architecture"] = "x86_64 Bare-Metal Hypervisor"
+                    details["engine_version"] = "VMware vSphere ESXi 8.0.2"
+                    details["default_port"] = 443
+                    details["specific_details"] = [
+                        {"key": "Plataforma Hypervisor", "value": "VMware ESXi Bare-Metal"},
+                        {"key": "Gestión de Monitoreo", "value": "vSphere Web Client (443/SSH 22)"},
+                        {"key": "Usuario de Lectura", "value": "centinela-read-only (vCenter Role)"},
+                        {"key": "Estado del Agente", "value": "Agentless / Monitoreo SNMPv3 & API"}
+                    ]
+                else:
+                    details["os_info"] = "Cisco IOS-XE Network Switch / Appliance"
+                    details["kernel"] = "Cisco Linux Kernel 5.4.0 (Hardened)"
+                    details["engine_version"] = "Cisco IOS-XE v17.09.04"
+                    details["default_port"] = 22
+                    details["specific_details"] = [
+                        {"key": "Acceso de Gestión", "value": "SSH v2 + 802.1X Auth"},
+                        {"key": "Monitoreo de Red", "value": "SNMPv3 Encrypted Probes"},
+                        {"key": "Estado del Agente", "value": "Agentless (Hardware de Red)"}
+                    ]
+
             elif "NETWORK" in atype or "ROUTER" in atype or "SWITCH" in atype:
                 details["os_info"] = "Cisco IOS-XE / FortiOS Network Appliance"
                 details["kernel"] = "Hardened Network Kernel"
@@ -766,8 +790,8 @@ async def get_asset_deep_details(asset_name: str):
                 
                 details["specific_details"] = [
                     {"key": "Hardening CIS", "value": "Nivel 1 Servidores Linux/Windows"},
-                    {"key": "Agente EDR", "value": "Wazuh v4.9 Active Response"},
-                    {"key": "Contención de Host", "value": "Operational"}
+                    {"key": "Agente EDR", "value": "Wazuh v4.9 Active Response" if row.get("agent_id") else "No Instalado / Agentless"},
+                    {"key": "Contención de Host", "value": "Operational" if row.get("agent_id") else "Requiere Agente Wazuh"}
                 ]
 
             # Try to fetch live Wazuh agent details if available
@@ -1383,15 +1407,12 @@ async def get_inventory():
                     i.last_audit,
                     i.last_seen,
                     MAX(i.id) as max_id,
-                    CASE 
-                        WHEN i.status = 'active' OR i.agent_id IS NOT NULL THEN
-                            COALESCE(COUNT(DISTINCT CASE 
-                                WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
-                                AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
-                                THEN v.id 
-                            END), 0)
-                        ELSE 0
-                    END as vulnerability_count,
+                    COALESCE(COUNT(DISTINCT CASE 
+                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
+                        AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
+                        AND v.status IN ('OPEN', 'NEW', 'CORRELATED')
+                        THEN v.id 
+                    END), 0) as vulnerability_count,
 
                     COALESCE(COUNT(DISTINCT CASE 
                         WHEN v.status = 'RESOLVED' 
@@ -2534,6 +2555,16 @@ async def get_compliance_matrix():
         from auditors.compliance_mapper import map_vulnerabilities_to_compliance
         matrix = map_vulnerabilities_to_compliance()
         return {"status": "success", "compliance_matrix": matrix}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audit/cmmi-v3-report")
+async def get_cmmi_v3_full_report():
+    """Generates exhaustive per-asset CMMI v3.0 audit report with practice areas evidence breakdown."""
+    try:
+        from auditors.compliance_mapper import get_cmmi_v3_asset_audit_report
+        report = get_cmmi_v3_asset_audit_report()
+        return {"status": "success", "report": report}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
