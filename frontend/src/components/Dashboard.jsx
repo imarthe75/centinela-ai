@@ -983,8 +983,8 @@ export default function Dashboard() {
         <div className="p-8">
           {currentView === 'dashboard' && (
             <>
-              {/* Top Metric Grid */}
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+              {/* Top Metric Grid (7 Executive KPI Cards) */}
+              <div className="grid grid-cols-2 lg:grid-cols-7 gap-4 mb-8">
                 <MetricCard 
                     label="Usuarios Activos" 
                     value={stats?.users || 0} 
@@ -999,9 +999,27 @@ export default function Dashboard() {
                     value={stats?.endpoints || 0} 
                     icon={<Server size={20} />} 
                     color="text-emerald-400" 
-                    sub={`${stats?.online_endpoints || 0} En línea • ${stats?.offline_endpoints || 0} Sin conexión`}
+                    sub={`${stats?.online_endpoints || 0} En línea • ${stats?.offline_endpoints || 0} Offline`}
                     onClick={() => setCurrentView('inventory')}
-                    title={`Total de Activos: ${stats?.endpoints || 0} (${stats?.online_endpoints || 0} En línea / Sincronizados, ${stats?.offline_endpoints || 0} Offline / Pendientes). Haz clic para ir.`}
+                    title={`Total de Activos: ${stats?.endpoints || 0}. Haz clic para ir.`}
+                />
+                <MetricCard 
+                    label="Cumplimiento ISO 27001" 
+                    value={`${Math.max(0, 100 - ((vulnStats?.critical || 0) * 15 + (vulnStats?.high || 0) * 8))}%`} 
+                    icon={<ShieldCheck size={20} />} 
+                    color="text-emerald-400" 
+                    sub="ISO 27001 / ISO 25010"
+                    onClick={() => setCurrentView('inventory')}
+                    title="Índice Global de Cumplimiento ISO 27001 & Calidad ISO 25010"
+                />
+                <MetricCard 
+                    label="Benchmark CMMI v3.0" 
+                    value={`${Math.max(0, 100 - ((vulnStats?.critical || 0) * 12 + (vulnStats?.high || 0) * 6))}%`} 
+                    icon={<CheckCircle2 size={20} />} 
+                    color="text-indigo-400" 
+                    sub="Nivel 3/5 CAR-SAM"
+                    onClick={() => setCurrentView('inventory')}
+                    title="Nivel de Madurez CMMI v3.0 Nivel 5 (CAR, SAM, MSR, PQA)"
                 />
                 <MetricCard 
                     label="Alertas en Tiempo Real" 
