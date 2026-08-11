@@ -2064,6 +2064,28 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
+                                {/* Porcentaje de Cumplimiento ISO y CMMI v3.0 en Card Principal */}
+                                <div className="grid grid-cols-2 gap-2 mb-4">
+                                    <div className="bg-[#0F172A] p-2.5 rounded-xl border border-emerald-500/20 flex items-center justify-between" title="Nivel de Cumplimiento ISO 27001 / ISO 25010">
+                                        <div>
+                                            <span className="text-[8px] font-black text-slate-500 uppercase block">ISO 27001 / 25010</span>
+                                            <span className="text-xs font-black text-emerald-400">
+                                                {Math.max(0, 100 - (group.vulnerability_count * 12))}%
+                                            </span>
+                                        </div>
+                                        <ShieldCheck size={16} className="text-emerald-400/60" />
+                                    </div>
+                                    <div className="bg-[#0F172A] p-2.5 rounded-xl border border-indigo-500/20 flex items-center justify-between" title="Nivel de Cumplimiento CMMI v3.0 (CAR/SAM/MSR)">
+                                        <div>
+                                            <span className="text-[8px] font-black text-slate-500 uppercase block">CMMI v3.0 (Nivel 5)</span>
+                                            <span className="text-xs font-black text-indigo-400">
+                                                {Math.max(0, 100 - (group.vulnerability_count * 10))}%
+                                            </span>
+                                        </div>
+                                        <CheckCircle2 size={16} className="text-indigo-400/60" />
+                                    </div>
+                                </div>
+
                                 <div className="space-y-2 mb-6">
                                     {group.interfaces.map((inf, i) => (
                                         <div key={i} className="flex items-center justify-between text-[10px] bg-slate-800/30 p-2 rounded-xl border border-white/5 group/inf hover:bg-[#06B6D4]/10 transition-all cursor-pointer" onClick={() => handleSelectAsset(inf.asset_name)} title={`Interfaz: ${inf.asset_type_label || inf.asset_type} - ${inf.endpoint}`}>
@@ -3498,51 +3520,95 @@ export default function Dashboard() {
 
                                 {/* Bloque de Cumplimiento ISO por Separado */}
                                 <div className="space-y-2">
-                                    <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest flex items-center gap-1.5">
-                                        <ShieldCheck size={12} /> Cumplimiento Estándares ISO (Seguridad & Calidad de Software)
-                                    </p>
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest flex items-center gap-1.5">
+                                            <ShieldCheck size={12} /> Cumplimiento Estándares ISO (Seguridad & Calidad ISO 27001 / 25010 / 25001)
+                                        </p>
+                                        <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                                            {assetDetailsData.info?.compliance?.iso_score ?? Math.max(0, 100 - ((assetDetailsData.group.vulnerability_count || 0) * 12))}%
+                                        </span>
+                                    </div>
+                                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden mb-2">
+                                        <div 
+                                            className="h-full bg-emerald-400 rounded-full transition-all duration-500" 
+                                            style={{ width: `${assetDetailsData.info?.compliance?.iso_score ?? Math.max(0, 100 - ((assetDetailsData.group.vulnerability_count || 0) * 12))}%` }} 
+                                        />
+                                    </div>
                                     <div className="grid grid-cols-3 gap-2">
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 27001:2022</span>
-                                            <span className="text-emerald-400 font-bold text-xs">✓ Control A.8.8 & A.8.16</span>
+                                            <span className="text-emerald-400 font-bold text-xs">A.8.8 & A.8.16</span>
                                             <span className="text-[8px] text-slate-400 block mt-0.5">Gestión de Vulnerabilidades y Monitoreo</span>
                                         </div>
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 25010 / 25001</span>
-                                            <span className="text-emerald-400 font-bold text-xs">✓ Calidad & Mantenibilidad</span>
-                                            <span className="text-[8px] text-slate-400 block mt-0.5">Rendimiento, Seguridad & Cero Deuda</span>
+                                            <span className="text-emerald-400 font-bold text-xs">SQuaRE Calidad</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Mantenibilidad & Cero Deuda Técnica</span>
                                         </div>
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-emerald-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">ISO/IEC 27017</span>
-                                            <span className="text-emerald-400 font-bold text-xs">✓ Seguridad Cloud</span>
-                                            <span className="text-[8px] text-slate-400 block mt-0.5">Protección de Datos & Aislamiento</span>
+                                            <span className="text-emerald-400 font-bold text-xs">Seguridad Cloud</span>
+                                            <span className="text-[8px] text-slate-400 block mt-0.5">Protección de Cargas & Aislamiento</span>
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* Bloque de Cumplimiento CMMI v2.0 por Separado */}
+                                {/* Bloque de Cumplimiento CMMI v3.0 por Separado */}
                                 <div className="space-y-2">
-                                    <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-1.5">
-                                        <CheckCircle2 size={12} /> Cumplimiento Modelo CMMI v2.0 (Nivel 3 & Nivel 5)
-                                    </p>
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-1.5">
+                                            <CheckCircle2 size={12} /> Modelo CMMI v3.0 (Nivel 3 & Nivel 5 Benchmark)
+                                        </p>
+                                        <span className="text-xs font-black text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/30">
+                                            {assetDetailsData.info?.compliance?.cmmi_score ?? Math.max(0, 100 - ((assetDetailsData.group.vulnerability_count || 0) * 10))}%
+                                        </span>
+                                    </div>
+                                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden mb-2">
+                                        <div 
+                                            className="h-full bg-indigo-400 rounded-full transition-all duration-500" 
+                                            style={{ width: `${assetDetailsData.info?.compliance?.cmmi_score ?? Math.max(0, 100 - ((assetDetailsData.group.vulnerability_count || 0) * 10))}%` }} 
+                                        />
+                                    </div>
                                     <div className="grid grid-cols-3 gap-2">
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI CAR (Level 5)</span>
-                                            <span className="text-indigo-400 font-bold text-xs">✓ Causal Analysis</span>
+                                            <span className="text-indigo-400 font-bold text-xs">Causal Analysis</span>
                                             <span className="text-[8px] text-slate-400 block mt-0.5">Análisis de Causa Raíz por IA</span>
                                         </div>
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI SAM (Level 3-5)</span>
-                                            <span className="text-indigo-400 font-bold text-xs">✓ Supplier Management</span>
+                                            <span className="text-indigo-400 font-bold text-xs">Supplier Management</span>
                                             <span className="text-[8px] text-slate-400 block mt-0.5">Auditoría de Proveedores & SCA</span>
                                         </div>
                                         <div className="bg-[#0F172A] p-3 rounded-xl border border-indigo-500/30 text-center">
                                             <span className="text-[8px] text-slate-400 font-black uppercase block">CMMI MSR & PQA (Level 5)</span>
-                                            <span className="text-indigo-400 font-bold text-xs">✓ Quality Assurance</span>
+                                            <span className="text-indigo-400 font-bold text-xs">Quality Assurance</span>
                                             <span className="text-[8px] text-slate-400 block mt-0.5">Métricas & Calidad de Proceso</span>
                                         </div>
                                     </div>
                                 </div>
+
+                                {/* Desglose de Fallos Reales que Afectan el Cumplimiento */}
+                                {assetDetailsData.info?.compliance?.iso_findings?.length > 0 && (
+                                    <div className="space-y-2 bg-red-500/5 p-4 rounded-2xl border border-red-500/20">
+                                        <p className="text-[9px] font-black text-red-400 uppercase tracking-widest flex items-center gap-1.5">
+                                            <AlertTriangle size={12} /> Hallazgos Reales de Código que Afectan el Cumplimiento ({assetDetailsData.info.compliance.open_vulnerabilities_count})
+                                        </p>
+                                        <div className="space-y-1.5">
+                                            {assetDetailsData.info.compliance.iso_findings.map((f, idx) => (
+                                                <div key={idx} className="flex items-center justify-between bg-[#0F172A] p-2.5 rounded-xl border border-slate-800 text-[10px]">
+                                                    <div>
+                                                        <span className="text-amber-400 font-bold block">{f.control}</span>
+                                                        <span className="text-slate-300 font-mono">{f.issue}</span>
+                                                    </div>
+                                                    <span className={`px-2 py-0.5 rounded-md font-bold text-[8px] ${f.severity === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                                                        {f.severity}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Specific Details (type-specific) */}
                                 {assetDetailsData.info && Array.isArray(assetDetailsData.info.specific_details) && assetDetailsData.info.specific_details.length > 0 && (
