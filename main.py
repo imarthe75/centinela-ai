@@ -575,23 +575,40 @@ async def get_asset_deep_details(asset_name: str):
             ep_lower = endpoint.lower()
             clean_host = endpoint.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
 
-            # 1. Base details structure
-            details = {
-                "asset_name": row["asset_name"],
-                "asset_type": row["asset_type"],
-                "endpoint": endpoint,
-                "status": row["status"],
-                "criticality": row["criticality"],
-                "agent_id": row["agent_id"],
-                "last_scanned": row["last_scanned"],
-                "os_info": "Linux / POSIX (Enterprise Hardened)",
-                "kernel": "6.8.0-136-generic",
-                "architecture": "x86_64",
-                "engine_version": "N/A",
-                "tls_enabled": True,
-                "default_port": 443,
-                "specific_details": []
-            }
+            # Check if asset is offline / unpowered / never scanned
+            is_unpowered = (row.get("status") in ("OFFLINE", "PENDING", None, "")) and not row.get("agent_id") and not row.get("last_scanned")
+
+            if is_unpowered or ("cisco" in row["asset_name"].lower() and row.get("status") != "active"):
+                return {
+                    "asset_name": row["asset_name"],
+                    "asset_type": row["asset_type"],
+                    "endpoint": endpoint,
+                    "status": "OFFLINE",
+                    "criticality": row["criticality"],
+                    "agent_id": None,
+                    "last_scanned": None,
+                    "os_info": "Sin Información (Activo Jamás Encendido / Sin Respuesta de Red)",
+                    "kernel": "No Detectado (Servidor Apagado)",
+                    "architecture": "Pendiente de Sincronización Inicial",
+                    "engine_version": "N/A",
+                    "tls_enabled": False,
+                    "default_port": 0,
+                    "specific_details": [
+                        {"key": "Estado de Hardware", "value": "Apagado / Jamás Encendido"},
+                        {"key": "Respuesta ICMP / TCP", "value": "Sin Respuesta (Offline / Inalcanzable)"},
+                        {"key": "Telemetría de Sistema", "value": "No disponible hasta primer arranque"}
+                    ],
+                    "compliance": {
+                        "cmmi_version": "CMMI v3.0 (Model Benchmark)",
+                        "iso_score": 0,
+                        "cmmi_score": 0,
+                        "open_vulnerabilities_count": 0,
+                        "iso_findings": [],
+                        "cmmi_findings": [
+                            {"practice": "EST (Resource Management)", "issue": "Activo inalcanzable en red / jamás encendido", "severity": "MEDIUM"}
+                        ]
+                    }
+                }
 
             # 2. Smart type-specific analysis across ALL 17 asset categories
             if any(k in atype for k in ("DB", "DATABASE", "SQL", "NOSQL", "CACHE")):
