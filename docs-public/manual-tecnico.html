@@ -741,14 +741,34 @@
               <td>Plazos de remediación automáticos: Crítico 24h, Alto 7 días, Medio 30 días, Bajo 90 días, con indicador de vencimiento.</td>
             </tr>
             <tr>
+              <td><b>Cloud Security Posture Management (CSPM)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Escaneo continuo de postura en nubes híbridas bajo CIS AWS Foundations v3.0, CIS GCP v2.0, CIS Azure v2.1 y CIS K8s v1.8. Auditoría automatizada de buckets S3 públicos, políticas IAM con comodines y manifiestos de contenedores.</td>
+            </tr>
+            <tr>
+              <td><b>Kubernetes eBPF Admission Shield</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Control de admisión en caliente para Kubernetes (Kyverno / OPA Gatekeeper eBPF Shield) con verificación de firmas de imágenes y validación de SBOM antes del paso a producción.</td>
+            </tr>
+            <tr>
+              <td><b>Auditoría CMMI® v3.0 por Activo</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Reporte cuantitativo empírico por activo para las 7 áreas de práctica de CMMI (CAR, SAM, MSR, PQA, EST, PLAN, VV) disponible en endpoint <code>/api/audit/cmmi-v3-report</code>.</td>
+            </tr>
+            <tr>
+              <td><b>Instaladores Multi-OS & ossec.conf</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Generación desatendida de scripts de instalación para Linux (<code>.sh</code>), Windows (<code>.ps1</code> PowerShell), macOS (<code>.sh</code> Zsh) y archivo <code>ossec.conf</code> preconfigurado con el Manager (<code>10.4.3.34</code>).</td>
+            </tr>
+            <tr>
+              <td><b>Análisis de alcanzabilidad (SCA)</b></td>
+              <td><span class="chip verified">✅ Real</span></td>
+              <td>Para dependencias vulnerables: verifica si el paquete realmente se importa en el código (vs. solo declarado en el manifiesto y nunca usado), etiquetando cada hallazgo como <code>REACHABLE</code> o <code>UNREACHABLE</code> para reducir falsos positivos.</td>
+            </tr>
+            <tr>
               <td><b>Quality Gates</b></td>
               <td><span class="chip verified">✅ Real</span></td>
               <td>Evaluación de umbrales de calidad (vulnerabilidades críticas/altas, violaciones ISO 25010) con resultado pass/fail y grado A/B/F, consultable vía API para integrarse a un pipeline CI/CD.</td>
-            </tr>
-            <tr>
-              <td><b>Análisis de alcanzabilidad de código</b></td>
-              <td><span class="chip verified">✅ Real</span></td>
-              <td>Para dependencias vulnerables: verifica si el paquete realmente se importa en el código (vs. solo declarado en el manifiesto y nunca usado), etiquetando cada hallazgo como <code>REACHABLE</code> o <code>UNREACHABLE</code> para reducir falsos positivos.</td>
             </tr>
             <tr>
               <td><b>Parcheo virtual</b></td>
