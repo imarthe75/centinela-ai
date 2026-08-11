@@ -58,6 +58,20 @@ Centinela-AI se estructura sobre **6 Pilares de Auditoría e Integración**:
 | **3. Hardening e Infraestructura (IaC)** | Análisis de Dockerfiles (antipatrón `root`), manifiestos Kubernetes, Terraform y CIS Benchmarks Linux Level 1 (SSH). | Checkov, Auditor CIS SSH nativo |
 | **4. Gobernanza de IA & LLMs** | Inyección de prompts (OWASP LLM01), fuga de datos/PII (LLM02), ejecución de código inseguro (LLM06). | `medusa-security`, OWASP LLM Engine |
 | **5. Monitoreo Runtime (EDR / NDR / ITDR)** | Detección de amenazas de identidad Authentik, telemetría de red, ingesta de syscalls kernel e integración con agentes de host. | Wazuh EDR, Zeek NDR, eBPF Tracing |
+
+---
+
+## 💡 Conceptos Fundamentales: ¿Qué es EDR y qué es XDR?
+
+### 1. EDR (Endpoint Detection and Response)
+- **Definición:** Es una tecnología de ciberseguridad instalada directamente en los **endpoints** (servidores Linux, servidores Windows, computadoras de escritorio, laptops macOS).
+- **Propósito:** Monitorea la actividad continua a nivel de sistema operativo: procesos ejecutados, modificaciones en el registro o archivos de sistema, conexiones de red salientes y comportamientos sospechosos (ej. ejecución de PowerShell malicioso, elevación de privilegios `sudo`).
+- **En Centinela-AI:** Se implementa mediante el agente **Wazuh EDR**, ofreciendo respuesta activa y aislamiento de host (*Host Containment*).
+
+### 2. XDR (Extended Detection and Response)
+- **Definición:** Es la evolución del EDR que **extiende la visibilidad más allá del endpoint**, integrando múltiples capas del entorno digital: red, código fuente, identidades (IdP), contenedores Docker/Kubernetes y servicios Nube/API.
+- **Propósito:** Correlaciona eventos que de forma aislada parecen inofensivos pero que juntos forman un ataque complejo (Kill Chain de MITRE ATT&CK). Por ejemplo: combina una alerta de escaneo de red (NDR), un intento fallido de login en Authentik (ITDR), y una inyección de código en un repositorio GitLab (SAST).
+- **En Centinela-AI:** Actúa como un **Omni-XDR de 360°**, ingiriendo y correlacionando automáticamente telemetría de EDR, NDR, SAST, SCA, ITDR e IA Generativa en un único panel (*Single Pane of Glass*).
 | **6. Auto-Fix DevSecOps & SOAR 2.0** | Generación autónoma de parches determinísticos y vía LLM con creación de Merge Requests en GitLab. | GitLab REST API, Groq/LLM Engine |
 
 ---
