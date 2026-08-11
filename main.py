@@ -553,7 +553,7 @@ async def ping_asset(asset_name: str):
             "message": f"Error al validar conexión: {str(e)}"
         }
 
-@app.get("/api/inventory/{asset_name}/details")
+@app.get("/api/inventory/{asset_name:path}/details")
 async def get_asset_deep_details(asset_name: str):
     """
     Returns smart contextual system/database/cloud details for any asset type.
@@ -781,6 +781,58 @@ async def get_asset_deep_details(asset_name: str):
                         details["architecture"] = parsed.get("architecture", details["architecture"])
                         details["engine_version"] = f"EDR {parsed.get('client_version', '')}"
                 except Exception: pass
+
+            # Calculate REAL dynamic ISO & CMMI v3.0 compliance percentages based on active vulnerabilities in DB
+            cur.execute("""
+                SELECT severity, cve_id, description, status
+                FROM public.vulnerability_log
+                WHERE (asset_id = %s OR url_path ILIKE %s) AND status IN ('OPEN', 'NEW')
+            """, (row["id"], f"%{row['asset_name']}%"))
+            open_vulns = cur.fetchall()
+
+            # Weight vulns: CRITICAL=25, HIGH=15, MEDIUM=8, LOW=3
+            deductions = 0
+            iso_fails = []
+            cmmi_fails = []
+
+            for v in open_vulns:
+                sev = str(v.get("severity", "")).upper()
+                cve = str(v.get("cve_id", ""))
+                desc = str(v.get("description", ""))
+
+                if sev == "CRITICAL": deductions += 25
+                elif sev == "HIGH": deductions += 15
+                elif sev == "MEDIUM": deductions += 8
+                else: deductions += 3
+
+                # Map specific vulnerability findings to ISO 27001 / ISO 25010 & CMMI v3.0 controls
+                if "INJECTION" in cve or "SQL" in cve or "CMD" in cve:
+                    iso_fails.append({"control": "ISO 27001 A.8.28 (Secure Coding)", "issue": f"{cve}: Inyección detectada en código", "severity": sev})
+                    cmmi_fails.append({"practice": "CMMI CAR (Causal Analysis)", "issue": f"Falla en validación de entrada ({cve})", "severity": sev})
+                elif "SCA" in cve or "CVE" in cve or "DEP" in cve:
+                    iso_fails.append({"control": "ISO 27001 A.8.8 (Patch Management)", "issue": f"Dependencia vulnerable {cve}", "severity": sev})
+                    cmmi_fails.append({"practice": "CMMI SAM (Supplier Management)", "issue": f"Librería obsoleta/vulnerable ({cve})", "severity": sev})
+                elif "HARDCODED" in cve or "CREDENTIAL" in cve or "SECRET" in cve:
+                    iso_fails.append({"control": "ISO 27001 A.8.24 (Cryptography & Keys)", "issue": f"Credencial expuesta en fuente ({cve})", "severity": sev})
+                    cmmi_fails.append({"practice": "CMMI PQA (Quality Assurance)", "issue": f"Violación de política de secretos ({cve})", "severity": sev})
+                elif "DEBT" in cve or "TODO" in cve or "SLEEP" in cve:
+                    iso_fails.append({"control": "ISO/IEC 25010 (Software Quality)", "issue": f"Deuda técnica / Mala práctica ({cve})", "severity": sev})
+                    cmmi_fails.append({"practice": "CMMI MSR (Measurement & Performance)", "issue": f"Patrón ineficiente en código ({cve})", "severity": sev})
+                else:
+                    iso_fails.append({"control": "ISO 27001 A.8.16 (Monitoring & Controls)", "issue": f"Hallazgo de seguridad {cve}", "severity": sev})
+                    cmmi_fails.append({"practice": "CMMI CAR / PQA", "issue": f"Desviación de calidad ({cve})", "severity": sev})
+
+            iso_score = max(0, min(100, 100 - deductions))
+            cmmi_score = max(0, min(100, 100 - int(deductions * 0.9)))
+
+            details["compliance"] = {
+                "cmmi_version": "CMMI v3.0 (Model 2024 Benchmark)",
+                "iso_score": iso_score,
+                "cmmi_score": cmmi_score,
+                "open_vulnerabilities_count": len(open_vulns),
+                "iso_findings": iso_fails,
+                "cmmi_findings": cmmi_fails
+            }
 
             return details
 
