@@ -21,7 +21,39 @@
 
 **Centinela-AI** es una plataforma unificada de **Omni-XDR (Extended Detection & Response), Seguridad DevSecOps y Gobernanza de Inteligencia Artificial**. 
 
-Diseñada bajo un enfoque estrictamente defensivo, actúa como el centro neurálgico de ciberseguridad para la organización. Consolida en un solo panel (*Single Pane of Glass*) el escaneo de código fuente, la auditoría de dependencias, la protección de contenedores, la telemetría de red y servidores, y la respuesta automatizada ante incidentes (SOAR 2.0) impulsada por IA Generativa.
+Diseñada bajo un enfoque strictly defensivo, actúa como el centro neurálgico de ciberseguridad para la organización. Consolida en un solo panel (*Single Pane of Glass*) el escaneo de código fuente, la auditoría de dependencias, la protección de contenedores, la telemetría de red y servidores, y la respuesta automatizada ante incidentes (SOAR 2.0) impulsada por IA Generativa.
+
+---
+
+## 📖 Glosario de Conceptos Clave (Para Ejecutivos y Desarrolladores)
+
+Para garantizar una comprensión clara entre la alta dirección y los equipos técnicos, a continuación se definen los términos fundamentales que sustentan a Centinela-AI:
+
+### 💼 A. Términos de Negocio, Gobierno y Estándares
+* **CMMI v3.0 (Capability Maturity Model Integration):** Modelo internacional de madurez de procesos de software (Benchmark 2024-2026). *Para el ejecutivo:* Mide qué tan estructurado, repetible y maduro es el proceso de desarrollo de la empresa (Niveles 3 a 5). *Para el desarrollador:* Evalúa análisis de causa raíz (`CAR`), control de proveedores/dependencias (`SAM`) y calidad de código (`PQA`).
+* **ISO/IEC 27001:2022:** Norma internacional de Sistemas de Gestión de Seguridad de la Información (SGSI). Exige controles estrictos de vulnerabilidades (`A.8.8`) y monitoreo de eventos (`A.8.16`).
+* **ISO/IEC 25010 / 25001 (SQuaRE):** Estándar internacional que mide la **Calidad del Software**. *Para el ejecutivo:* Garantiza que el software sea mantenible y eficiente. *Para el desarrollador:* Audita complejidad cognitiva, ausencia de retardos duros (`sleep`) y cero deuda técnica.
+* **Shift Left (Desplazar a la Izquierda):** Filosofía DevSecOps que consiste en detectar fallos de seguridad durante la escritura del código en lugar de esperar a que la aplicación esté publicada en producción.
+
+---
+
+### 🛡️ B. Módulos y Tecnologías de Ciberseguridad
+* **SAST (Static Application Security Testing):** *Pruebas Estáticas de Seguridad.* Analiza el código fuente línea por línea sin ejecutar la aplicación para hallar errores de programación (ej. Inyección SQL, llaves secretas expuestas).
+* **SCA (Software Composition Analysis):** *Análisis de Composición de Software.* Audita los paquetes de terceros y librerías Open Source (`npm`, `pip`, `maven`) en busca de vulnerabilidades conocidas.
+* **DAST (Dynamic Application Security Testing):** *Pruebas Dinámicas de Seguridad.* Evalúa la aplicación en ejecución simulando ataques externos desde la red (HTTP/REST).
+* **EDR (Endpoint Detection and Response):** Agente instalado en computadoras y servidores (Linux/Windows/macOS) que monitorea llamadas al sistema, procesos y archivos sospechosos en tiempo real.
+* **NDR (Network Detection and Response):** Monitoreo continuo del tráfico de red (vía Zeek) para detectar anomalías y transferencias sospechosas de datos.
+* **ITDR (Identity Threat Detection and Response):** Protección de la capa de identidad (Authentik / Active Directory) ante ataques de fuerza bruta, robo de credenciales o suplantación.
+* **XDR (Extended Detection and Response):** Plataforma de última generación (como Centinela-AI) que **unifica EDR + NDR + SAST + ITDR** en una sola consola para ver la película completa de un ataque.
+* **SOAR (Security Orchestration, Automation and Response):** Motor que ejecuta respuestas automáticas ante incidentes (aislar un servidor, revocar un usuario o enviar un parche de código a GitLab).
+
+---
+
+### 🎯 C. Métricas de Priorización de Vulnerabilidades
+* **CVE (Common Vulnerabilities and Exposures):** Identificador universal único asignado a un fallo de seguridad conocido a nivel mundial (ej. `CVE-2024-29041`).
+* **CVSS (Common Vulnerability Scoring System):** Escala técnica del 0 al 10 que mide la gravedad teórica de una vulnerabilidad.
+* **EPSS (Exploit Prediction Scoring System):** Porcentaje (0% a 100%) que predice la **probabilidad real** de que un atacante intente explotar esa vulnerabilidad en los próximos 30 días.
+* **CISA KEV (Known Exploited Vulnerabilities):** Catálogo oficial del gobierno de EE.UU. que confirma que una vulnerabilidad **ya está siendo atacada activamente en el mundo real**. Centinela le asigna prioridad crítica inmediata.
 
 ---
 
@@ -58,20 +90,6 @@ Centinela-AI se estructura sobre **6 Pilares de Auditoría e Integración**:
 | **3. Hardening e Infraestructura (IaC)** | Análisis de Dockerfiles (antipatrón `root`), manifiestos Kubernetes, Terraform y CIS Benchmarks Linux Level 1 (SSH). | Checkov, Auditor CIS SSH nativo |
 | **4. Gobernanza de IA & LLMs** | Inyección de prompts (OWASP LLM01), fuga de datos/PII (LLM02), ejecución de código inseguro (LLM06). | `medusa-security`, OWASP LLM Engine |
 | **5. Monitoreo Runtime (EDR / NDR / ITDR)** | Detección de amenazas de identidad Authentik, telemetría de red, ingesta de syscalls kernel e integración con agentes de host. | Wazuh EDR, Zeek NDR, eBPF Tracing |
-
----
-
-## 💡 Conceptos Fundamentales: ¿Qué es EDR y qué es XDR?
-
-### 1. EDR (Endpoint Detection and Response)
-- **Definición:** Es una tecnología de ciberseguridad instalada directamente en los **endpoints** (servidores Linux, servidores Windows, computadoras de escritorio, laptops macOS).
-- **Propósito:** Monitorea la actividad continua a nivel de sistema operativo: procesos ejecutados, modificaciones en el registro o archivos de sistema, conexiones de red salientes y comportamientos sospechosos (ej. ejecución de PowerShell malicioso, elevación de privilegios `sudo`).
-- **En Centinela-AI:** Se implementa mediante el agente **Wazuh EDR**, ofreciendo respuesta activa y aislamiento de host (*Host Containment*).
-
-### 2. XDR (Extended Detection and Response)
-- **Definición:** Es la evolución del EDR que **extiende la visibilidad más allá del endpoint**, integrando múltiples capas del entorno digital: red, código fuente, identidades (IdP), contenedores Docker/Kubernetes y servicios Nube/API.
-- **Propósito:** Correlaciona eventos que de forma aislada parecen inofensivos pero que juntos forman un ataque complejo (Kill Chain de MITRE ATT&CK). Por ejemplo: combina una alerta de escaneo de red (NDR), un intento fallido de login en Authentik (ITDR), y una inyección de código en un repositorio GitLab (SAST).
-- **En Centinela-AI:** Actúa como un **Omni-XDR de 360°**, ingiriendo y correlacionando automáticamente telemetría de EDR, NDR, SAST, SCA, ITDR e IA Generativa en un único panel (*Single Pane of Glass*).
 | **6. Auto-Fix DevSecOps & SOAR 2.0** | Generación autónoma de parches determinísticos y vía LLM con creación de Merge Requests en GitLab. | GitLab REST API, Groq/LLM Engine |
 
 ---
