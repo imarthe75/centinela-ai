@@ -85,6 +85,16 @@ def discover_wazuh_agents():
                             cur.execute("SELECT id FROM infra_inventory WHERE endpoint = %s", (agent_ip,))
                             existing = cur.fetchone()
                         
+                        if not existing and agent_name:
+                            # Real, ground-truth hostname captured at install time by
+                            # install_wazuh_agent_background() (main.py) -- an exact match here
+                            # is authoritative regardless of how unrelated the OS hostname looks
+                            # to the asset's business name (e.g. real hostname "kiwi" for the
+                            # asset named "prism"), closing the gap the fuzzy tier below can't:
+                            # substring matching only works when the two names share text.
+                            cur.execute("SELECT id FROM infra_inventory WHERE LOWER(hostname) = LOWER(%s)", (agent_name,))
+                            existing = cur.fetchone()
+
                         if not existing:
                             # Try to match by asset_name (case-insensitive: agent hostnames
                             # and inventory asset_name casing frequently differ)
@@ -113,22 +123,28 @@ def discover_wazuh_agents():
                             existing = cur.fetchone()
 
                         if existing:
+                            # Backfill the ground-truth hostname on whatever matched this agent
+                            # (IP / exact asset_name / fuzzy substring) so a future run resolves
+                            # this asset via the reliable hostname tier above instead of falling
+                            # through to fuzzy matching every single cycle.
                             cur.execute("""
-                                UPDATE infra_inventory 
+                                UPDATE infra_inventory
                                 SET agent_id = %s,
                                     status = %s,
+                                    hostname = COALESCE(hostname, %s),
                                     last_audit = NOW()
                                 WHERE id = %s
-                            """, (agent_id, status.lower(), existing[0]))
+                            """, (agent_id, status.lower(), agent_name, existing[0]))
                         else:
                             cur.execute("""
-                                INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id)
-                                VALUES (%s, %s, %s, %s, NOW(), %s, %s)
-                                ON CONFLICT (asset_name) DO UPDATE 
-                                SET status = EXCLUDED.status, 
+                                INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id, hostname)
+                                VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s)
+                                ON CONFLICT (asset_name) DO UPDATE
+                                SET status = EXCLUDED.status,
                                     last_audit = NOW(),
-                                    agent_id = EXCLUDED.agent_id;
-                            """, (agent_name, "AppServer", agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id))
+                                    agent_id = EXCLUDED.agent_id,
+                                    hostname = COALESCE(infra_inventory.hostname, EXCLUDED.hostname);
+                            """, (agent_name, "AppServer", agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id, agent_name))
             
             print("✅ Wazuh discovery complete.")
     except Exception as e:

@@ -23,23 +23,27 @@
 
 Antes de Centinela-AI, esa vigilancia dependía de más de una decena de herramientas desconectadas entre sí, sin nadie con tiempo de revisarlas todas juntas. Hoy es un solo sistema, con un solo panel, que convierte alertas técnicas en explicaciones claras y en correcciones listas para aprobar.
 
-> **Nota de transparencia (11 de agosto de 2026):** las cifras de este documento reflejan el estado real y verificado del sistema en producción, no estimaciones. Ver la sección 1.1 para el detalle — incluyendo lo que todavía está pendiente.
+> **Nota de transparencia (13 de agosto de 2026):** las cifras de este documento reflejan el estado real y verificado del sistema en producción, no estimaciones. Ver la sección 1.1 para el detalle — incluyendo lo que todavía está pendiente.
 
 ---
 
-## 1.1 📊 Estado Real Verificado (11 de agosto de 2026)
+## 1.1 📊 Estado Real Verificado (13 de agosto de 2026)
 
 Cifras confirmadas en vivo contra el sistema en producción, no estimaciones:
 
 | Indicador | Valor real | Nota |
 | :--- | :--- | :--- |
-| Activos monitoreados | **83** | servidores, bases de datos y repositorios de código |
-| Hallazgos reales activos | **3,448** | cifra corregida — antes se reportaban ~18,000 debido a un error técnico de duplicación, ya corregido |
-| Hallazgos críticos | **223** | requieren atención prioritaria |
-| Vulnerabilidades con explotación activa confirmada | **8** | según el catálogo oficial CISA KEV (EE.UU.) |
-| Incumplimientos de plazo de corrección (SLA) | **18 críticos** | visibles por primera vez — antes el sistema no calculaba esta cifra para ningún hallazgo crítico o alto |
+| Activos monitoreados | **82** | servidores, bases de datos y repositorios de código |
+| Hallazgos reales activos | **8,799** | sube frente al 11 de agosto (3,448) porque esta sesión corrigió varios auditores que llevaban semanas escaneando una ruta inexistente dentro del contenedor y devolviendo "0 hallazgos" en silencio — al arreglarlos aparecieron cientos de hallazgos reales, previamente invisibles, del propio código de Centinela-AI |
+| Hallazgos críticos | **1,285** | requieren atención prioritaria |
+| Vulnerabilidades con explotación activa confirmada | **17** | según el catálogo oficial CISA KEV (EE.UU.) |
+| Incumplimientos de plazo de corrección (SLA) | **46 críticos** | |
 | Proveedores de IA en cadena de respaldo | **4** | Groq, Gemini, NVIDIA, OpenRouter — si uno falla, el siguiente responde automáticamente |
-| Cobertura de pruebas automatizadas | **30/30 pasan** | valida el comportamiento real de cada motor de análisis |
+| Cobertura de pruebas automatizadas | **62/62 pasan** | sube de 30/30 (más suite de pruebas) — incluye una falla real encontrada y corregida en esta misma sesión (ver Sección 1.2) |
+
+### 1.2 🔧 Qué se corrigió en esta sesión (13 de agosto de 2026)
+
+El sistema había estado devolviendo "0 hallazgos" silenciosamente en cuatro endpoints de auditoría bajo demanda desde que existen, porque su configuración por defecto apuntaba a una ruta de carpeta que existe en el servidor físico pero no dentro de los contenedores donde el código realmente corre — el equivalente a pedirle a alguien que revise un archivero que no está en el edificio: no hay error, simplemente no encuentra nada. Corregido, junto con: un endpoint de auditoría de Kubernetes/Terraform que fallaba con un error técnico en el 100% de sus llamadas desde que fue escrito; dos módulos (auditoría de APIs y de vigilancia OSINT pasiva) cuyos hallazgos se generaban pero nunca lograban guardarse en la base de datos por un error de configuración de la base de datos; una función de vigilancia OSINT pasiva que, al no tener configurada una llave de API de terceros (Shodan), inventaba silenciosamente datos de geolocalización y puertos de red en vez de decir honestamente "no disponible" — corregido antes de que esos datos inventados llegaran a guardarse en el sistema real; una ruta de identificación de agentes de vigilancia (Wazuh) que existía duplicada en el código sin usarse; y un mecanismo que vincula automáticamente cada servidor recién dado de alta con su identidad real en el sistema de vigilancia de endpoints, que nunca se había programado para ejecutarse solo. Todo verificado en vivo contra el sistema real, no en un entorno de prueba aparte.
 
 **Por qué esto importa:** un sistema de seguridad que reporta cifras poco confiables es tan riesgoso como no tener sistema — puede dar una falsa sensación de control. Mantener estas cifras verificadas y actualizadas evita que se convierta en un problema de confianza con clientes o reguladores.
 

@@ -29,42 +29,55 @@ def passive_dns_resolve(domain):
         return None
 
 def geolocate_ip_passive(ip):
-    """Geolocates IP passively using open services with fallback to mock data for private IPs."""
-    # Check if IP is private
+    """
+    Geolocates IP passively using ip-api.com; RFC1918/loopback ranges are correctly reported
+    as internal without a network call (that's real, known-true information, not a guess).
+    Returns {"real": bool, ...} -- "real": False previously didn't exist at all: on any failure
+    of the public geolocation call (timeout, non-200, rate limit) this silently returned a fixed
+    hardcoded {"Mexico", "Querétaro", "CASMARTS Headquarters"} for every single IP regardless of
+    where it actually is, presented downstream as if it were a genuine lookup result -- a real
+    violation of this project's own zero-fabrication rule, caught during a live gap-sweep
+    (2026-08-13). Now returns an honest "unavailable" result instead of a fabricated guess.
+    """
     parts = ip.split('.')
     if len(parts) == 4:
-        if (parts[0] == '10' or 
-            (parts[0] == '172' and 16 <= int(parts[1]) <= 31) or 
+        if (parts[0] == '10' or
+            (parts[0] == '172' and 16 <= int(parts[1]) <= 31) or
             (parts[0] == '192' and parts[1] == '168') or
             parts[0] == '127'):
             return {
+                "real": True,
                 "country": "Local Network",
                 "city": "Internal LAN",
                 "org": "CASMARTS Internal Spoke"
             }
-            
-    # Try public IP geolocation API passively
+
     try:
         url = f"http://ip-api.com/json/{ip}?fields=status,message,country,city,org"
         with urllib.request.urlopen(url, timeout=5) as response:
             data = json.loads(response.read().decode())
             if data.get("status") == "success":
                 return {
+                    "real": True,
                     "country": data.get("country", "Unknown"),
                     "city": data.get("city", "Unknown"),
                     "org": data.get("org", "Unknown")
                 }
     except Exception as e:
         print(f"⚠️ [OSINT-Discovery] Geolocation service failed: {e}")
-        
-    return {
-        "country": "Mexico",
-        "city": "Querétaro",
-        "org": "CASMARTS Headquarters"
-    }
+
+    return {"real": False, "country": "Unknown", "city": "Unknown", "org": "Unknown"}
 
 def shodan_query_passive(ip):
-    """Simulates passive Shodan scan retrieval using the public Shodan API or high-fidelity fallback."""
+    """
+    Queries the real Shodan API when SHODAN_API_KEY is configured. Returns {"real": bool, ...}.
+    Previously, with no key configured (the only configuration this deployment has ever had --
+    confirmed live 2026-08-13: SHODAN_API_KEY is unset), this silently returned a fixed,
+    entirely fabricated port/service list (e.g. claiming Nginx/PostgreSQL/Valkey/Vault were
+    "detected passively" on every single internal IP) with no real scan behind it at all -- a
+    real violation of this project's zero-fabrication rule, not just a cosmetic placeholder.
+    Now honestly reports no real data instead of guessing.
+    """
     print(f"🔍 [OSINT-Discovery] Querying Shodan passively for: {ip}")
     if SHODAN_API_KEY:
         try:
@@ -74,26 +87,17 @@ def shodan_query_passive(ip):
                 ports = data.get("ports", [])
                 services = [item.get("product", "") for item in data.get("data", []) if item.get("product")]
                 return {
+                    "real": True,
                     "ports": ports,
                     "services": list(set(services)),
                     "vulns": data.get("vulns", [])
                 }
         except Exception as e:
             print(f"⚠️ [OSINT-Discovery] Shodan API request failed: {e}")
-            
-    # Passive intelligence fallback / Local network discovery simulation
-    # Return mock/passive service information based on common ports open internally
-    if ip.startswith("10.") or ip.startswith("172.") or ip.startswith("192.168.") or ip == "127.0.0.1":
-        return {
-            "ports": [80, 443, 5432, 6379, 8200],
-            "services": ["Nginx", "PostgreSQL", "Valkey", "HashiCorp Vault"],
-            "vulns": []
-        }
-    return {
-        "ports": [80, 443],
-        "services": ["Nginx Web Server"],
-        "vulns": []
-    }
+    else:
+        print("⏭️ [OSINT-Discovery] SHODAN_API_KEY not configured -- skipping passive port/service enrichment (no fabricated fallback).")
+
+    return {"real": False, "ports": [], "services": [], "vulns": []}
 
 def run_osint_discovery():
     """Main routine to discover surface details of assets registered in infra_inventory."""
@@ -134,34 +138,55 @@ def run_osint_discovery():
             # 2. Geolocate IP
             geo = geolocate_ip_passive(resolved_ip)
             print(f"📍 Geolocation: {geo['city']}, {geo['country']} ({geo['org']})")
-            
+
             # 3. Shodan passive profile
             shodan_info = shodan_query_passive(resolved_ip)
             print(f"📡 Passive Ports: {shodan_info['ports']}")
             print(f"🛠️ Services: {shodan_info['services']}")
-            
+
+            # If neither source produced real data, there's nothing genuine to report --
+            # skip rather than log an enrichment entry with no real content behind it (see
+            # geolocate_ip_passive/shodan_query_passive: both used to silently fabricate
+            # plausible-looking data for exactly this case).
+            if not geo["real"] and not shodan_info["real"]:
+                print(f"⏭️ No real passive OSINT data available for {name} ({resolved_ip}) -- skipping enrichment entry.")
+                continue
+
             # 4. Save metadata back to DB as an audit log/enrichment
+            geo_line = (f"**Geolocalización:** {geo['city']}, {geo['country']} - {geo['org']}\n"
+                        if geo["real"] else "**Geolocalización:** No disponible (servicio de geolocalización no respondió).\n")
+            if shodan_info["real"]:
+                ports_line = f"**Puertos Detectados Pasivamente (Shodan):** {', '.join(map(str, shodan_info['ports']))}\n"
+                services_line = f"**Tecnologías/Servicios (Shodan):** {', '.join(shodan_info['services'])}\n"
+            else:
+                ports_line = "**Puertos/Servicios:** No disponible (SHODAN_API_KEY no configurada).\n"
+                services_line = ""
+
             enrich_summary = (
-                f"ℹ️ **ENRIQUECIMIENTO OSINT PASIVO (SpiderFoot Style)** ℹ️\n\n"
+                f"ℹ️ **ENRIQUECIMIENTO OSINT PASIVO** ℹ️\n\n"
                 f"**IP Resuelta:** `{resolved_ip}`\n"
-                f"**Geolocalización:** {geo['city']}, {geo['country']} - {geo['org']}\n"
-                f"**Puertos Detectados Pasivamente:** {', '.join(map(str, shodan_info['ports']))}\n"
-                f"**Tecnologías/Servicios:** {', '.join(shodan_info['services'])}\n"
+                f"{geo_line}"
+                f"{ports_line}"
+                f"{services_line}"
             )
-            if shodan_info['vulns']:
+            if shodan_info.get('vulns'):
                 enrich_summary += f"\n**Vulnerabilidades Shodan:** {', '.join(shodan_info['vulns'])}"
-                
-            # Log as a special INFO finding to make it instantly visible in the DB/Dashboard
+
+            # Log via the shared dedup logger -- the raw "ON CONFLICT (asset_id, cve_id)" this
+            # used before targets a unique constraint that has never existed on vulnerability_log
+            # (only its id primary key and a partial fingerprint_hash index do), so every single
+            # insert here silently threw a real DB error, caught by this function's own broad
+            # except and logged as a false "✅ Enriched" -- confirmed live: 0 real OSINT-ENRICH
+            # rows exist in the DB despite this running every scan cycle. Same failure signature
+            # already fixed once for auditor_spiderfoot.py; this file was missed at the time.
+            from core import deduplication_engine
             with db_manager.get_db_cursor() as cur:
-                cur.execute("""
-                    INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, status)
-                    VALUES (%s, 'OSINT-ENRICH', 'Info', %s, 'NEW')
-                    ON CONFLICT (asset_id, cve_id) DO UPDATE SET
-                        description = EXCLUDED.description,
-                        detected_at = NOW();
-                """, (asset_id, enrich_summary))
+                deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, "OSINT-ENRICH", "Info", enrich_summary,
+                    "osint-passive", open_status="NEW", preserve_status=True
+                )
                 print(f"✅ Enriched asset {name} inside vulnerability_log")
-                
+
         except Exception as e:
             print(f"❌ [OSINT-Discovery] Error enriching asset {name}: {e}")
 

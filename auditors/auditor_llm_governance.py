@@ -43,7 +43,7 @@ def audit_llm_prompts_and_context(file_path: str, content: str) -> List[Dict[str
     return findings
 
 
-def run_llm_governance_audit(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]]:
+def run_llm_governance_audit(target_dir: str = "/app") -> List[Dict[str, Any]]:
     """Scans target directory for LLM & AI safety risks."""
     all_findings = []
 

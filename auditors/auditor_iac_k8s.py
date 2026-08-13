@@ -55,7 +55,7 @@ def audit_terraform_tf(file_path: str, content: str) -> List[Dict[str, Any]]:
 
     return findings
 
-def run_iac_scan(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+def run_iac_scan(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
     """Scans target directory for Kubernetes YAML and Terraform files, persisting findings to the DB."""
     findings = []
     for root, _, files in os.walk(target_dir):

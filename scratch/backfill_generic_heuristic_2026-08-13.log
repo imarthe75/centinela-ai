@@ -1,0 +1,106 @@
+Total targeted: 101
+Upgraded: 44
+Honest no-fix (re-confirmed by real LLM): 57
+Failed: 0
+
+id=27084 cve=SONAR-docker-S6471 UPGRADED: '**Riesgo Detectado:** Docker Container running as root\n\n**Nivel de Severidad:** Medio\n\n**Evidencia T'
+id=27091 cve=SONAR-typescript-S7780 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27093 cve=SONAR-typescript-S7780 UPGRADED: '**Riesgo Detectado:** String.raw should be used to avoid escaping backslashes\n\n**Nivel de Severidad:'
+id=27107 cve=SONAR-java-S1192 UPGRADED: '**Riesgo Detectado:** String Literal Duplication (Code Smell)\n\n**Nivel de Severidad:** Bajo\n\n**Evide'
+id=27110 cve=SONAR-java-S6437 UPGRADED: '**Riesgo Detectado:** Hardcoded Credentials in configuration file (S6437)\n\n**Nivel de Severidad:** C'
+id=27119 cve=SONAR-kubernetes-S6892 UPGRADED: '**Riesgo Detectado:** Missing CPU Resource Request in Kubernetes Deployment\n\n**Nivel de Severidad:**'
+id=27124 cve=SONAR-kubernetes-S6897 UPGRADED: '**Riesgo Detectado:** SONAR-kubernetes-S6897: Falta de especificación de almacenamiento para un cont'
+id=27126 cve=SONAR-kubernetes-S5332 UPGRADED: '**Riesgo Detectado:** Use of clear-text protocol in Kubernetes configuration\n\n**Nivel de Severidad:*'
+id=27128 cve=SONAR-java-S125 UPGRADED: '**Riesgo Detectado:** Code Smell: Commented-out code (S125)\n\n**Nivel de Severidad:** Bajo\n\n**Evidenc'
+id=27133 cve=SONAR-java-S5693 UPGRADED: '**Riesgo Detectado:** HTTP Request Body Size Limit Configuration\n\n**Nivel de Severidad:** Alto\n\n**Ev'
+id=27134 cve=SONAR-java-S5693 UPGRADED: '**Riesgo Detectado:** Excessive File Upload Limit\n\n**Nivel de Severidad:** Alto\n\n**Evidencia Técnica'
+id=27136 cve=SONAR-java-S106 UPGRADED: '**Riesgo Detectado:** Use of System.out/err instead of a logger\n\n**Nivel de Severidad:** Alto\n\n**Evi'
+id=27139 cve=SONAR-java-S106 UPGRADED: '**Riesgo Detectado:** Use of System.out/err instead of logger\n\n**Nivel de Severidad:** Alto\n\n**Evide'
+id=27147 cve=SONAR-java-S100 UPGRADED: '**Riesgo Detectado:** Method naming convention violation (java:S100)\n\n**Nivel de Severidad:** Medio\n'
+id=27204 cve=SONAR-python-S1192 UPGRADED: '**Riesgo Detectado:** Hardcoded string literal duplication (Code Smell)\n\n**Nivel de Severidad:** Crí'
+id=27206 cve=SONAR-python-S1192 UPGRADED: '**Riesgo Detectado:** Hardcoded String Literal Duplication\n\n**Nivel de Severidad:** Crítico\n\n**Evide'
+id=27209 cve=SONAR-python-S6903 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27211 cve=SONAR-python-S6903 UPGRADED: '**Riesgo Detectado:** Uso de datetime.datetime.utcnow\n\n**Nivel de Severidad:** Crítico\n\n**Evidencia '
+id=27213 cve=SONAR-python-S1481 UPGRADED: '**Riesgo Detectado:** Unused local variable\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técnica:** a'
+id=27224 cve=SONAR-python-S6903 UPGRADED: '**Riesgo Detectado:** Use of deprecated/non-timezone-aware datetime.utcnow()\n\n**Nivel de Severidad:*'
+id=27232 cve=SONAR-python-S5332 UPGRADED: '**Riesgo Detectado:** Use of HTTP protocol instead of HTTPS (Sonar Rule S5332)\n\n**Nivel de Severidad'
+id=27237 cve=SONAR-python-S6903 UPGRADED: '**Riesgo Detectado:** Use of deprecated/non-timezone-aware datetime.utcnow()\n\n**Nivel de Severidad:*'
+id=27238 cve=SONAR-python-S5332 UPGRADED: '**Riesgo Detectado:** Uso de protocolo HTTP inseguro\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Téc'
+id=27248 cve=SONAR-python-S8572 UPGRADED: '**Riesgo Detectado:** Uso inadecuado de logging\n\n**Nivel de Severidad:** Alto\n\n**Evidencia Técnica:*'
+id=27254 cve=SONAR-python-S3457 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27255 cve=SONAR-python-S3457 UPGRADED: '**Riesgo Detectado:** Riesgo identificado\n\n**Nivel de Severidad:** MEDIUM'
+id=27256 cve=SONAR-python-S112 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27259 cve=SONAR-python-S8572 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27263 cve=SONAR-python-S5332 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27277 cve=SONAR-python-S1481 UPGRADED: '**Riesgo Detectado:** Variable local no utilizada\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técnic'
+id=27280 cve=SONAR-python-S8572 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27281 cve=SONAR-python-S3776 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27290 cve=SONAR-python-S1172 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27291 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27293 cve=SONAR-python-S1871 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27296 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27298 cve=SONAR-python-S8415 UPGRADED: '**Riesgo Detectado:** Falta de documentación para excepciones HTTP\n\n**Nivel de Severidad:** Alto\n\n**'
+id=27320 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27321 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27337 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27339 cve=SONAR-python-S8415 UPGRADED: '**Riesgo Detectado:** Falta de documentación de HTTPException\n\n**Nivel de Severidad:** Alto\n\n**Evide'
+id=27347 cve=SONAR-python-S8415 UPGRADED: '**Riesgo Detectado:** Falta de documentación de HTTPException\n\n**Nivel de Severidad:** Alto\n\n**Evide'
+id=27352 cve=SONAR-python-S8415 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27354 cve=SONAR-python-S7508 UPGRADED: '**Riesgo Detectado:** Llamado redundante\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técnica:** Un l'
+id=27364 cve=SONAR-python-S1481 UPGRADED: '**Riesgo Detectado:** Código inútil\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técnica:** La variab'
+id=27367 cve=SONAR-python-S2068 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27369 cve=SONAR-python-S1481 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27371 cve=SONAR-python-S3776 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27378 cve=SONAR-python-S8392 UPGRADED: '**Riesgo Detectado:** Binding a todas las interfaces de red\n\n**Nivel de Severidad:** Crítico\n\n**Evid'
+id=27388 cve=SONAR-python-S3457 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27398 cve=SONAR-python-S3776 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27408 cve=SONAR-css-S7924 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27423 cve=SONAR-javascript-S9011 UPGRADED: "**Riesgo Detectado:** Falta de atributo 'type' explícito en botón\n\n**Nivel de Severidad:** Alto\n\n**E"
+id=27424 cve=SONAR-javascript-S9011 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27430 cve=SONAR-javascript-S9011 UPGRADED: "**Riesgo Detectado:** Falta de atributo 'type' explícito en un botón\n\n**Nivel de Severidad:** Alto\n\n"
+id=27432 cve=SONAR-javascript-S3863 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27433 cve=SONAR-javascript-S6582 UPGRADED: '**Riesgo Detectado:** Uso de comprobaciones de null en lugar de expresiones de cadena opcional\n\n**Ni'
+id=27438 cve=SONAR-javascript-S6853 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27445 cve=SONAR-javascript-S3358 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27451 cve=SONAR-javascript-S1128 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27456 cve=SONAR-javascript-S3358 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27465 cve=SONAR-javascript-S1854 UPGRADED: '**Riesgo Detectado:** Asignación inútil a variable\n\n**Nivel de Severidad:** Alto\n\n**Evidencia Técnic'
+id=27469 cve=SONAR-javascript-S1481 UPGRADED: '**Riesgo Detectado:** SONAR-javascript-S1481: Variable no utilizada\n\n**Nivel de Severidad:** Medio\n\n'
+id=27473 cve=SONAR-javascript-S9011 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27479 cve=SONAR-javascript-S1481 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27480 cve=SONAR-javascript-S1854 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27483 cve=SONAR-javascript-S1854 UPGRADED: '**Riesgo Detectado:** Asignación inútil a variable\n\n**Nivel de Severidad:** Alto\n\n**Evidencia Técnic'
+id=27503 cve=SONAR-javascript-S6853 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27515 cve=SONAR-javascript-S1128 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27521 cve=SONAR-javascript-S6438 UPGRADED: '**Riesgo Detectado:** Comentarios dentro de la sección de hijos de una etiqueta deberían estar dentr'
+id=27526 cve=SONAR-javascript-S6853 UPGRADED: '**Riesgo Detectado:** Etiqueta de formulario no asociada a un control\n\n**Nivel de Severidad:** Alto\n'
+id=27975 cve=COGNITIVE-COMPLEXITY-EXCEEDED UPGRADED: '**Riesgo Detectado:** Cognitive Complexity Exceeded\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técn'
+id=27977 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27978 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27980 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27981 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27984 cve=CODE-INJECTION-EVAL UPGRADED: '**Riesgo Detectado:** Inyección de código vía eval()\n\n**Nivel de Severidad:** Crítico\n\n**Evidencia T'
+id=27986 cve=CMD-INJECTION-SHELL-TRUE UPGRADED: '**Riesgo Detectado:** Inyección de comandos (Command Injection)\n\n**Nivel de Severidad:** Crítico\n\n**'
+id=27990 cve=SSRF-UNCHECKED-FETCH HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=27991 cve=SSRF-UNCHECKED-FETCH HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28002 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28018 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28024 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28031 cve=HARDCODED-SECRET HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28034 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28036 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28070 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28073 cve=CMD-INJECTION-SHELL-TRUE HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28075 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28076 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28077 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28078 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28079 cve=REACT-DANGEROUSLY-SET-INNER-HTML HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28082 cve=COGNITIVE-COMPLEXITY-EXCEEDED HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28083 cve=COGNITIVE-COMPLEXITY-EXCEEDED UPGRADED: '**Riesgo Detectado:** COGNITIVE-COMPLEXITY-EXCEEDED\n\n**Nivel de Severidad:** Medio\n\n**Evidencia Técn'
+id=28084 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28085 cve=CODE-INJECTION-EVAL HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28086 cve=CODE-INJECTION-EVAL UPGRADED: '**Riesgo Detectado:** Riesgo identificado\n\n**Nivel de Severidad:** MEDIUM'
+id=28122 cve=SCA-GHSA-r28c-9q8g-f849 UPGRADED: '**Riesgo Detectado:** Path Traversal in Previous Source Map Auto-Loading (sourceMappingURL) en postc'
+id=28167 cve=STD-ISO25010-LONG-METHOD HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)
+id=28262 cve=ZAP-10106 HONEST_NO_FIX (LLM/heuristic agreed no deterministic rule exists)

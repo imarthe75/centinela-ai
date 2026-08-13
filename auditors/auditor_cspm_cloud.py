@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger("centinela.cspm")
 
-def audit_cloud_iac_and_cspm(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]]:
+def audit_cloud_iac_and_cspm(target_dir: str = "/app") -> List[Dict[str, Any]]:
     """
     Audits Cloud IaC (Terraform, CloudFormation, K8s manifests) and cloud configs
     against CSPM CIS Benchmarks (AWS S3, GCP IAM, Azure Security Groups, K8s RBAC/Admission).

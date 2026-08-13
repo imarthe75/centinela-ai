@@ -311,7 +311,7 @@ def check_reachability(target_dir: str, package: str, manifest: str) -> str:
     return "UNREACHABLE"
 
 
-def run_sca_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
     """Scans target directory for package manifests and audits open-source dependencies."""
     all_findings = []
 
