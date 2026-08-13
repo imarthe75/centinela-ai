@@ -48,8 +48,8 @@ def _osv_severity(vuln: Dict[str, Any]) -> str:
             # use this as a last resort when nothing else is present.
             if "score" in sev:
                 return _osv_cvss_to_severity(float(sev["score"]))
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            print(f"⚠️ [SCA-Auditor] Could not parse OSV severity score {sev.get('score')!r}: {e}")
     db_sev = str(vuln.get("database_specific", {}).get("severity", "")).upper()
     if db_sev in _OSV_SEVERITY_MAP:
         return _OSV_SEVERITY_MAP[db_sev]

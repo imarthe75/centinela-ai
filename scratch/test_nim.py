@@ -5,7 +5,7 @@ import urllib.error
 import ssl
 
 print("[1] Script started")
-api_key = "***REMOVED-SECRET***"
+api_key = os.environ["NVIDIA_NIM_API_KEY"]
 base_url = "***REMOVED-SECRET***"
 model_name = "***REMOVED-SECRET***"
 

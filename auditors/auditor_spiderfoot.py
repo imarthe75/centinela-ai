@@ -104,9 +104,15 @@ def enumerate_subdomains(domain: str) -> List[Dict]:
                         if not any(e["fqdn"] == fqdn for e in found):
                             found.append({"subdomain": prefix, "fqdn": fqdn, "ip": ip})
                             print(f"   ✅ amass: {fqdn} → {ip}")
-                    except: pass
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+                    except Exception:
+                        # DNS resolution failure for a passively-enumerated subdomain (e.g.
+                        # NXDOMAIN) is a routine, expected outcome here, not a bug -- many
+                        # passively-discovered subdomains genuinely have no live DNS record.
+                        # Narrowed from a bare `except:` (which also caught
+                        # KeyboardInterrupt/SystemExit) rather than adding per-subdomain noise.
+                        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        print(f"⚠️ [SpiderFoot-OSINT] amass unavailable or timed out for {domain}: {e}")
 
     print(f"   Subdomain enumeration complete: {len(found)} found")
     return found

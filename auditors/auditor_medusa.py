@@ -64,14 +64,19 @@ def run_medusa_scan(repo_path, asset_id):
     # regardless of host load (confirmed both under heavy contention and on an idle host), so
     # it's a genuine bug in this version's worker-pool IPC, not resource starvation. With -w 1
     # the same repo scanned cleanly in ~9s with a real report and no crash.
-    cmd = f'medusa scan "{repo_path}" --format json -o "{output_dir}" -w 1'
-    
-    print(f"🚀 Running: {cmd}")
+    # Argument list + shell=False (not an f-string run through the shell) -- repo_path is built
+    # from a GitLab project's own path_with_namespace (see GitLabIntegrator.clone_or_pull()),
+    # which is attacker-influenceable if someone with rights to create a maliciously-named
+    # GitLab project ever exists; an argument list closes that off entirely rather than relying
+    # on quoting inside a shell string.
+    cmd = ["medusa", "scan", repo_path, "--format", "json", "-o", output_dir, "-w", "1"]
+
+    print(f"🚀 Running: {' '.join(cmd)}")
     try:
         # 300s wasn't enough for a real run in testing — Medusa shells out to other scanners
         # (observed spawning `trivy fs --scanners vuln,secret,misconfig` as a sub-process, which
         # downloads/refreshes its CVE database on a cold cache) on top of its own ~45 analyzers.
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         
         # Look for the generated json report in the output folder. Medusa 2026.7.0 always
         # writes a second, unrelated "scan_history.json" (a list, not a report dict) alongside

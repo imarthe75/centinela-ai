@@ -346,9 +346,19 @@ def scan_appserver(asset_id, endpoint):
     
     print(f"📡 [Auditor-Ext] Discovery scan on {endpoint} (Standard + K8s NodePorts)")
     nm_result = subprocess.run(['nmap', '-p', ports_str, '--open', endpoint, '--min-rate', '1000'], capture_output=True, text=True, errors='replace')
-    
+
+    # Real bug fixed here: nmap returns returncode 0 whether the target genuinely has 0 open
+    # ports OR the host is completely unreachable (DNS failure, no route to host, firewalled) --
+    # confirmed live: "nmap ... 10.4.3.202" (a real host with "No route to host" confirmed via a
+    # direct TCP test) prints "Note: Host seems down... 0 hosts up" with exit code 0, and a
+    # bogus target like "remote-agent" prints "Failed to resolve... 0 hosts scanned", also exit
+    # code 0. `if nm_result.returncode == 0: open_ports = [...]` treated both cases identically
+    # to "genuinely scanned, found nothing" -- the same silent-failure-reported-as-clean-scan
+    # pattern already found and fixed in auditor_cis_benchmarks.py's SSH path. host_unreachable
+    # is checked before ever trusting an empty open_ports list as a real result.
+    host_unreachable = "0 hosts up" in nm_result.stdout or "Failed to resolve" in nm_result.stdout
     open_ports = []
-    if nm_result.returncode == 0:
+    if nm_result.returncode == 0 and not host_unreachable:
         for line in nm_result.stdout.splitlines():
             if "/tcp" in line and "open" in line:
                 port = line.split("/")[0].strip()
@@ -395,18 +405,27 @@ def scan_appserver(asset_id, endpoint):
             except Exception as e:
                 print(f"❌ [Auditor-Ext] ZAP error on {url}: {e}")
 
-    # 3. Final Audit Logging
+    # 3. Final Audit Logging -- honestly distinguishes "genuinely scanned, found nothing" from
+    # "host was unreachable, nothing was actually verified" instead of reporting both as a clean
+    # scan (see host_unreachable check above for the real incident this fixes).
     if not found_vulns:
-        audit_msg = f"Auditoría exhaustiva completada para AppServer ({endpoint}).\n"
-        if open_ports:
-            audit_msg += f"Servicios detectados en puertos: {', '.join(open_ports)}.\n"
-            audit_msg += "Se realizaron pruebas Nuclei (templates) y ZAP DAST (inyección dinámica).\n"
-            audit_msg += "Resultado: Servicios activos y seguros (sin vulnerabilidades críticas detectadas).\n"
+        if host_unreachable:
+            audit_msg = (
+                f"Auditoría de AppServer ({endpoint}) no pudo completarse: el host no respondió "
+                f"al escaneo de puertos (inalcanzable por red o DNS no resuelto). Ningún puerto, "
+                f"servicio ni contenedor fue realmente verificado."
+            )
         else:
-            audit_msg += "No se encontraron servicios web en puertos estándar o rango K8s NodePort (30000-32767).\n"
+            audit_msg = f"Auditoría exhaustiva completada para AppServer ({endpoint}).\n"
+            if open_ports:
+                audit_msg += f"Servicios detectados en puertos: {', '.join(open_ports)}.\n"
+                audit_msg += "Se realizaron pruebas Nuclei (templates) y ZAP DAST (inyección dinámica).\n"
+                audit_msg += "Resultado: Servicios activos y seguros (sin vulnerabilidades críticas detectadas).\n"
+            else:
+                audit_msg += "No se encontraron servicios web en puertos estándar o rango K8s NodePort (30000-32767).\n"
 
-        audit_msg += "Verificación de Docker: Sin contenedores expuestos.\n"
-        audit_msg += "Verificación de Bases de Datos: No se detectaron instancias SQL/NoSQL abiertas."
+            audit_msg += "Verificación de Docker: Sin contenedores expuestos.\n"
+            audit_msg += "Verificación de Bases de Datos: No se detectaron instancias SQL/NoSQL abiertas."
 
         log_audit(asset_id, audit_msg)
 
@@ -469,8 +488,13 @@ def handle_osint_enrichment(data):
         except Exception as e:
             print(f"❌ [Event-Dispatcher] OSINT Enrichment failed: {e}")
 
-        # SpiderFoot enhanced OSINT (subdomain enum, CT logs, WHOIS)
-        if SPIDERFOOT_AVAILABLE and asset_id and endpoint and a_type == "URL":
+        # SpiderFoot enhanced OSINT (subdomain enum, CT logs, WHOIS). Previously required
+        # a_type == "URL" exactly -- no asset in this deployment's real taxonomy has ever used
+        # that literal type string (real values are SERVER/AppServer/GitLab-Repo/Database (SQL)),
+        # so this condition was permanently dead despite the outer ASSET_DISCOVERED dispatch
+        # firing correctly every scan cycle for SERVER/AppServer assets. Broadened to match the
+        # types this function's own signature already expects an `endpoint` worth enumerating.
+        if SPIDERFOOT_AVAILABLE and asset_id and endpoint and a_type in ("URL", "SERVER", "AppServer"):
             try:
                 auditor_spiderfoot.run_spiderfoot_osint(
                     target=endpoint,

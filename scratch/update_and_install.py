@@ -1,9 +1,10 @@
+import os
 import sys
 sys.path.append("/app")
 import hvac
 
-vault_addr = "***REMOVED-SECRET***"
-vault_token = "***REMOVED-SECRET***"
+vault_addr = os.environ.get("VAULT_ADDR", "***REMOVED-SECRET***")
+vault_token = os.environ["VAULT_TOKEN"]
 client = hvac.Client(url=vault_addr, token=vault_token)
 
 asset_name = "CLONE-COMPRAMEX-DIGITAL-BD"

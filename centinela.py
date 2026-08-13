@@ -803,7 +803,7 @@ def heuristic_can_automate(vuln):
         return True
     if cve.startswith('ZAP-'):
         return generate_zap_header_fix(vuln) is not None
-    if cve in ('SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT') or any(
+    if cve in ('SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'SONARQUBE-QUALITY-GATE') or any(
         p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido')
     ):
         return False
@@ -934,7 +934,7 @@ def generate_heuristic_analysis(vuln):
             "No existe una corrección automatizable para este hallazgo específico -- revisar la descripción técnica y aplicar manualmente."
         )
 
-    if cve_u in ('SCAN-AUDIT', 'CIS-BENCHMARK-AUDIT') or any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido', 'auditoría cis benchmarks completada')):
+    if cve_u in ('SCAN-AUDIT', 'CIS-BENCHMARK-AUDIT', 'SONARQUBE-QUALITY-GATE') or any(p in desc for p in ('no se detectaron vulnerabilidades', 'no se encontraron', 'escaneo externo omitido', 'auditoría cis benchmarks completada', 'auditoría sonarqube completada')):
         return (
             "Sin hallazgo técnico (mensaje informativo de escaneo)",
             "Ninguno -- esta entrada documenta el resultado de un escaneo, no una vulnerabilidad.",
@@ -1012,7 +1012,7 @@ def correlate_vulnerability(vuln):
     cve_upper = str(vuln.get('cve_id', '')).upper()
     is_synthetic_marker = (
         cve_upper.startswith('CTI-IOC-MATCH') or cve_upper.startswith('BLOODHOUND-PATH')
-        or cve_upper in ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT')
+        or cve_upper in ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT', 'SONARQUBE-QUALITY-GATE')
     )
 
     if is_repo_finding:
@@ -1304,7 +1304,15 @@ def process_falco_alerts():
     r = get_valkey_connection()
     while True:
         try:
-            alert_raw = r.lpop("centinela:falco")
+            # Falcosidekick's REDIS_STORAGEKEY env var does not actually control the list name
+            # in the deployed version (confirmed live: set to "centinela:falco", but every event
+            # -- verified by manually inspecting Valkey's real keys after real triggered
+            # detections -- landed in a plain "falco" list instead). This silently meant zero
+            # Falco alerts were ever consumed since Falco was first deployed, despite the whole
+            # pipeline (Falco -> Falcosidekick -> Valkey) actually working end-to-end the entire
+            # time; the DB backfill of already-queued events on first deploy is intentional (see
+            # centinela.py's startup sequence), not an oversight.
+            alert_raw = r.lpop("falco")
             if alert_raw:
                 alert = json.loads(alert_raw)
                 print(f"🚨 [Centinela-AI] Falco Alert: {alert.get('rule')}")
@@ -1384,7 +1392,7 @@ def process_zeek_alerts():
                             json.dumps(alert)
                         ))
             except Exception as e:
-                pass
+                print(f"⚠️ [Centinela-AI] Error processing Zeek notice log line: {e}")
 
         time.sleep(1)
 
@@ -1445,8 +1453,8 @@ def process_zeek_conn_log():
                     if os.path.exists(conn_log_path) and os.path.getsize(conn_log_path) < f.tell():
                         f.close()
                         open_log()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"⚠️ [Centinela-AI] Error checking/handling Zeek conn.log rotation: {e}")
                 time.sleep(2)
 
                 # Real, honest activity heartbeat every 5 minutes -- not a fake ping, an actual
@@ -1721,12 +1729,22 @@ def run_cis_benchmark_loop():
     while True:
         try:
             with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                # Real bug fixed here 2026-08-12: 'Database (SQL)' and 'GITLAB' asset types were
+                # never in scope, even though CIS Level 1 checks are pure Linux OS hardening (SSH
+                # config, /etc/shadow perms, firewall, etc) -- they evaluate the underlying host,
+                # not "is this asset type a generic app server". Confirmed live: 74/83 assets
+                # showed as permanently "never evaluated" on the dashboard; of those, 67 are
+                # GitLab-Repo (correctly out of scope -- a code repository has no OS to harden)
+                # but 4 Database (SQL) assets and 1 GITLAB asset were real, potentially reachable
+                # Linux hosts silently excluded by this filter alone, not by any real
+                # unreachability. GitLab-Repo/GITLAB-org-level and other non-host types are still
+                # deliberately excluded -- CIS Level 1 genuinely does not apply to them.
                 cur.execute("""
                     SELECT i.id, i.asset_name, i.endpoint
                     FROM infra_inventory i
                     LEFT JOIN vulnerability_log v
                         ON v.asset_id = i.id AND v.cve_id = 'CIS-BENCHMARK-AUDIT'
-                    WHERE i.asset_type IN ('SERVER', 'AppServer')
+                    WHERE i.asset_type IN ('SERVER', 'AppServer', 'Database (SQL)', 'GITLAB')
                         AND i.endpoint != 'remote-agent'
                     GROUP BY i.id, i.asset_name, i.endpoint
                     HAVING MAX(v.detected_at) IS NULL

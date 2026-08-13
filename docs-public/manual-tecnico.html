@@ -386,6 +386,7 @@
       <li><a href="#omni-xdr">Visión Omni-XDR 2.0</a></li>
       <li><a href="#otros">Otros componentes</a></li>
       <li><a href="#salud">Salud del ecosistema y reportes</a></li>
+      <li><a href="#estado-actual">Estado técnico actual</a></li>
     </ol>
   </nav>
 
@@ -589,8 +590,8 @@
       <h2>Wazuh EDR, Multi-OS & Zeek NDR</h2>
       <h3>¿Qué es EDR vs. XDR en Centinela AI?</h3>
       <ul>
-        <li><strong>EDR (Endpoint Detection and Response):**</strong> Es la tecnología instalada en el sistema operativo del activo (servidor o workstation). Monitorea procesos, llamadas al sistema, archivos y registro para detectar comportamientos maliciosos a nivel de host. En Centinela se opera vía el agente <strong>Wazuh EDR</strong>.</li>
-        <li><strong>XDR (Extended Detection and Response):**</strong> Es la evolución que trasciende al host individual, correlacionando telemetría de <em>múltiples vectores</em>: agentes EDR + tráfico de red (Zeek NDR) + código fuente (SAST/SCA) + identidad (Authentik ITDR) + seguridad IA. Centinela actúa como un <strong>Omni-XDR unificado</strong>.</li>
+        <li><strong>EDR (Endpoint Detection and Response):</strong> Es la tecnología instalada en el sistema operativo del activo (servidor o workstation). Monitorea procesos, llamadas al sistema, archivos y registro para detectar comportamientos maliciosos a nivel de host. En Centinela se opera vía el agente <strong>Wazuh EDR</strong>.</li>
+        <li><strong>XDR (Extended Detection and Response):</strong> Es la evolución que trasciende al host individual, correlacionando telemetría de <em>múltiples vectores</em>: agentes EDR + tráfico de red (Zeek NDR) + código fuente (SAST/SCA) + identidad (Authentik ITDR) + seguridad IA. Centinela actúa como un <strong>Omni-XDR unificado</strong>.</li>
       </ul>
 
       <h3>Estándares de Seguridad EDR/XDR & Monitoreo Híbrido</h3>
@@ -643,7 +644,6 @@
             <tr><td><b>NIST CSF 2.0</b></td><td>PR.PS-01 / DE.CM-01</td><td>Verificación continua de configuración segura y detección de anomalías de red.</td></tr>
           </tbody>
         </table>
-      </div>
       </div>
       <p class="dim">Wazuh define otros puertos en su arquitectura general (514 syslog, 9200 indexer, 5601 dashboard) que no están desplegados en este entorno — este stack corre solo el Manager, sin Indexer ni Dashboard propios de Wazuh.</p>
 
@@ -865,8 +865,41 @@
       </ul>
     </section>
 
+    <section id="estado-actual">
+      <h2>Estado técnico actual</h2>
+      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (11 de agosto de 2026):</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Indicador</th><th>Valor actual</th></tr></thead>
+          <tbody>
+            <tr><td>Activos monitoreados</td><td>83 (servidores, bases de datos, repositorios GitLab)</td></tr>
+            <tr><td>Hallazgos activos reales</td><td>3,448</td></tr>
+            <tr><td>Hallazgos críticos abiertos</td><td>223</td></tr>
+            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>8</td></tr>
+            <tr><td>Incumplimientos de plazo de corrección (SLA) — críticos</td><td>18</td></tr>
+            <tr><td>Proveedores de IA en cadena de respaldo</td><td>4 (Groq → Gemini → NVIDIA → OpenRouter)</td></tr>
+            <tr><td>Cobertura de pruebas automatizadas</td><td>30/30 pasan</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Estado de los motores propios de análisis:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Motor</th><th>Estado</th><th>Cobertura</th></tr></thead>
+          <tbody>
+            <tr><td><code>db-hardening</code></td><td>Operativo</td><td>Verificado contra bases de datos reales (TLS en tránsito, exposición de puertos por defecto)</td></tr>
+            <tr><td><code>iac-native</code></td><td>Operativo</td><td>Persistencia verificada; detección de contenedores privilegiados, montajes <code>hostPath</code> y recursos públicos en Terraform</td></tr>
+            <tr><td><code>cmmi-audit</code></td><td>Operativo</td><td>Cada hallazgo se atribuye al repositorio y archivo:línea exacto; el reporte <code>/api/audit/cmmi-v3-report</code> refleja datos reales por activo</td></tr>
+            <tr><td>SpiderFoot OSINT</td><td>Operativo</td><td>Enumeración pasiva (subdominios, CT logs, WHOIS) activa sobre activos <code>SERVER</code>/<code>AppServer</code></td></tr>
+            <tr><td>Motor de deduplicación</td><td>Operativo</td><td>Comparación segura ante valores nulos; sin duplicados en alertas agregadas ni en hallazgos por activo</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="dim">Pendiente conocido: la cuenta de servicio <code>monitor</code> aún no tiene acceso Developer al grupo GitLab <code>arquitectura/</code> (el intento de otorgarlo devolvió <code>403 Forbidden</code> pese a usar una cuenta con rol Maintainer) — el escaneo automatizado de GitLab sigue usando un token personal en su lugar. Requiere revisión por un administrador de la instancia GitLab.</p>
+    </section>
+
     <footer>
-      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio
+      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-11
     </footer>
   </main>
 </div>

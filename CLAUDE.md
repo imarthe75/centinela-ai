@@ -136,6 +136,34 @@ kept current here as each piece is actually built/changed, not aspirationally.
    were both genuinely off. Fixed by always emitting an unambiguous `RESULT:ACTIVE`/
    `RESULT:INACTIVE` ourselves rather than trusting the tool's own raw stdout; the real grade on
    that host dropped from a falsely-inflated C (54.5%) to an honest F (36.4%).
+   **Second real bug found and fixed 2026-08-11**, in response to a direct user challenge
+   ("cómo es que fue auditado si nunca ha sido encendido? el cisco 4 esxi?"): `_run_ssh_command()`
+   returned `""` (empty string) both when a command genuinely ran and produced no output, AND
+   when the SSH connection itself failed outright — indistinguishable downstream. This meant
+   **every unreachable host got a fully fabricated grade**, not an honest "couldn't check":
+   confirmed live that `Cisco 4 ESXI` (a powered-off VMware ESXi hypervisor — VMkernel, not
+   Linux, so none of these Linux-specific checks could ever apply there regardless) had all 11
+   checks logged as real HIGH/CRITICAL findings with the identical fallback evidence text
+   `(sin salida / comando no aplicable)`, none of them real. Same bug hit `centinela`,
+   `CLONE-COMPRAMEX-CORE`, `CLONE-COMPRAMEX-CORE-BD`, and `compramex-bd` (no real SSH
+   credentials in Vault for any of these — confirmed live via `No sudo_password found in Vault`)
+   at 100% fake, and `casmartsuperset`/`casmart_authentik`/`prism`/`chat` partially (3 of 11
+   checks each). Fixed by having `_run_ssh_command()` return `None` (not `""`) on genuine
+   connection/execution failure; `run_cis_audit()` now tracks `unreachable_count` separately and
+   only computes a grade from checks that were actually verified, introducing an honest
+   `SIN_CONEXION` grade (with `percentage: None`) instead of a fabricated `F (0%)` when zero
+   checks could be verified; `log_cis_findings()` now skips logging a finding for any check with
+   `passed is None` (unreachable), only ever logging genuinely-observed failures. Verified live
+   end-to-end after clearing `__pycache__` and restarting both `centinela-ai` and
+   `centinela-backend` (confirmed via `inspect.getsource()` in both containers, not just assumed
+   from the restart): re-running the real audit against all 9 previously-affected assets now
+   correctly returns `SIN_CONEXION` for the 5 fully-unreachable ones and a real partial grade
+   (C, 4/8 verified) for the 4 partially-reachable ones. The 67 confirmed-fake finding rows
+   (identified by the exact fabricated fallback text) were deleted from the DB with explicit
+   user approval; 0 remain, 16 genuinely-reverified findings survive. Full pytest suite still
+   30/30 passing. **Lesson**: a DB row's existence with a recent timestamp is not evidence that
+   whatever it claims actually happened — verify the underlying raw evidence
+   (`raw_output`/similar), not just that the row is there, before asserting something is real.
 7. **Neo4j Attack Path Graphing** — **⚠️ code is real and kept warm, but has no real data to run
    against yet (deliberate — decided 2026-08-06, see below)**.
    `process_bloodhound_paths()` in `centinela.py` runs a real, standard BloodHound Cypher query
