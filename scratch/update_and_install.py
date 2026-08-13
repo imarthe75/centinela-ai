@@ -7,8 +7,11 @@ vault_addr = os.environ.get("VAULT_ADDR", "http://casmarts-core-vault:8200")
 vault_token = os.environ["VAULT_TOKEN"]
 client = hvac.Client(url=vault_addr, token=vault_token)
 
+# CLONE-COMPRAMEX-DIGITAL-BD was decommissioned and removed from infra_inventory (dead IP,
+# confirmed via ICMP/TCP -- see CLAUDE.md); this script is obsolete but kept for reference.
+# Password read from env rather than a hardcoded weak literal, matching the rest of this file.
 asset_name = "CLONE-COMPRAMEX-DIGITAL-BD"
-new_password = "password"
+new_password = os.environ["SCRATCH_PROVISION_PASSWORD"]
 ansible_user = "compradigitalbd"
 
 payload = {

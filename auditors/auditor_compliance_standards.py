@@ -88,7 +88,9 @@ def run_compliance_standards_audit(target_dir: str = "/opt/centinela-ai", asset_
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        # "tests" excluded too -- see the identical exclusion (and its reasoning) in
+        # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

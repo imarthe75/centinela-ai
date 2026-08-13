@@ -18,7 +18,20 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     # 1. SQL Injection Detection
     sqli_patterns = [
         (r'execute\s*\(\s*f["\'].*?SELECT.*?\{', "SQL-INJECTION-FSTRING", "HIGH", "SQL Injection via interpolated f-string in query."),
-        (r'execute\s*\(\s*["\'].*?SELECT.*?["\']\s*%\s*[^(]', "SQL-INJECTION-PERCENT", "HIGH", "SQL Injection via string percent formatting without parameter tuple."),
+        # Real bug fixed here: the previous `.*?` segments could cross the query string's OWN
+        # closing quote into either (a) a LATER, unrelated string literal on the same line, or
+        # (b) an inner, different-type quote char nested inside a single SQL string containing
+        # a literal '%wildcard%' -- e.g. the safe, correctly-parameterized
+        # `cur.execute("... LIKE %s", (f"%{name}%",))` and the fully-static
+        # `cur.execute("... LIKE '%None%'")` were both flagged, the regex mistaking a SQL LIKE
+        # wildcard for a Python `%` format operator. Confirmed live: 3 genuinely safe queries
+        # (2 in centinela.py, 1 in scratch/db_count.py) flagged this way. Fixed with a
+        # backreference (`\1`) so the "content" segments can only contain characters that are
+        # NOT the SAME quote character that opened the string -- this correctly finds the
+        # string's real terminator (crossing over inner different-type quotes, never crossing
+        # the matching one) regardless of whether a comma/second argument follows. Real unsafe
+        # `"...%s" % value` calls (no parameter tuple at all) are still caught.
+        (r'execute\s*\(\s*(["\'])(?:(?!\1).)*?SELECT(?:(?!\1).)*?\1\s*%\s*[^(]', "SQL-INJECTION-PERCENT", "HIGH", "SQL Injection via string percent formatting without parameter tuple."),
         (r'execute\s*\(\s*["\'].*?\+.*?\+', "SQL-INJECTION-CONCAT", "CRITICAL", "SQL Injection via string concatenation.")
     ]
     for idx, line in enumerate(lines, 1):
@@ -192,7 +205,13 @@ def run_master_vulnerability_scan(target_dir: str = "/opt/centinela-ai", asset_i
     all_findings = []
     
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        # "tests" excluded here too -- several test files in this repo (by design) contain
+        # deliberately vulnerable-looking snippets as fixtures to test the detectors
+        # themselves (e.g. tests/test_full_coverage_100.py's HARDCODED-SECRET fixture,
+        # tests/test_sast_db_patterns.py's SQL injection fixtures) -- these aren't real
+        # production vulnerabilities and previously polluted compliance scoring for the
+        # asset that owns this source tree.
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
