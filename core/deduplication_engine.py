@@ -16,27 +16,29 @@ def calculate_fingerprint(asset_id: Any, cve_id: str, location_or_desc: str) -> 
     raw = f"{asset_id}:{normalized_cve}:{normalized_loc}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
 
-def calculate_sla_due_date(severity: str, detected_at: Optional[datetime] = None) -> datetime:
+def get_sla_delta(severity: str) -> timedelta:
     """
-    Calculates SLA remediation deadline based on severity.
+    Maps severity to its SLA remediation window.
     - CRITICAL: 24 hours
     - HIGH: 7 days
     - MEDIUM: 30 days
     - LOW / INFO: 90 days
     """
-    start_time = detected_at or datetime.utcnow()
     sev = str(severity or '').upper()
 
     if sev in ('CRITICAL', 'CRÍTICO'):
-        delta = timedelta(hours=24)
+        return timedelta(hours=24)
     elif sev in ('HIGH', 'ALTO'):
-        delta = timedelta(days=7)
+        return timedelta(days=7)
     elif sev in ('MEDIUM', 'MEDIO'):
-        delta = timedelta(days=30)
+        return timedelta(days=30)
     else:
-        delta = timedelta(days=90)
+        return timedelta(days=90)
 
-    return start_time + delta
+def calculate_sla_due_date(severity: str, detected_at: Optional[datetime] = None) -> datetime:
+    """Calculates SLA remediation deadline based on severity, relative to detected_at (or now)."""
+    start_time = detected_at or datetime.utcnow()
+    return start_time + get_sla_delta(severity)
 
 def calculate_centinela_risk_score(cvss_score: float, epss_score: float, is_cisa_kev: bool, asset_criticality: float = 1.0) -> float:
     """
@@ -97,22 +99,36 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     """
     from core import threat_intel, mitre_attack
 
+    # Normalized once, here, rather than trusting every one of the ~10 call sites across the
+    # codebase to pass consistent casing. Confirmed live this was a real, not just cosmetic,
+    # bug: 'Info' vs 'INFO' currently split 44 identical findings into two separate
+    # /api/risk-distribution chart segments, AND several exact-match severity filters elsewhere
+    # (main.py's HIGH-count health stat, PDF report KPI cards) silently undercounted anything
+    # that wasn't exactly 'HIGH'/'CRITICAL'.
+    severity = str(severity or '').strip().upper()
+
     fingerprint = calculate_fingerprint(asset_id, cve_id, url_path or description)
     real_cve = threat_intel.extract_cve(cve_id)
 
     mitre = mitre_attack.map_finding(cve_id, description)
     standards_value = f"MITRE ATT&CK: {mitre[0]} - {mitre[1]} ({mitre[2]})" if mitre else None
 
-    # Tier 1: exact same finding (same fingerprint), any engine.
+    # Tier 1: exact same finding (same fingerprint), any engine. "asset_id IS NOT DISTINCT FROM
+    # %s" (not "asset_id = %s") -- plain "=" against a NULL asset_id (a legitimate, intentional
+    # value for aggregate/org-wide findings like HEURISTIC-SECURITY-DEBT's "no single asset"
+    # bucket) is SQL NULL, never TRUE, so this tier could never find its own previously-inserted
+    # row for any asset_id=None finding and fell through to Tier 3 on every single call --
+    # confirmed live: 983 duplicate rows for one such alert, vs. real dedup (a handful of rows)
+    # for every properly asset-attributed finding using the exact same code path.
     if preserve_status:
         cur.execute("""
             SELECT id FROM public.vulnerability_log
-            WHERE asset_id = %s AND fingerprint_hash = %s
+            WHERE asset_id IS NOT DISTINCT FROM %s AND fingerprint_hash = %s
         """, (asset_id, fingerprint))
     else:
         cur.execute("""
             SELECT id FROM public.vulnerability_log
-            WHERE asset_id = %s AND fingerprint_hash = %s AND status != 'RESOLVED'
+            WHERE asset_id IS NOT DISTINCT FROM %s AND fingerprint_hash = %s AND status != 'RESOLVED'
         """, (asset_id, fingerprint))
     existing = cur.fetchone()
     if existing:
@@ -139,7 +155,7 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     if real_cve:
         cur.execute("""
             SELECT id, description, scan_engine FROM public.vulnerability_log
-            WHERE asset_id = %s AND cve_id LIKE %s AND scan_engine != %s AND status != 'RESOLVED'
+            WHERE asset_id IS NOT DISTINCT FROM %s AND cve_id LIKE %s AND scan_engine != %s AND status != 'RESOLVED'
             LIMIT 1
         """, (asset_id, f"%{real_cve}%", scan_engine))
         cross_tool_match = cur.fetchone()
@@ -157,12 +173,59 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
                 """, (note, merge_id))
             return "merged", merge_id
 
-    # Tier 3: genuinely new.
-    cur.execute("""
-        INSERT INTO public.vulnerability_log
-        (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s)
-        RETURNING id
-    """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value))
-    new_id = cur.fetchone()[0]
-    return "inserted", new_id
+    # Tier 3: genuinely new. sla_due_date is set here at insert time (fixed severity->deadline
+    # mapping, not touched again on re-detection/update above) -- previously this column was
+    # only ever populated by a narrow legacy insert path elsewhere, so the shared logger every
+    # other engine funnels through left ~96% of unresolved findings (including every
+    # CRITICAL/HIGH row) with no SLA deadline at all, making the SLA-breach KPI structurally
+    # blind to almost the entire real backlog. Computed as "NOW() + interval" in the same SQL
+    # statement (not Python's datetime.utcnow() + timedelta beforehand) because this DB server's
+    # session timezone is America/Mexico_City, not UTC -- a Python-side UTC calculation compared
+    # against Postgres' own NOW()-based detected_at silently drifted by 6 hours (confirmed live:
+    # a CRITICAL insert got a ~30h window instead of the intended 24h).
+    sla_delta = get_sla_delta(severity)
+
+    # ON CONFLICT (fingerprint_hash) DO UPDATE, backed by a real unique index
+    # (idx_vulnerability_log_fingerprint_unique, added after a real incident this fixes) --
+    # Tier 1's SELECT-then-branch above is a plain read with no locking, so two calls racing
+    # for the *same brand-new* fingerprint (neither having inserted yet when the other's SELECT
+    # runs) could both fall through to here and both INSERT, since nothing before this ever
+    # actually enforced fingerprint_hash uniqueness at the database level (see gotcha #3 in
+    # CLAUDE.md: no unique constraint ever existed beyond the `id` primary key). Confirmed live:
+    # a backfill script produced 61 duplicate rows for a single ZAP finding in one batch (all
+    # sharing the same fingerprint, inserted within the same transaction's NOW()), each with its
+    # own separate PENDING_APPROVAL remediation_history row -- 839 duplicate rows total across
+    # 171 groups, cleaned up as part of this fix. ON CONFLICT makes the insert-or-update
+    # atomic at the database level regardless of how many callers race for the same fingerprint,
+    # closing the gap Tier 1's plain SELECT can't. `(xmax = 0)` is the standard Postgres idiom
+    # to tell an actual INSERT apart from a row returned via the ON CONFLICT UPDATE path.
+    if preserve_status:
+        cur.execute("""
+            INSERT INTO public.vulnerability_log
+            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s)
+            ON CONFLICT (fingerprint_hash) WHERE fingerprint_hash IS NOT NULL DO UPDATE SET
+                severity = EXCLUDED.severity,
+                description = EXCLUDED.description,
+                detected_at = NOW(),
+                status = CASE WHEN public.vulnerability_log.status = 'RESOLVED' THEN 'REOPENED' ELSE public.vulnerability_log.status END,
+                reachability_status = COALESCE(EXCLUDED.reachability_status, public.vulnerability_log.reachability_status),
+                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards)
+            RETURNING id, (xmax = 0) AS was_inserted
+        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta))
+    else:
+        cur.execute("""
+            INSERT INTO public.vulnerability_log
+            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s)
+            ON CONFLICT (fingerprint_hash) WHERE fingerprint_hash IS NOT NULL DO UPDATE SET
+                severity = EXCLUDED.severity,
+                description = EXCLUDED.description,
+                detected_at = NOW(),
+                status = EXCLUDED.status,
+                reachability_status = COALESCE(EXCLUDED.reachability_status, public.vulnerability_log.reachability_status),
+                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards)
+            RETURNING id, (xmax = 0) AS was_inserted
+        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta))
+    new_id, was_inserted = cur.fetchone()
+    return ("inserted" if was_inserted else "updated"), new_id

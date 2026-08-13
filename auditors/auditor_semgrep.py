@@ -8,9 +8,8 @@ en vulnerability_log con scan_engine='semgrep'.
 import subprocess
 import json
 import os
-from core import db_manager
-from datetime import datetime
-from psycopg2.extras import RealDictCursor
+import traceback
+from core import db_manager, deduplication_engine
 
 SEMGREP_BIN = os.getenv("SEMGREP_BIN", "semgrep")
 REPOS_BASE  = os.getenv("REPOS_BASE", "/app/repos")   # directorio donde se montan repos
@@ -57,6 +56,7 @@ def scan_path(path: str, asset_id: int, asset_name: str) -> list[dict]:
             "cve_id":      check_id,
             "severity":    severity,
             "description": f"[{file_path}:{start_line}] {message}",
+            "url_path":    f"{file_path}:{start_line}",
             "scan_engine": "semgrep",
         })
     print(f"✅ [Semgrep] {len(findings)} findings for {asset_name} at {path}")
@@ -64,28 +64,28 @@ def scan_path(path: str, asset_id: int, asset_name: str) -> list[dict]:
 
 
 def persist_findings(findings: list[dict]):
-    """Insert semgrep findings into vulnerability_log (skip duplicates)."""
+    """
+    Persists semgrep findings via the shared cross-tool dedup engine. Previously this ran its
+    own ad-hoc `SELECT ... WHERE asset_id=%s AND cve_id=%s AND scan_engine='semgrep'` check and,
+    on a match, did nothing at all -- not even refreshing detected_at/severity -- meaning
+    re-detected findings never got their SLA due date, fingerprint_hash, or MITRE ATT&CK
+    mapping computed, because none of that lives in this ad-hoc INSERT; every other auditor in
+    this codebase already funnels through log_finding_deduplicated() for exactly that reason.
+    preserve_status=True: semgrep re-scans the same GitLab repos repeatedly via the idle loop,
+    same reasoning as ZAP's documented preserve_status bug -- without it, every re-detection
+    would reset an already-triaged finding back to OPEN.
+    """
     if not findings:
         return
-    with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+    persisted = 0
+    with db_manager.get_db_cursor() as cur:
         for f in findings:
-            # Avoid duplicate: same asset + same rule + same description
-            cur.execute("""
-                SELECT id FROM public.vulnerability_log
-                WHERE asset_id = %s AND cve_id = %s AND scan_engine = 'semgrep'
-                LIMIT 1
-            """, (f["asset_id"], f["cve_id"]))
-            if cur.fetchone():
-                continue
-            cur.execute("""
-                INSERT INTO public.vulnerability_log
-                    (asset_id, cve_id, severity, description, status, scan_engine, detected_at)
-                VALUES (%s, %s, %s, %s, 'PENDING', 'semgrep', %s)
-            """, (
-                f["asset_id"], f["cve_id"], f["severity"],
-                f["description"], datetime.utcnow()
-            ))
-    print(f"💾 [Semgrep] Persisted {len(findings)} findings to vulnerability_log")
+            deduplication_engine.log_finding_deduplicated(
+                cur, f["asset_id"], f["cve_id"], f["severity"], f["description"],
+                "semgrep", url_path=f["url_path"], open_status="OPEN", preserve_status=True
+            )
+            persisted += 1
+    print(f"💾 [Semgrep] Persisted {persisted} findings to vulnerability_log")
 
 
 def run(asset_id: int, asset_name: str, repo_path: str = None):

@@ -16,3 +16,14 @@
 body {
   font-family: 'DM Sans', sans-serif;
 }
+
+/* Real fix (2026-08-11) for the "text too small on 1920x1080" issue, replacing an earlier
+   `#root { zoom: 1.15 }` hack. zoom scaled the whole page visually but did NOT change when
+   Tailwind's responsive breakpoints fire (those evaluate the real, unzoomed window width), so
+   on narrower-than-1920px real screens the zoomed content needed relatively more physical space
+   than the breakpoint math assumed -- fighting actual responsiveness instead of just fixing
+   readability. Root-caused instead: Dashboard.jsx's own utility classes hardcoded 265
+   text-[8px]/[9px]/[10px]/[11px] instances. Bumped each by +2px
+   (8->10, 9->11, 10->12, 11->13) directly in the component so the fix is real layout, not a
+   post-hoc visual scale -- responsive breakpoints now behave normally at every window size.
+*/

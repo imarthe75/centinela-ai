@@ -1,14 +1,15 @@
+import os
 import requests
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Connect to db
+# Connect to db -- credentials from environment, never hardcoded (see CASMARTS_CORE_DB_* in .env)
 conn = psycopg2.connect(
-    host="casmarts-core-db-primary",
-    database="casmarts_security",
-    user="admin",
-    password="casmarts_secure_db_pwd_2026"
+    host=os.environ["CASMARTS_CORE_DB_HOST"],
+    database=os.environ["CASMARTS_CORE_DB_NAME"],
+    user=os.environ["CASMARTS_CORE_DB_USER"],
+    password=os.environ["CASMARTS_CORE_DB_PASSWORD"]
 )
 
 def json_serializable(data):

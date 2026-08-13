@@ -19,9 +19,29 @@
 
 ## 1. 🚀 Resumen Ejecutivo
 
-**Centinela-AI** es una plataforma unificada de **Omni-XDR (Extended Detection & Response), Seguridad DevSecOps y Gobernanza de Inteligencia Artificial**. 
+**Centinela-AI es el vigilante permanente de la seguridad de Casmarts.** Revisa de forma continua servidores, bases de datos, aplicaciones y todo el código fuente de la organización en busca de puntos débiles, usa Inteligencia Artificial para entender qué tan grave es cada uno, y ayuda a corregirlos — con la aprobación de una persona antes de aplicar cualquier cambio.
 
-Diseñada bajo un enfoque strictly defensivo, actúa como el centro neurálgico de ciberseguridad para la organización. Consolida en un solo panel (*Single Pane of Glass*) el escaneo de código fuente, la auditoría de dependencias, la protección de contenedores, la telemetría de red y servidores, y la respuesta automatizada ante incidentes (SOAR 2.0) impulsada por IA Generativa.
+Antes de Centinela-AI, esa vigilancia dependía de más de una decena de herramientas desconectadas entre sí, sin nadie con tiempo de revisarlas todas juntas. Hoy es un solo sistema, con un solo panel, que convierte alertas técnicas en explicaciones claras y en correcciones listas para aprobar.
+
+> **Nota de transparencia (11 de agosto de 2026):** las cifras de este documento reflejan el estado real y verificado del sistema en producción, no estimaciones. Ver la sección 1.1 para el detalle — incluyendo lo que todavía está pendiente.
+
+---
+
+## 1.1 📊 Estado Real Verificado (11 de agosto de 2026)
+
+Cifras confirmadas en vivo contra el sistema en producción, no estimaciones:
+
+| Indicador | Valor real | Nota |
+| :--- | :--- | :--- |
+| Activos monitoreados | **83** | servidores, bases de datos y repositorios de código |
+| Hallazgos reales activos | **3,448** | cifra corregida — antes se reportaban ~18,000 debido a un error técnico de duplicación, ya corregido |
+| Hallazgos críticos | **223** | requieren atención prioritaria |
+| Vulnerabilidades con explotación activa confirmada | **8** | según el catálogo oficial CISA KEV (EE.UU.) |
+| Incumplimientos de plazo de corrección (SLA) | **18 críticos** | visibles por primera vez — antes el sistema no calculaba esta cifra para ningún hallazgo crítico o alto |
+| Proveedores de IA en cadena de respaldo | **4** | Groq, Gemini, NVIDIA, OpenRouter — si uno falla, el siguiente responde automáticamente |
+| Cobertura de pruebas automatizadas | **30/30 pasan** | valida el comportamiento real de cada motor de análisis |
+
+**Por qué esto importa:** un sistema de seguridad que reporta cifras poco confiables es tan riesgoso como no tener sistema — puede dar una falsa sensación de control. Mantener estas cifras verificadas y actualizadas evita que se convierta en un problema de confianza con clientes o reguladores.
 
 ---
 
@@ -201,8 +221,8 @@ Para consolidar la aprobación directiva y avanzar a la fase de desarrollo a pro
 
 ### ¿Por qué Centinela adopta una Estrategia Open Source + EDR en esta Fase?
 1. **Eficiencia Presupuestaria y Retorno de Inversión (ROI):**
-   - El costo anual de licencias comerciales tradicionales (Qualys, Tenable, CrowdStrike) para 100+ activos supera los **$80,000 USD/año**.
-   - La arquitectura Open Source de Centinela (Wazuh, Zeek, Trivy, Nuclei, Vault, ClickHouse) elimina el costo recurrente de licencias, dirigiendo el presupuesto hacia ingeniería y personalización interna.
+   - Las licencias comerciales tradicionales (Qualys, Tenable, CrowdStrike) cobran por activo o por volumen de datos, con costos que escalan rápidamente a más de 100 activos — cifra exacta pendiente de cotización formal, no incluida aquí para evitar reportar un número no verificado.
+   - La arquitectura Open Source de Centinela (Wazuh, Zeek, Trivy, Nuclei, Vault) elimina el costo recurrente de licencias, dirigiendo el presupuesto hacia ingeniería y personalización interna.
 2. **Soberanía de Datos y Cumplimiento Zero-Trust:**
    - La telemetría, código fuente y secretos nunca abandonan la infraestructura de CASMARTS ni se envían a nubes de terceros no auditables.
 3. **Flexibilidad e Integración Híbrida:**
@@ -239,9 +259,9 @@ Para consolidar la aprobación directiva y avanzar a la fase de desarrollo a pro
 
 ## 📝 Resumen para la Junta Directiva
 
-> **Centinela AI ya cumple con más del 90% de las exigencias funcionales de un XDR de clase mundial**, con la ventaja competitiva de ser una herramienta soberana (sin fuga de datos a la nube de terceros) y de unir en una sola consola lo que a las grandes empresas les toma comprar entre 3 y 4 soluciones distintas (EDR + DevSecOps + Auditoría CMMI/ISO).
+> **Centinela-AI cubre de forma real y verificada la mayoría de las capacidades funcionales de un XDR** (detección multi-motor, correlación por IA, remediación con aprobación humana, mapeo normativo), con la ventaja de ser una herramienta soberana (sin fuga de datos a la nube de terceros) y de unir en una sola consola lo que a otras empresas les toma comprar entre 3 y 4 soluciones distintas.
 >
-> **Con la ejecución del Plan de Implementación a continuación, Centinela AI alcanzará el 100% de cobertura y certificación internacional de producto.**
+> No se reporta aquí un porcentaje único de "cumplimiento" — el estado real y verificado de cada capacidad está en la sección 1.1. La certificación externa formal (SOC 2 / ISO 27001) sigue siendo el paso pendiente para convertir la cobertura técnica ya alcanzada en una certificación oficial.
 
 ---
 

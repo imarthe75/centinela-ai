@@ -7,6 +7,7 @@ import os
 import re
 from typing import List, Dict, Any
 from core import db_manager
+from core.deduplication_engine import log_finding_deduplicated
 
 def audit_cmmi_v3_level5(file_path: str, content: str) -> List[Dict[str, Any]]:
     """Audits code, manifests, and documentation for CMMI V3.0 Level 5 compliance."""
@@ -14,15 +15,33 @@ def audit_cmmi_v3_level5(file_path: str, content: str) -> List[Dict[str, Any]]:
     lines = content.splitlines()
     filename = os.path.basename(file_path)
 
-    # 1. CMMI PQA / CAR: Swallowed exceptions check
-    if re.search(r'except.*:\s*pass', content, re.DOTALL):
-        findings.append({
-            "cve_id": "CMMI-CAR-SWALLOWED-EXCEPTION",
-            "severity": "HIGH",
-            "file": file_path,
-            "line": 1,
-            "description": "CMMI V3.0 Level 5 CAR Violation: Swallowed exception block (except: pass). Defect prevention requires root-cause logging and handling."
-        })
+    # 1. CMMI PQA / CAR: Swallowed exceptions check.
+    # Real bug fixed here: `re.search(r'except.*:\s*pass', content, re.DOTALL)` matched across
+    # the ENTIRE file rather than within a single except block -- with DOTALL, the greedy `.*`
+    # backtracks until it finds the LAST ": pass" anywhere later in the file, so any file
+    # containing the word "except" followed, anywhere further down (even hundreds of lines and
+    # several unrelated functions later), by any unrelated ": pass" (e.g. `if x: pass`) got
+    # flagged as a HIGH-severity swallowed-exception violation with zero real exception handling
+    # involved. Confirmed live: core/db_manager.py and 12 other files were flagged this way.
+    # Fixed to match only an except line immediately followed by `pass` as the block's own body
+    # (only whitespace/comments between them), attributed to the real offending line instead of
+    # a hardcoded line 1.
+    for idx, line in enumerate(lines):
+        if not re.match(r'^\s*except\b.*:\s*(#.*)?$', line):
+            continue
+        for next_line in lines[idx + 1: idx + 4]:
+            stripped = next_line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if stripped == 'pass':
+                findings.append({
+                    "cve_id": "CMMI-CAR-SWALLOWED-EXCEPTION",
+                    "severity": "HIGH",
+                    "file": file_path,
+                    "line": idx + 1,
+                    "description": f"CMMI V3.0 Level 5 CAR Violation: Swallowed exception block (except: pass). Defect prevention requires root-cause logging and handling. Line {idx + 1}: {line.strip()}"
+                })
+            break
 
     # 2. CMMI MSR (Measurement & Performance): Hardcoded timeout or debt tags
     msr_patterns = [
@@ -43,7 +62,7 @@ def audit_cmmi_v3_level5(file_path: str, content: str) -> List[Dict[str, Any]]:
 
     return findings
 
-def run_cmmi_audit(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]]:
+def run_cmmi_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
     """Scans target directory for CMMI V3.0 Level 5 process and quality violations."""
     all_findings = []
     for root, _, files in os.walk(target_dir):
@@ -59,16 +78,23 @@ def run_cmmi_audit(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]
                 except Exception:
                     continue
 
-    # Log to DB
+    # Log to DB -- previously a raw INSERT with no asset_id/url_path and an "ON CONFLICT DO
+    # NOTHING" with no matching unique constraint (same silent no-op class as gotcha #3 in
+    # CLAUDE.md), so every finding was permanently unattributed to any asset AND re-inserted as
+    # a fresh duplicate on every re-scan. log_finding_deduplicated() fixes both: real dedup via
+    # fingerprint_hash, and asset_id/url_path so the CMMI per-asset compliance report
+    # (compliance_mapper.get_cmmi_v3_asset_audit_report(), which joins on asset_id OR
+    # url_path ILIKE asset_name) can actually see this engine's own findings instead of being
+    # silently blind to them.
     try:
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
-                cur.execute("""
-                    INSERT INTO public.vulnerability_log 
-                    (cve_id, severity, description, status, detected_at, scan_engine)
-                    VALUES (%s, %s, %s, 'OPEN', NOW(), 'cmmi-audit')
-                    ON CONFLICT DO NOTHING
-                """, (item["cve_id"], item["severity"], item["description"]))
+                rel_path = os.path.relpath(item["file"], target_dir)
+                log_finding_deduplicated(
+                    cur, asset_id, item["cve_id"], item["severity"],
+                    f"{rel_path}:{item['line']} - {item['description']}",
+                    "cmmi-audit", url_path=f"{rel_path}:{item['line']}", preserve_status=True
+                )
     except Exception as e:
         print(f"⚠️ [CMMI-Auditor] Error logging to DB: {e}")
 
@@ -77,4 +103,4 @@ def run_cmmi_audit(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]
 def run(asset_id: int = None, endpoint: str = "") -> List[Dict[str, Any]]:
     """Wrapper for auditor_ext compatibility."""
     print(f"📐 [CMMI-Auditor] Running CMMI V3.0 Level 5 Process & Quality Audit on: {endpoint or 'Target Workspace'}")
-    return run_cmmi_audit()
+    return run_cmmi_audit(asset_id=asset_id)

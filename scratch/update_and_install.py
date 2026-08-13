@@ -1,9 +1,10 @@
+import os
 import sys
 sys.path.append("/app")
 import hvac
 
-vault_addr = "http://casmarts-core-vault:8200"
-vault_token = "hvs.6ddxqsuJlRSyuRzOIsXIL9n6"
+vault_addr = os.environ.get("VAULT_ADDR", "http://casmarts-core-vault:8200")
+vault_token = os.environ["VAULT_TOKEN"]
 client = hvac.Client(url=vault_addr, token=vault_token)
 
 asset_name = "CLONE-COMPRAMEX-DIGITAL-BD"

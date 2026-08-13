@@ -1,0 +1,19 @@
+# Local Falco rule overrides for Centinela-AI / CASMARTS.
+#
+# hids_binaries (falco_rules.yaml) already exists specifically to trust known HIDS/EDR agents
+# reading sensitive files (aide, osqueryd, ossec-syscheckd, etc.) as part of their normal,
+# legitimate security scanning -- it just predates Wazuh's rename from OSSEC and doesn't know
+# Wazuh's own binary names. Confirmed live 2026-08-12: 3469 of 3471 "Read sensitive file
+# untrusted" alerts (99.94%) in this deployment's runtime_alerts were wazuh-modulesd/
+# wazuh-syscheckd doing their own routine SCA/rootcheck auditing (reading /etc/shadow,
+# /etc/sudoers, /etc/pam.d/*) -- real, legitimate EDR activity misclassified as suspicious
+# purely because these two binary names weren't in the trusted list. Appending them here
+# (rather than editing the vendor's falco_rules.yaml directly) keeps this override intact
+# across image upgrades. The remaining 2 alerts were a deliberate disposable test
+# ("falco-final-test" container, `cat /etc/shadow`) verifying Falco's real detection worked --
+# unaffected by this change, since a genuinely unknown/untrusted process reading a sensitive
+# file still fires the rule normally.
+- list: hids_binaries
+  items: [wazuh-syscheckd, wazuh-modulesd]
+  override:
+    items: append

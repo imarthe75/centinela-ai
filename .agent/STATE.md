@@ -1,5 +1,251 @@
 # Estado del Proyecto - Centinela CAI
 
+## 📅 Fecha: 11 de Agosto, 2026 (tarde, continuación) — Falco desplegado y verificado end-to-end
+El usuario pidió activar Falco de verdad (estaba comentado en `docker-compose.yml` desde siempre,
+ver la nota "Falco nunca se desplegó" más abajo en este archivo). Con confirmación explícita del
+usuario dado que requiere `privileged: true` y montajes amplios del host, se desplegó
+`falcosecurity/falco:latest` (auto-selecciona el driver eBPF moderno en kernel ≥5.8, sin paso de
+carga manual — este host corre 6.8.0) + `falcosidekick`.
+
+**Depuración real, no trivial, para llegar a un pipeline verificado**:
+1. El comando original (comentado en `docker-compose.yml`, heredado sin probar) usaba
+   `-o http_output.enabled=true -o http_output.url=...` — Falco cargó la config sin error, pero
+   0 eventos llegaban a Falcosidekick pese a que las reglas sí disparaban (confirmado en el
+   stdout de Falco, con detecciones reales y tags MITRE ATT&CK reales).
+2. Se probó reemplazar por `falcosidekick.enabled=true` (sugerido por un comentario del propio
+   `falco.yaml` sobre el Helm chart oficial) — tampoco funcionó; ese comentario resultó aplicar
+   solo al método de despliegue vía Helm, no a un contenedor suelto.
+3. Se probó montar el override como archivo en `config.d/` — Falco confirmó cargarlo con
+   `schema validation: ok`, pero seguía sin funcionar: el archivo principal `falco.yaml` se carga
+   *después* de `config.d/` y su propio `http_output.enabled: false` por defecto ganaba.
+4. Se reemplazó `/etc/falco/falco.yaml` completo (copia del archivo real del contenedor con solo
+   `http_output.enabled`/`json_output` cambiados) — confirmado cargado correctamente
+   (`cat` dentro del contenedor mostró los valores correctos) pero **seguía sin llegar nada**.
+5. Se probó `program_output` con `curl` como workaround (patrón documentado en el propio
+   `falco.yaml` para casos así) — tampoco.
+6. **Causa raíz real, encontrada al inspeccionar Valkey directamente en vez de asumir por los
+   logs**: Falcosidekick **sí estaba entregando los eventos correctamente desde el primer
+   intento** (paso 1) — pero a la llave `falco`, no `centinela:falco` como se esperaba. La
+   variable de entorno `REDIS_STORAGEKEY=centinela:falco` de `falcosidekick` (documentada como
+   configurable) **no se respeta en la versión desplegada** — 32 eventos reales, incluyendo mis
+   propias pruebas desde `2026-08-11T13:47:51` (la primerísima prueba), llevaban acumulados en
+   Valkey todo este tiempo sin que nada los consumiera, porque `centinela.py` escuchaba en el
+   nombre de llave equivocado. El pipeline llevaba funcionando perfectamente desde el primer
+   intento; el bug real estaba en el lado consumidor, no en Falco/Falcosidekick.
+7. Corregido: `centinela.py`'s `process_falco_alerts()` ahora escucha en `"falco"` (la llave
+   real observada), revertidos los intentos 2-5 a la configuración nativa simple (solo
+   `http_output.enabled`/`json_output` vía reemplazo de `falco.yaml`), limpiados los 32 eventos
+   de prueba acumulados, y **verificado end-to-end con una prueba limpia**: contenedor Alpine
+   desechable → `cat /etc/shadow` → detección real de Falco (tag MITRE T1555) →
+   `🚨 [Centinela-AI] Falco Alert: Read sensitive file untrusted` en los logs de `centinela-ai` →
+   fila real en `runtime_alerts` (ids 915-916). **Primera vez en la historia de este deployment
+   que una alerta de Falco llega a la base de datos.**
+
+**Lección**: cuando algo "no llega a ningún lado" pese a que cada eslabón individual parece
+responder bien, inspeccionar el almacén de destino directamente (`KEYS *`) antes de asumir dónde
+está el problema — cinco intentos de arreglar Falco/Falcosidekick fueron innecesarios porque el
+verdadero bug estaba en una sola línea del lado consumidor, escuchando la llave equivocada.
+
+## 📅 Fecha: 11 de Agosto, 2026 (tarde) — CMMI real conectado al dashboard + 2 incidentes de producción
+El usuario pidió que el cumplimiento CMMI (y en menor medida ISO) por activo se reflejara con
+datos reales en el dashboard general y en el panel de detalle de cada activo, con un botón de
+descarga de reporte PDF. Al implementarlo se encontraron y corrigieron **dos bugs reales,
+independientes, que tumbaron el backend en producción durante las pruebas** — documentados aquí
+en detalle porque ambos son graves y podrían repetirse si se vuelve a tocar código cercano.
+
+1. **`GET /api/inventory/{asset_name}/details` lanzaba `NameError: name 'details' is not defined`
+   para prácticamente cualquier activo en línea/alcanzable.** La variable `details` nunca se
+   inicializaba — cada rama de tipo de activo (`if any(k in atype for k in (...))`, 17
+   categorías) solo hacía `details["clave"] = valor` (asignación de ítem) sobre un nombre que no
+   existía todavía. La única ruta que alguna vez funcionó fue el `return` temprano para activos
+   offline/nunca-encendidos, que construye su propio diccionario literal. Esto explica por qué el
+   frontend, aunque ya tenía código para leer `info?.compliance?.cmmi_score`, siempre caía al
+   cálculo estimado en el cliente — el dato real nunca llegaba, el endpoint fallaba con 500 en
+   silencio para el operador. Corregido inicializando `details` con los campos base justo después
+   del chequeo de `is_unpowered`. Verificado en vivo contra 4 activos de tipos distintos
+   (GitLab-Repo, SERVER×3) — los 4 ahora devuelven 200 con datos reales.
+2. **Un solo cambio de estilos CSS compartido por *todos* los reportes PDF podía congelar el
+   backend entero para todos los usuarios, de forma silenciosa e impredecible.**
+   `CIVIKA_PDF_STYLES` (usado por `/api/reports/executive`, `/api/reports/asset/{name}`,
+   `/api/reports/coverage`, `/api/reports/vulnerability/{id}`, y los nuevos `/api/reports/cmmi*`)
+   tenía un `@import url('https://fonts.googleapis.com/...')`. WeasyPrint intenta descargar ese
+   CSS externo al renderizar el PDF, **sin timeout alguno** — si esa conexión HTTPS saliente se
+   queda a medias (confirmado en vivo con `ss -tnp` dentro del contenedor: conexiones `ESTAB`
+   hacia IPs reales de Google/Cloudflare/AWS que nunca avanzaban), el hilo único de `uvicorn`
+   (un solo worker, llamadas síncronas de psycopg2/requests sin offload a threadpool) se congela
+   por completo — no solo esa petición, **absolutamente todas las peticiones nuevas de cualquier
+   usuario**, incluyendo `/api/health` y las llamadas normales del dashboard, quedan en cola
+   indefinidamente. Confirmado en vivo: dos incidentes reales durante esta sesión, cada uno
+   requirió `docker restart centinela-backend` para recuperarse; con tráfico real de usuarios
+   activo al mismo tiempo (visible en los logs por peticiones desde `172.18.0.1`), así que esto
+   afectaba producción, no solo mis pruebas. **Corregido eliminando el `@import` por completo** —
+   la pila de fuentes ya tenía respaldos locales seguros (`'Segoe UI', system-ui, sans-serif` /
+   `'Consolas', monospace`), así que no hay pérdida funcional, solo un cambio cosmético de
+   tipografía. Verificado en vivo, repetidamente, tras el fix: ambos reportes CMMI (flota y por
+   activo) generan PDFs reales en <2s sin abrir ninguna conexión externa, y `/api/health`
+   responde en <1s antes y después de cada prueba.
+   **Este bug es preexistente y afecta a los 4 endpoints de reporte anteriores también**, no solo
+   a los nuevos de CMMI — cualquier descarga de reporte, en cualquier momento, podía (y
+   probablemente ya había) congelado el backend completo sin que quedara rastro claro en logs
+   más allá de peticiones colgadas. Vale la pena vigilar si episodios similares de "el dashboard
+   no responde" ocurrieron antes sin explicación.
+3. **Optimización de rendimiento relacionada, encontrada en el camino**: el reporte CMMI de
+   flota (`get_cmmi_v3_asset_audit_report()`) hacía **83 consultas SQL secuenciales** (una por
+   activo) en un solo request — aunque no era la causa del colgado (ese fue el problema #2),
+   sí era una carga real e innecesaria sobre un backend de un solo worker. Refactorizado a
+   **una sola consulta** que trae todos los hallazgos abiertos de una vez y los agrupa en Python
+   por activo, preservando exactamente la misma lógica de matcheo (`asset_id` o `url_path ILIKE
+   nombre`). De paso se extrajo `evaluate_cmmi_v3_for_asset(cur, asset, vulns=None)` como función
+   compartida y reutilizable — usada tanto por el reporte de flota como por el endpoint de
+   detalle de activo y los reportes PDF, una sola fuente de verdad para la evaluación CMMI real
+   (antes había 3 implementaciones distintas e inconsistentes: una en `compliance_mapper.py`
+   nunca conectada al frontend, una fórmula ad-hoc en `main.py`, y una fórmula inventada
+   client-side en `Dashboard.jsx`).
+
+**Entregado**: KPI real de CMMI en el dashboard general (promedio real de la flota, ya no una
+fórmula inventada basada en conteo de severidades), badge real por activo en las tarjetas de
+inventario, panel de detalle con las 7 áreas de práctica CMMI reales y su evidencia, y botones de
+descarga de reporte PDF de CMMI tanto a nivel flota como por activo.
+
+**Lección operativa para la próxima vez que se toque cualquier reporte PDF**: nunca depender de
+un recurso externo (fuentes, CDNs, APIs) dentro de una petición HTTP síncrona en un servidor de
+un solo worker sin timeout explícito — un solo recurso externo lento puede tumbar todo el
+servicio, no solo esa función.
+
+## 📅 Fecha: 11 de Agosto, 2026 (Rito de Cierre — sesión completa)
+
+## 🎯 Rito de Cierre (2026-08-11, segunda mitad) — Deuda técnica resuelta + documentación actualizada
+Continuación directa de la auditoría documentada más abajo en este mismo archivo. El usuario
+pidió corregir *toda* la deuda técnica pendiente, y al finalizar, actualizar la documentación
+(manual técnico, resumen ejecutivo, este `STATE.md`) y regenerar la presentación ejecutiva.
+Todo lo siguiente fue verificado en vivo, no solo declarado:
+
+1. **`sla_due_date` backfilleado retroactivamente**: 17,561 filas históricas actualizadas con
+   `NOW()+interval` a nivel SQL (no Python, ver el bug de zona horaria ya documentado más abajo).
+   El KPI de incumplimientos de SLA pasó de reportar 0 a **18 CRITICAL reales**.
+2. **Segundo bug real encontrado al investigar el punto anterior, más grave**:
+   `log_finding_deduplicated()` comparaba `asset_id = %s` — en SQL, `NULL = NULL` nunca es
+   `TRUE`, así que cualquier hallazgo con `asset_id=None` (diseño intencional para alertas
+   agregadas como `HEURISTIC-SECURITY-DEBT`) nunca podía encontrar su propia fila anterior y se
+   reinsertaba sin fin. Confirmado en vivo: **983 filas duplicadas** de una sola alerta agregada.
+   Corregido con `asset_id IS NOT DISTINCT FROM %s` (NULL-safe) en `core/deduplication_engine.py`,
+   verificado con un test de regresión real.
+3. **Limpieza de datos históricos**: 13,990 filas huérfanas de `cmmi-audit` (pre-fix del punto 3
+   de la auditoría original) + 982 duplicados de `HEURISTIC-SECURITY-DEBT` (pre-fix del punto 2
+   de aquí arriba) eliminados, tras confirmar 0 referencias en `remediation_history`. **El total
+   real de `vulnerability_log` bajó de ~18,000 a 3,448 filas** — la tabla estaba dominada en un
+   76-96% por bugs de duplicación, no por hallazgos reales distintos.
+4. **`iac-native` verificado end-to-end** con un escenario sintético desechable (5/5 hallazgos
+   K8s/Terraform detectados y persistidos correctamente, luego limpiado) — ningún repo real
+   clonado tenía violaciones reales de este tipo al momento de la prueba.
+5. **Acceso GitLab para la cuenta de servicio `monitor`**: confirmado que `israelm` (token usado
+   por el escaneo automatizado) tiene rol Maintainer sobre el grupo `arquitectura/`, suficiente
+   en teoría para otorgar acceso Developer — el intento vía API devolvió **403 Forbidden** sin
+   causa clara (`membership_lock`/`share_with_group_lock` descartados). No se insistió con
+   reintentos ciegos (regla de `.agent/HEURISTICS.md` §2: detenerse tras un fallo, no repetir el
+   mismo cambio). Queda pendiente para un administrador real de la instancia GitLab.
+6. **`pytest` instalado** (faltaba por completo en ambos contenedores Python pese a ser
+   obligatorio por `AGENT.md`/`CLAUDE.md`) y agregado a `requirements.txt`. Se agregaron 9 tests
+   nuevos (regresión para cada bug de este ciclo) y se convirtieron 2 archivos de prueba
+   "fantasma" (`test_inventory.py`, `test_heuristics_medusa.py` — scripts `__main__` que
+   `pytest` nunca detectaba, 0 items collected; uno de ellos además apuntaba a la infraestructura
+   fantasma ya eliminada el 2026-08-04, `casmarts-core-db-primary`/`casmarts_security`/usuario
+   `admin`) en tests reales descubribles. **30/30 pasan.**
+7. **Documentación actualizada para reflejar la realidad verificada**:
+   - `.agent/CONTEXT.md` y `.agent/MAP.md` corregidos — describían un stack genérico de la
+     plantilla `resident-agent-framework` (Valkey, pgvector, SeaweedFS, PKs UUID, DB
+     `casmarts_security`) que nunca existió en este despliegue real.
+   - `docs-public/manual-tecnico.html`: nueva sección con la tabla completa de bugs
+     encontrados/corregidos y las cifras reales post-limpieza.
+   - `RESUMEN_EJECUTIVO_CENTINELA_AI.md`: reescrita la sección 1 (menos jerga técnica), agregada
+     sección 1.1 con cifras reales verificadas, corregida la sección de comercialización
+     (se quitó una mención a "ClickHouse" — no es parte real de este stack — y una cifra de
+     "$80,000 USD/año" no verificada), y reemplazado el claim de "90% de cumplimiento XDR" (sin
+     respaldo real) por un resumen honesto que remite a la sección 1.1.
+   - `Presentacion_Centinela_AI.pptx` **regenerada completa** (12 slides, `python-pptx`): enfoque
+     100% en lenguaje de negocio (sin siglas sin explicar), con una sección dedicada a CMMI/ISO
+     explicados para no-técnicos, y una sección de "Estado Actual" con las cifras reales de esta
+     auditoría en vez de las cifras infladas anteriores.
+8. **Backfill de los ~330 hallazgos con análisis genérico**: lanzado en segundo plano dentro de
+   `centinela-ai` (cascada Groq→Gemini→NVIDIA→OpenRouter, deteniéndose tras 15 fallos
+   consecutivos de todos los proveedores). Groq se agotó rápido (cuota diaria), cayendo
+   correctamente a Gemini/NVIDIA — confirma que la cascada de 4 proveedores funciona en carga
+   real, no solo en la prueba puntual ya documentada. **Este proceso corre de forma
+   independiente y puede seguir avanzando después de este cierre de sesión** — no se restauró
+   `centinela-ai` (se habría interrumpido el proceso) hasta que termine o se decida detenerlo
+   manualmente; `centinela-backend`/`centinela-sentinel` sí se reiniciaron sin problema al no
+   correr el backfill.
+
+**Pendiente real, no resuelto en este cierre**: (a) el backfill de los ~330 hallazgos puede no
+haber terminado al momento de cerrar esta sesión — verificar con
+`SELECT COUNT(*) FROM vulnerability_log WHERE executive_summary LIKE '%sin regla determinística%' OR executive_summary LIKE '%sin regla de remediación específica%' OR description LIKE '%Hallazgo de código fuente:%'`
+(debería tender a 0); (b) `centinela-ai` no se ha reiniciado desde los 2 últimos fixes de
+`deduplication_engine.py` (NULL-safe dedup y `sla_due_date` vía SQL) — su propio loop de fondo
+sigue en memoria con la versión anterior hasta que se reinicie, una vez el backfill termine;
+(c) acceso GitLab de `monitor` sigue bloqueado (ver punto 5 arriba).
+
+## 🎯 Hitos Recientes (2026-08-11) — Auditoría profunda "¿está todo lo documentado realmente funcionando?"
+El usuario pidió un rito de inicio seguido de una auditoría a profundidad de todo lo documentado
+(`CLAUDE.md` + este `.agent/`), no solo una lectura de docs. Se encontró que el trabajo más
+reciente (commits de CMMI v3.0/CSPM/eBPF de otro agente, "antigravity") nunca actualizó este
+`STATE.md` — violando la propia regla de "Rito de Cierre" de `AGENT.md`. Se encontraron y
+corrigieron **7 bugs reales**, todos verificados en vivo (no solo por inspección de código):
+
+1. **`auditor_db_hardening.py` nunca funcionó ni una vez**: `get_db_connection()` (un
+   `@contextmanager`) se llamaba sin `with` → `AttributeError` silenciada. 0 filas
+   `scan_engine='db-hardening'` en toda la historia. Corregido + migrado a
+   `log_finding_deduplicated()`. Verificado en vivo contra `casmartdb` (10.4.3.23) y, tras
+   reiniciar, contra 3 DBs reales en el loop de producción — 0 errores.
+2. **`auditor_iac_k8s.py` perdía el 100% de sus hallazgos**: detectaba violaciones reales de
+   K8s/Terraform pero nunca las persistía (sin `INSERT` alguno). Corregido con `asset_id` +
+   `log_finding_deduplicated()`. Verificado con un escenario sintético desechable (5/5
+   hallazgos detectados y persistidos, luego limpiado).
+3. **`auditor_cmmi_v3.py` (la funcionalidad insignia de los commits más recientes,
+   "CMMI v3.0 por Activo") nunca vinculaba `asset_id`/`url_path`** — 13,715 filas huérfanas
+   (76% de toda la tabla `vulnerability_log`), 55% duplicado exacto por re-scans sin dedup real.
+   El reporte `/api/audit/cmmi-v3-report` (documentado en el manual como "reporte cuantitativo
+   **empírico**") **nunca usó los datos de su propio motor** — CAR/MSR/PQA por activo mostraban
+   coincidencias accidentales de otros motores (palabra "INJECTION"), no evidencia CMMI real.
+   Corregido: `asset_id` propagado desde `gitlab_integration.py`, persistencia real. Verificado
+   en vivo contra `centinela-cai` (asset_id=102): score cambió de datos accidentales a
+   MSR 61 fallas / PQA 34 violaciones reales, antes invisibles.
+4. **SpiderFoot OSINT seguía en 0 filas** pese al fix de constraint ya documentado — un segundo
+   bug independiente: `a_type == "URL"` nunca se cumple (ningún activo real usa ese tipo
+   literal). Ampliado a `("URL","SERVER","AppServer")`. Verificado: primer hallazgo real
+   (`tls_issues` en `casmart_authentik`) en la historia de este deployment.
+5. **SLA deadline tracking estructuralmente ciego al 96% del backlog real**: el cálculo en
+   `/api/remediation` solo era para pantalla, nunca se guardaba; `log_finding_deduplicated()`
+   (usado por casi todos los motores) tampoco seteaba `sla_due_date`. 0 de 223 CRITICAL sin
+   resolver tenían fecha límite. Corregido en el INSERT compartido, calculado con
+   `NOW() + interval` en SQL (no en Python — el servidor de DB corre en `America/Mexico_City`,
+   no UTC; un primer intento con `datetime.utcnow()` produjo un delta de 30h en vez de 24h para
+   CRITICAL, detectado y corregido en la misma sesión). Backfill retroactivo de 17,561 filas
+   históricas ejecutado — el KPI de SLA breaches pasó de reportar 0 a **18 incumplimientos
+   CRITICAL reales**.
+6. **Bug de fondo, más grave, encontrado al investigar el punto 5**: `log_finding_deduplicated()`
+   comparaba `asset_id = %s` — en SQL, `NULL = NULL` nunca es `TRUE`, así que **cualquier
+   hallazgo con `asset_id=None`** (diseño intencional para alertas agregadas como
+   `HEURISTIC-SECURITY-DEBT`) nunca podía encontrar su propia fila anterior y se reinsertaba sin
+   fin. Confirmado en vivo: 983 filas duplicadas de una sola alerta agregada. Corregido con
+   `asset_id IS NOT DISTINCT FROM %s` (NULL-safe). Verificado: segunda llamada con descripción
+   distinta ahora actualiza la misma fila en vez de duplicar.
+7. **Limpieza de datos históricos**: 13,990 filas huérfanas de `cmmi-audit` (pre-fix) y 982
+   duplicados de `HEURISTIC-SECURITY-DEBT` (pre-fix del punto 6) eliminados tras confirmar 0
+   referencias en `remediation_history`. **El total real de `vulnerability_log` bajó de ~18,000
+   a 3,448 filas** — la tabla estaba dominada en un 76-96% por bugs de duplicación, no por
+   hallazgos reales distintos. Esto cambia materialmente cualquier lectura ejecutiva/dashboard
+   basada en "total de vulnerabilidades" hecha antes de hoy.
+
+**Archivos modificados**: `auditors/auditor_db_hardening.py`, `auditors/auditor_iac_k8s.py`,
+`auditors/auditor_cmmi_v3.py`, `auditors/gitlab_integration.py`, `auditors/auditor_ext.py`,
+`core/deduplication_engine.py`. Servicios reiniciados y confirmados sin regresiones
+(`/api/health` → `Healthy`, 0 errores nuevos en logs de los 3 servicios Python tras el reinicio).
+
+**Pendiente real, no completado hoy**: backfill de ~330 hallazgos con análisis IA genérico
+(depende de cuota de proveedores, se relanza aparte); acceso Developer de la cuenta de servicio
+`monitor` al grupo GitLab `arquitectura/` (cambio de permisos fuera de este repo, requiere
+confirmación explícita antes de ejecutarse por afectar un sistema compartido).
+
 ## 📅 Fecha: 10 de Agosto, 2026
 
 ## 🎯 Hitos Recientes (2026-08-10) — Verificador de Activos Vivos, WebSocket en Tiempo Real & Diferenciación Offline

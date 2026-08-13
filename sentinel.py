@@ -42,8 +42,12 @@ def get_sudo_password(asset_name: str) -> str:
                 )
                 password = result["data"].get("sudo_password", "")
             except Exception:
+                # Not printed here -- the net outcome (found vs. not found) is already
+                # reported unconditionally right below (line ~48-50), so a silent v1 fallback
+                # failure on top of an already-failed v2 attempt doesn't hide anything; most
+                # assets legitimately only have a v2 secret, so this is the routine path.
                 pass
-                
+
         if password:
             print(f"🔒 [Aura-Sentinel] Sudo credential for '{asset_name}' loaded from Vault.")
         else:
@@ -80,10 +84,11 @@ def get_ansible_user(asset_name: str) -> str:
                     user = result["data"].get("ansible_user", "")
                     if user:
                         return user
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    print(f"⚠️ [Aura-Sentinel] Vault KV v1 ansible_user lookup failed for '{asset_name}': {e}")
+    except Exception as e:
+        print(f"⚠️ [Aura-Sentinel] Vault error reading ansible_user for '{asset_name}': {e}")
+    print(f"⚠️ [Aura-Sentinel] No ansible_user found in Vault for '{asset_name}'. Falling back to ANSIBLE_REMOTE_USER env default.")
     return os.getenv("ANSIBLE_REMOTE_USER", "pmcp")
 
 

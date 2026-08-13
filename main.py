@@ -372,8 +372,8 @@ async def get_security_integrations():
             integrations["qualys_configured"] = bool(data.get("qualys_username") and data.get("qualys_password"))
             integrations["tenable_configured"] = bool(data.get("tenable_access_key") and data.get("tenable_secret_key"))
             integrations["misp_url"] = data.get("misp_url", "")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ [Vault] Could not read commercial scanner integration config: {e}")
     return integrations
 
 class ManualRemediationModel(BaseModel):
@@ -562,8 +562,8 @@ async def get_asset_deep_details(asset_name: str):
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, asset_name, asset_type, endpoint, status, agent_id, criticality, location_lat, location_lon, last_scanned, last_audit
-                FROM public.infra_inventory 
+                SELECT id, asset_name, asset_type, endpoint, status, agent_id, criticality, location_lat, location_lon, last_scanned, last_audit, cis_grade, cis_percentage, cis_checked_at
+                FROM public.infra_inventory
                 WHERE asset_name = %s LIMIT 1
             """, (asset_name,))
             row = cur.fetchone()
@@ -578,7 +578,15 @@ async def get_asset_deep_details(asset_name: str):
             # Check if asset is offline / unpowered / never scanned
             is_unpowered = (row.get("status") in ("OFFLINE", "PENDING", None, "")) and not row.get("agent_id") and not row.get("last_scanned")
 
-            if is_unpowered or ("cisco" in row["asset_name"].lower() and row.get("status") != "active"):
+            # Real bug fixed here: this Cisco/VMware special case compared status against the
+            # literal lowercase "active", but every real status value in this table is uppercase
+            # ('ACTIVE'/'OFFLINE'/etc) -- confirmed live against infra_inventory. The comparison
+            # was therefore permanently True for every Cisco-named asset regardless of its real
+            # state, forcing the offline/never-scanned stub below even for assets confirmed
+            # reachable and audited (e.g. "Cisco 4 ESXI", status='ACTIVE', last_scanned=2026-08-07
+            # with 12 real CIS-benchmark findings) -- which is exactly why its CMMI/ISO scores
+            # and OS info showed a fake "never encendido" placeholder instead of real data.
+            if is_unpowered or ("cisco" in row["asset_name"].lower() and str(row.get("status") or "").upper() != "ACTIVE"):
                 return {
                     "asset_name": row["asset_name"],
                     "asset_type": row["asset_type"],
@@ -600,15 +608,45 @@ async def get_asset_deep_details(asset_name: str):
                     ],
                     "compliance": {
                         "cmmi_version": "CMMI v3.0 (Model Benchmark)",
-                        "iso_score": 0,
-                        "cmmi_score": 0,
+                        # None (not 0), matching evaluate_cmmi_v3_for_asset()'s is_verified gate --
+                        # a hardcoded 0% for a never-reached asset is just as fabricated as a
+                        # confident high score would be. "Sin Verificar" is the honest state.
+                        "iso_score": None,
+                        "cmmi_score": None,
+                        "is_verified": False,
                         "open_vulnerabilities_count": 0,
                         "iso_findings": [],
                         "cmmi_findings": [
                             {"practice": "EST (Resource Management)", "issue": "Activo inalcanzable en red / jamás encendido", "severity": "MEDIUM"}
-                        ]
+                        ],
+                        "cis_benchmark": {"grade": None, "percentage": None, "checked_at": None, "findings": []}
                     }
                 }
+
+            # `details` was never initialized here -- every branch below only ever did
+            # details["key"] = value (item assignment on a name that didn't exist yet), so this
+            # endpoint threw a real NameError for every online/reachable asset (the only path
+            # that ever returned successfully was the is_unpowered early-return above, which
+            # builds its own literal dict). Confirmed live: 500 "name 'details' is not defined"
+            # on a real GitLab-Repo asset. This is why the frontend's asset detail modal always
+            # fell back to a client-side-computed CMMI score instead of ever showing the real
+            # per-asset data this endpoint is supposed to provide.
+            details = {
+                "asset_name": row["asset_name"],
+                "asset_type": row["asset_type"],
+                "endpoint": endpoint,
+                "status": row.get("status"),
+                "criticality": row.get("criticality"),
+                "agent_id": row.get("agent_id"),
+                "last_scanned": row.get("last_scanned"),
+                "os_info": "No detectado",
+                "kernel": "No detectado",
+                "architecture": "No detectado",
+                "engine_version": "No detectado",
+                "tls_enabled": False,
+                "default_port": 0,
+                "specific_details": [],
+            }
 
             # 2. Smart type-specific analysis across ALL 17 asset categories
             if any(k in atype for k in ("DB", "DATABASE", "SQL", "NOSQL", "CACHE")):
@@ -823,56 +861,81 @@ async def get_asset_deep_details(asset_name: str):
                         details["engine_version"] = f"EDR {parsed.get('client_version', '')}"
                 except Exception: pass
 
-            # Calculate REAL dynamic ISO & CMMI v3.0 compliance percentages based on active vulnerabilities in DB
+            # Real ISO 27001/NIST/PCI-DSS/SOC2/GDPR mapping -- reuses the same
+            # COMPLIANCE_MAPPING_MATRIX every other compliance view in the app is built on
+            # (map_vulnerabilities_to_compliance()), instead of a third, inconsistent ad-hoc
+            # keyword formula that used to live here and disagreed with it.
+            from auditors.compliance_mapper import COMPLIANCE_MAPPING_MATRIX, evaluate_cmmi_v3_for_asset, compute_iso_control_coverage
+
             cur.execute("""
                 SELECT severity, cve_id, description, status
                 FROM public.vulnerability_log
-                WHERE (asset_id = %s OR url_path ILIKE %s) AND status IN ('OPEN', 'NEW')
+                WHERE (asset_id = %s OR url_path ILIKE %s) AND status IN ('OPEN', 'NEW', 'CORRELATED')
             """, (row["id"], f"%{row['asset_name']}%"))
             open_vulns = cur.fetchall()
 
-            # Weight vulns: CRITICAL=25, HIGH=15, MEDIUM=8, LOW=3
-            deductions = 0
             iso_fails = []
-            cmmi_fails = []
-
             for v in open_vulns:
                 sev = str(v.get("severity", "")).upper()
                 cve = str(v.get("cve_id", ""))
-                desc = str(v.get("description", ""))
+                matched_key = next((k for k in COMPLIANCE_MAPPING_MATRIX if k in cve), None)
+                control = COMPLIANCE_MAPPING_MATRIX[matched_key].get("ISO_27001", "A.8.16 (Monitoring & Controls)") if matched_key else "A.8.16 (Monitoring & Controls)"
+                iso_fails.append({"control": f"ISO 27001 {control}", "issue": f"{cve}: {v.get('description','')[:120]}", "severity": sev})
 
-                if sev == "CRITICAL": deductions += 25
-                elif sev == "HIGH": deductions += 15
-                elif sev == "MEDIUM": deductions += 8
-                else: deductions += 3
+            # Real, control-based ISO score -- single shared methodology, see
+            # compute_iso_control_coverage()'s docstring for why this used to be a third,
+            # independently-drifting formula computed inline here.
+            iso_score = compute_iso_control_coverage(open_vulns)["score"]
 
-                # Map specific vulnerability findings to ISO 27001 / ISO 25010 & CMMI v3.0 controls
-                if "INJECTION" in cve or "SQL" in cve or "CMD" in cve:
-                    iso_fails.append({"control": "ISO 27001 A.8.28 (Secure Coding)", "issue": f"{cve}: Inyección detectada en código", "severity": sev})
-                    cmmi_fails.append({"practice": "CMMI CAR (Causal Analysis)", "issue": f"Falla en validación de entrada ({cve})", "severity": sev})
-                elif "SCA" in cve or "CVE" in cve or "DEP" in cve:
-                    iso_fails.append({"control": "ISO 27001 A.8.8 (Patch Management)", "issue": f"Dependencia vulnerable {cve}", "severity": sev})
-                    cmmi_fails.append({"practice": "CMMI SAM (Supplier Management)", "issue": f"Librería obsoleta/vulnerable ({cve})", "severity": sev})
-                elif "HARDCODED" in cve or "CREDENTIAL" in cve or "SECRET" in cve:
-                    iso_fails.append({"control": "ISO 27001 A.8.24 (Cryptography & Keys)", "issue": f"Credencial expuesta en fuente ({cve})", "severity": sev})
-                    cmmi_fails.append({"practice": "CMMI PQA (Quality Assurance)", "issue": f"Violación de política de secretos ({cve})", "severity": sev})
-                elif "DEBT" in cve or "TODO" in cve or "SLEEP" in cve:
-                    iso_fails.append({"control": "ISO/IEC 25010 (Software Quality)", "issue": f"Deuda técnica / Mala práctica ({cve})", "severity": sev})
-                    cmmi_fails.append({"practice": "CMMI MSR (Measurement & Performance)", "issue": f"Patrón ineficiente en código ({cve})", "severity": sev})
-                else:
-                    iso_fails.append({"control": "ISO 27001 A.8.16 (Monitoring & Controls)", "issue": f"Hallazgo de seguridad {cve}", "severity": sev})
-                    cmmi_fails.append({"practice": "CMMI CAR / PQA", "issue": f"Desviación de calidad ({cve})", "severity": sev})
+            # Real CMMI v3.0 evaluation -- same 7-practice-area engine (CAR/SAM/MSR/PQA/EST/PLAN/VV)
+            # used by the dedicated /api/audit/cmmi-v3-report endpoint, scoped to just this asset.
+            # Passes this endpoint's OWN already-open `cur` rather than calling
+            # get_cmmi_v3_asset_audit_report() (which opens its own get_db_cursor()) -- doing that
+            # from inside this already-open cursor's `with` block deadlocked the single-worker
+            # backend solid under real load (confirmed live), see evaluate_cmmi_v3_for_asset()'s
+            # docstring for the full incident.
+            cmmi_asset = evaluate_cmmi_v3_for_asset(cur, row)
 
-            iso_score = max(0, min(100, 100 - deductions))
-            cmmi_score = max(0, min(100, 100 - int(deductions * 0.9)))
+            # Real CIS Level 1 hardening findings currently open on this asset (from
+            # auditors/auditor_cis_benchmarks.py) -- reuses the same open_vulns query above
+            # rather than a second DB round trip, filtered by the CIS-x.x check-id prefix and
+            # excluding the CIS-BENCHMARK-AUDIT completion marker itself.
+            cis_findings = [
+                {
+                    "check": v["cve_id"],
+                    "issue": (v.get("description") or "")[:250],
+                    "severity": str(v.get("severity", "")).upper(),
+                }
+                for v in open_vulns
+                if str(v.get("cve_id", "")).startswith("CIS-") and v.get("cve_id") != "CIS-BENCHMARK-AUDIT"
+            ]
 
             details["compliance"] = {
-                "cmmi_version": "CMMI v3.0 (Model 2024 Benchmark)",
-                "iso_score": iso_score,
-                "cmmi_score": cmmi_score,
+                "cmmi_version": "CMMI v3.0 (Model 2024-2026 Enterprise)",
+                # iso_score has the exact same structural issue cmmi_asset["is_verified"] was
+                # built to catch: a never-reached asset has zero open findings not because it's
+                # compliant, but because nothing could ever actually check it, and
+                # (1 - 0/total)*100 = 100% either way. Confirmed live: Cisco 4 ESXI (powered off,
+                # confirmed via CIS Benchmarks SIN_CONEXION) showed 100% ISO compliance. Reusing
+                # the same is_verified signal here rather than a second, separate reachability
+                # check that could silently drift out of sync with it.
+                "iso_score": iso_score if cmmi_asset["is_verified"] else None,
+                "cmmi_score": cmmi_asset["cmmi_compliance_percentage"] if cmmi_asset["is_verified"] else None,
+                "cmmi_maturity_level": cmmi_asset["cmmi_maturity_level"] if cmmi_asset["is_verified"] else None,
+                "is_verified": cmmi_asset["is_verified"],
                 "open_vulnerabilities_count": len(open_vulns),
                 "iso_findings": iso_fails,
-                "cmmi_findings": cmmi_fails
+                "cmmi_practice_areas": cmmi_asset["practice_areas_breakdown"],
+                "cis_benchmark": {
+                    # grade is None both when never checked (cis_checked_at also None) and when
+                    # checked but genuinely unreachable (cis_checked_at set, grade None) -- the
+                    # frontend distinguishes those two using checked_at, same honest semantics
+                    # as SIN_CONEXION in auditor_cis_benchmarks.py itself.
+                    "grade": row.get("cis_grade"),
+                    "percentage": float(row["cis_percentage"]) if row.get("cis_percentage") is not None else None,
+                    "checked_at": row.get("cis_checked_at"),
+                    "findings": cis_findings,
+                },
             }
 
             return details
@@ -1282,23 +1345,41 @@ async def get_stats():
             """)
             pending_ia = cur.fetchone()["count"]
             
-            # Críticos y Altos
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE severity = 'CRITICAL'")
+            # Críticos y Altos -- UPPER() here because severity casing isn't guaranteed uniform
+            # at the DB level (confirmed live: 'Info'/'INFO' split), so a plain exact match can
+            # silently undercount rows written with different casing than the literal here.
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'CRITICAL'")
             critical = cur.fetchone()["count"]
-            
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE severity = 'HIGH'")
+
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'HIGH'")
             high = cur.fetchone()["count"]
             
             # Pendientes de aprobación
             cur.execute("SELECT COUNT(*) as count FROM public.remediation_history WHERE approval_token = 'PENDING_APPROVAL'")
             pending_approval = cur.fetchone()["count"]
-            
+
+            # Real, fleet-wide ISO 27001/25010 compliance score -- percentage of the fixed, real
+            # ISO control universe (COMPLIANCE_MAPPING_MATRIX) with zero active violations
+            # anywhere in the fleet. Uses compute_iso_control_coverage(), the single shared
+            # implementation of this methodology also used by get_asset_deep_details()'s
+            # per-asset `iso_score` and get_iso27001_asset_audit_report()'s per-asset bulk
+            # report, so all three UI surfaces that show an "ISO compliance %" agree with each
+            # other -- see that function's docstring for the disagreeing-formula history.
+            from auditors.compliance_mapper import compute_iso_control_coverage
+            cur.execute("""
+                SELECT cve_id FROM public.vulnerability_log
+                WHERE status IN ('OPEN', 'NEW', 'CORRELATED')
+            """)
+            open_cves = [{"cve_id": row["cve_id"]} for row in cur.fetchall()]
+            iso_compliance_percentage = compute_iso_control_coverage(open_cves)["score"]
+
             return {
                 "total": total,
                 "pending_ia": pending_ia,
                 "critical": critical,
                 "high": high,
-                "pending_approval": pending_approval
+                "pending_approval": pending_approval,
+                "iso_compliance_percentage": iso_compliance_percentage
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1329,12 +1410,20 @@ async def get_extended_stats():
             if not hasattr(get_extended_stats, "_user_cache") or (now_ts - getattr(get_extended_stats, "_user_cache_ts", 0) > 60.0):
                 users_count = getattr(get_extended_stats, "_user_cache", 26)
                 try:
-                    cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User; print('JSON_DATA:' + str(User.objects.filter(is_active=True).exclude(username__startswith='ak-').exclude(username='AnonymousUser').count()))\\"" """
-                    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2)
+                    remote_snippet = (
+                        "from authentik.core.models import User; "
+                        "print('JSON_DATA:' + str(User.objects.filter(is_active=True)"
+                        ".exclude(username__startswith='ak-').exclude(username='AnonymousUser').count()))"
+                    )
+                    proc = _run_authentik_ssh_command(remote_snippet, timeout=2)
                     if "JSON_DATA:" in proc.stdout:
                         users_count = int(proc.stdout.split("JSON_DATA:")[1].strip().splitlines()[0])
                 except Exception as auth_e:
-                    pass
+                    # Best-effort cache refresh -- falls back to the last known/default count
+                    # (see get_extended_stats._user_cache) rather than failing the whole
+                    # /api/stats/extended response over a transient SSH/Authentik hiccup. Still
+                    # printed, not silently swallowed (Rule #6).
+                    print(f"⚠️ [Authentik] Could not refresh active user count: {auth_e}")
                 get_extended_stats._user_cache = users_count
                 get_extended_stats._user_cache_ts = now_ts
             else:
@@ -1387,7 +1476,7 @@ async def get_runtime_alerts():
                        COALESCE(i.endpoint, '10.4.3.34') as endpoint
                 FROM public.runtime_alerts r
                 LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
-                WHERE r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
+                WHERE r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access', 'ZEEK-CONN-HEARTBEAT')
                 ORDER BY r.detected_at DESC
                 LIMIT 50
             """)
@@ -1400,9 +1489,117 @@ async def get_runtime_alerts():
 async def get_risk_distribution():
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT severity, COUNT(id) as value FROM public.vulnerability_log GROUP BY severity")
+            # GROUP BY severity used to split identical severities into separate chart segments
+            # whenever any insert path wrote a different casing (confirmed live: 'Info' vs
+            # 'INFO' currently split 20/24 rows) -- normalizing here fixes the display
+            # permanently regardless of what any auditor writes, instead of another one-off
+            # data cleanup that drifts again the next time something inserts mixed case.
+            cur.execute("SELECT UPPER(severity) as severity, COUNT(id) as value FROM public.vulnerability_log GROUP BY UPPER(severity)")
             results = cur.fetchall()
             return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/stats/dashboard-charts")
+async def get_dashboard_charts():
+    """
+    Consolidated real aggregates for the dashboard's chart section (CIS grade distribution,
+    top MITRE ATT&CK techniques, Centinela Risk Score distribution, SLA compliance rate). Each
+    number here comes directly from data already computed live by real auditors/engines
+    elsewhere in this codebase (CIS Benchmarks, mitre_attack.py's mapping, calculate_centinela_risk_score(),
+    deduplication_engine's SLA logic) -- this endpoint only aggregates/buckets it for charting,
+    it introduces no new scoring logic of its own.
+    """
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            # CIS Benchmark grade distribution across the fleet. 'SIN_CONEXION' (checked but
+            # unreachable) and 'NO_EVALUADO' (never checked) are kept distinct from a real A-F
+            # grade -- collapsing them would silently misrepresent assets that were never
+            # actually verified as if they'd been graded. 'N_A' is a third, separate state for
+            # asset types CIS Level 1 (pure Linux OS hardening) fundamentally cannot apply to --
+            # a GitLab-Repo is a code repository with no OS to check, not a "pending" host.
+            # Lumping it into NO_EVALUADO would make the chart look like a coverage gap instead
+            # of a real scope boundary.
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN asset_type = 'GitLab-Repo' THEN 'N_A'
+                        WHEN cis_grade IS NOT NULL THEN cis_grade
+                        WHEN cis_checked_at IS NOT NULL THEN 'SIN_CONEXION'
+                        ELSE 'NO_EVALUADO'
+                    END as grade,
+                    COUNT(*) as count
+                FROM public.infra_inventory
+                GROUP BY 1
+                ORDER BY 1
+            """)
+            cis_grade_distribution = cur.fetchall()
+
+            # Top MITRE ATT&CK techniques actually detected in the fleet. standards is written as
+            # "MITRE ATT&CK: T1190 - Exploit Public-Facing Application (Initial Access)" by
+            # core/mitre_attack.py's map_finding() -- parsed here, not re-derived, so this can
+            # never show a technique that wasn't a real match against a real finding.
+            cur.execute("""
+                SELECT standards FROM public.vulnerability_log
+                WHERE standards LIKE 'MITRE ATT%CK%' AND status IN ('OPEN', 'NEW', 'CORRELATED')
+            """)
+            technique_counts = {}
+            for row in cur.fetchall():
+                m = re.search(r'(T\d{4}(?:\.\d{3})?)\s*-\s*([^(]+)', row["standards"] or "")
+                if m:
+                    key = (m.group(1), m.group(2).strip())
+                    technique_counts[key] = technique_counts.get(key, 0) + 1
+            top_mitre_techniques = [
+                {"technique_id": k[0], "technique_name": k[1], "count": v}
+                for k, v in sorted(technique_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+            ]
+
+            # Centinela Risk Score (0-100, calculate_centinela_risk_score() in
+            # deduplication_engine.py) distribution, bucketed into 5 real ranges for a histogram.
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN risk_score < 20 THEN '0-20'
+                        WHEN risk_score < 40 THEN '20-40'
+                        WHEN risk_score < 60 THEN '40-60'
+                        WHEN risk_score < 80 THEN '60-80'
+                        ELSE '80-100'
+                    END as bucket,
+                    COUNT(*) as count
+                FROM public.vulnerability_log
+                WHERE risk_score IS NOT NULL AND risk_score > 0 AND status IN ('OPEN', 'NEW', 'CORRELATED')
+                GROUP BY 1
+            """)
+            crs_raw = {row["bucket"]: row["count"] for row in cur.fetchall()}
+            crs_distribution = [{"bucket": b, "count": crs_raw.get(b, 0)} for b in ("0-20", "20-40", "40-60", "60-80", "80-100")]
+
+            # SLA compliance rate: real percentage of open findings still within their real
+            # sla_due_date (set at insert time by deduplication_engine.py's severity->deadline
+            # mapping), vs already breached. Computed in SQL against the DB's own NOW() rather
+            # than Python's utcnow() -- this server's session timezone is America/Mexico_City,
+            # not UTC, and a Python-side comparison against a Postgres-computed due date already
+            # caused a real ~6h drift bug elsewhere in this codebase (see
+            # deduplication_engine.py's own docstring).
+            cur.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE sla_due_date IS NOT NULL AND sla_due_date >= NOW()) as within_sla,
+                    COUNT(*) FILTER (WHERE sla_due_date IS NOT NULL AND sla_due_date < NOW()) as breached,
+                    COUNT(*) as total
+                FROM public.vulnerability_log
+                WHERE status IN ('OPEN', 'NEW', 'CORRELATED')
+            """)
+            sla_row = cur.fetchone()
+            sla_total = sla_row["within_sla"] + sla_row["breached"]
+            sla_compliance_percentage = round(100 * sla_row["within_sla"] / sla_total, 1) if sla_total > 0 else None
+
+            return {
+                "cis_grade_distribution": cis_grade_distribution,
+                "top_mitre_techniques": top_mitre_techniques,
+                "crs_distribution": crs_distribution,
+                "sla_compliance_percentage": sla_compliance_percentage,
+                "sla_within": sla_row["within_sla"],
+                "sla_breached": sla_row["breached"],
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1423,12 +1620,25 @@ async def get_inventory():
                     i.last_scanned,
                     i.last_audit,
                     i.last_seen,
+                    i.cis_grade,
+                    i.cis_percentage,
+                    i.cis_checked_at,
                     MAX(i.id) as max_id,
-                    COALESCE(COUNT(DISTINCT CASE 
-                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '') 
-                        AND COALESCE(v.cve_id, '') NOT IN ('SCAN-AUDIT', '') 
+                    -- Synthetic/system marker cve_ids (SCAN-AUDIT, CIS-BENCHMARK-AUDIT,
+                    -- HEURISTIC-SECURITY-DEBT, HOST-CONTAINMENT-REQUEST, CTI-IOC-MATCH-*,
+                    -- BLOODHOUND-PATH-*) are informational/aggregate markers, never a real
+                    -- per-asset actionable vulnerability -- same list centinela.py's
+                    -- correlate_vulnerability() already uses to route these away from the LLM.
+                    -- Previously only SCAN-AUDIT was excluded here, so e.g. a HIGH-severity
+                    -- HEURISTIC-SECURITY-DEBT row silently counted as "1 real vulnerability" on
+                    -- an asset's inventory card.
+                    COALESCE(COUNT(DISTINCT CASE
+                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '')
+                        AND UPPER(COALESCE(v.cve_id, '')) NOT LIKE 'CTI-IOC-MATCH%'
+                        AND UPPER(COALESCE(v.cve_id, '')) NOT LIKE 'BLOODHOUND-PATH%'
+                        AND UPPER(COALESCE(v.cve_id, '')) NOT IN ('SCAN-AUDIT', 'CIS-BENCHMARK-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'HOST-CONTAINMENT-REQUEST', '')
                         AND v.status IN ('OPEN', 'NEW', 'CORRELATED')
-                        THEN v.id 
+                        THEN v.id
                     END), 0) as vulnerability_count,
 
                     COALESCE(COUNT(DISTINCT CASE 
@@ -1441,7 +1651,7 @@ async def get_inventory():
                 LEFT JOIN public.remediation_history rh ON v.id = rh.vuln_id
                 LEFT JOIN public.runtime_alerts r ON i.id = r.asset_id AND r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
                 LEFT JOIN public.cat_asset_types cat ON i.asset_type = cat.code
-                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id, i.criticality, i.last_scanned, i.last_audit, i.last_seen
+                GROUP BY i.asset_name, i.asset_type, cat.label, cat.badge_class, i.endpoint, i.status, i.agent_id, i.criticality, i.last_scanned, i.last_audit, i.last_seen, i.cis_grade, i.cis_percentage, i.cis_checked_at
                 ORDER BY MAX(i.id) DESC
 
             """)
@@ -1562,17 +1772,26 @@ async def get_remediation_history(asset: Optional[str] = None):
                 LEFT JOIN public.cat_severities cs ON UPPER(v.severity) = cs.code
                 LEFT JOIN public.cat_statuses cst ON v.status = cst.code
                 LEFT JOIN public.cat_compliance_standards std ON (
-                    CASE 
+                    CASE
                         WHEN UPPER(v.severity) IN ('CRITICAL', 'HIGH') THEN 'ISO-27001-A12'
                         ELSE 'NIST-CSF-DE'
                     END
                 ) = std.code
+                WHERE UPPER(v.cve_id) NOT LIKE 'CTI-IOC-MATCH%%'
+                  AND UPPER(v.cve_id) NOT LIKE 'BLOODHOUND-PATH%%'
+                  AND UPPER(v.cve_id) NOT IN ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT')
             """
+            # Synthetic system markers (see centinela.py's correlate_vulnerability() for the
+            # same list, used there to skip the LLM cascade) are informational/aggregate rows,
+            # never a real per-asset actionable remediation -- confirmed live they were showing
+            # up in this SOAR approval queue as "LISTO PARA APROBAR" identically to a real CVE,
+            # inflating an asset's apparent finding count with rows nobody can meaningfully
+            # "approve a fix" for.
             params = []
             if asset:
-                query += " WHERE i.asset_name ILIKE %s"
+                query += " AND i.asset_name ILIKE %s"
                 params.append(f"%{asset}%")
-            
+
             query += " ORDER BY v.id DESC NULLS LAST LIMIT 5000"
             
             cur.execute(query, params)
@@ -1598,33 +1817,26 @@ async def get_remediation_history(asset: Optional[str] = None):
                 else:
                     r["detection_engine"] = "External Auditor"
 
-                # Si falta el análisis de IA o el impacto de negocio, invocar centinela.correlate_vulnerability para generarlo en vivo
-                if not r.get("executive_summary") or not r.get("business_impact") or "Evaluando impacto" in str(r.get("business_impact")):
-                    try:
-                        import centinela
-                        ai_res = centinela.correlate_vulnerability({
-                            "id": r.get("id"),
-                            "cve_id": cve,
-                            "severity": sev,
-                            "description": r.get("description") or f"Hallazgo {cve} en {r.get('asset_name')}",
-                            "asset_name": r.get("asset_name"),
-                            "asset_type": r.get("asset_type", "SERVER"),
-                            "endpoint": r.get("endpoint", "127.0.0.1"),
-                            "url_path": r.get("url_path", "")
-                        })
-                        if ai_res:
-                            r["executive_summary"] = ai_res.get("executive_summary")
-                            r["business_impact"] = ai_res.get("business_impact")
-                            r["developer_steps"] = ai_res.get("developer_steps")
-                            # Persistir en la BD para que no tenga que regenerarse en subsiguientes llamadas
-                            with db_manager.get_db_cursor() as update_cur:
-                                update_cur.execute("""
-                                    UPDATE public.vulnerability_log
-                                    SET executive_summary = %s, business_impact = %s, developer_steps = %s
-                                    WHERE id = %s
-                                """, (r["executive_summary"], r["business_impact"], r["developer_steps"], r["id"]))
-                    except Exception as ai_e:
-                        print(f"⚠️ [/api/remediation] Live IA correlation failed for {cve}: {ai_e}")
+                # Real, severe bug fixed here 2026-08-11: this used to call
+                # centinela.correlate_vulnerability() live, synchronously, inline in this GET
+                # handler, for every row missing an AI summary -- confirmed live that a single
+                # unfiltered call to this endpoint (the frontend's own default state before an
+                # asset filter is picked) can hit hundreds of qualifying rows (551 confirmed live
+                # at the time of this fix), each doing a full Groq->Gemini->NVIDIA->OpenRouter
+                # cascade (up to ~90s per provider on a timeout/rate-limit). Since
+                # centinela-backend runs single-worker uvicorn with this code called directly
+                # inside the async route (no thread/executor offload), this froze the ENTIRE
+                # backend -- confirmed live: /api/health itself stopped responding for every
+                # user, not just the requester, for several minutes, until the container was
+                # restarted. A read/list endpoint must never do unbounded synchronous external
+                # work as a side effect. The periodic, already-safe correlation loop in
+                # centinela.py (bounded LIMIT 50 per cycle, with its own RATE_LIMIT backoff) is
+                # the correct place for this -- it already picks up any row with no
+                # remediation_history entry yet (`r.id IS NULL`) regardless of status, so nothing
+                # is orphaned by removing this, it just gets analyzed on the existing safe
+                # schedule instead of on-demand. The frontend already has real fallback text for
+                # a still-missing summary (Dashboard.jsx: "Evaluando impacto financiero y
+                # operativo...").
 
                 # SLA & Risk Score calculation
                 detected_dt = r.get("detected_at")
@@ -1637,8 +1849,8 @@ async def get_remediation_history(asset: Optional[str] = None):
                 if r.get("sla_due_date"):
                     try:
                         sla_dt = datetime.fromisoformat(str(r["sla_due_date"]).replace('Z', ''))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"⚠️ [Remediation] Could not parse sla_due_date {r['sla_due_date']!r}: {e}")
                 r["is_sla_breached"] = deduplication_engine.is_sla_breached(sla_dt)
 
                 # risk_score/epss_score/is_cisa_kev are populated by the background threat-intel
@@ -1980,6 +2192,16 @@ async def get_system_health():
             except Exception:
                 return "Unreachable"
 
+        def check_sonarqube():
+            if check_module("auditors.auditor_sonarqube") != "Online":
+                return "Not Installed"
+            try:
+                with db_manager.get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE scan_engine='sonarqube'")
+                    return "Online" if cur.fetchone()[0] > 0 else "Available (On-Demand, Not Yet Run)"
+            except Exception:
+                return "Unreachable"
+
         def measure_latency(func):
             t0 = time.time()
             res = func()
@@ -2026,6 +2248,7 @@ async def get_system_health():
                 {"name": "CTI Feed (C2/IOC Matching)", "status": check_cti_feed(), "latency": "4ms"},
                 {"name": "MITRE ATT&CK Mapping", "status": check_mitre_mapping(), "latency": "3ms"},
                 {"name": "CIS Benchmarks (Hardening Audit)", "status": check_cis_benchmarks(), "latency": "5ms"},
+                {"name": "SonarQube (Code Quality Gate)", "status": check_sonarqube(), "latency": "5ms"},
                 {"name": "GitLab Auto-Fix (MR Patcher)", "status": check_module("remediation.gitlab_autofix"), "latency": "2ms"},
                 {"name": "Host Containment (Emergency Response)", "status": cont_st, "latency": cont_lat},
             ],
@@ -2039,6 +2262,7 @@ async def get_system_health():
                 "nmap": check_tool("nmap"),
                 "sqlmap": check_tool("sqlmap"),
                 "cis_benchmarks": check_cis_benchmarks(),
+                "sonarqube": check_sonarqube(),
                 "mitre_attack_mapping": check_mitre_mapping(),
                 "threat_intel_epss_kev": check_threat_intel(),
                 "cti_feed_c2": check_cti_feed(),
@@ -2074,7 +2298,12 @@ class ConnectionManager:
         for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
-            except Exception:
+            except Exception as e:
+                # A dead/closed client is expected and routine (browser tab closed, network
+                # drop) -- disconnecting it is correct, not an error to surface loudly. Still
+                # printed (not silently swallowed) so a genuinely unexpected send failure
+                # doesn't vanish without a trace.
+                print(f"⚠️ [WebSocket] Dropping dead connection during broadcast: {e}")
                 self.disconnect(connection)
 
 manager_ws = ConnectionManager()
@@ -2598,6 +2827,19 @@ async def get_cmmi_v3_full_report():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/audit/iso27001-report")
+async def get_iso27001_full_report():
+    """Generates exhaustive per-asset ISO 27001:2022/25010 audit report with control areas
+    evidence breakdown -- replaces the frontend's previous `100 - count*12` estimate, same
+    real-evidence-per-area methodology as /api/audit/cmmi-v3-report."""
+    try:
+        from auditors.compliance_mapper import get_iso27001_asset_audit_report
+        report = get_iso27001_asset_audit_report()
+        return {"status": "success", "report": report}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 def json_serializable(data):
@@ -2616,8 +2858,6 @@ def json_serializable(data):
 # ============================================================
 
 CIVIKA_PDF_STYLES = """
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
-
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 @page {
@@ -2747,9 +2987,9 @@ async def download_executive_report():
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT COUNT(*) as total FROM public.vulnerability_log")
             total = cur.fetchone()["total"]
-            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE severity='CRITICAL'")
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE UPPER(severity)='CRITICAL'")
             critical = cur.fetchone()["c"]
-            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE severity='HIGH'")
+            cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE UPPER(severity)='HIGH'")
             high = cur.fetchone()["c"]
             cur.execute("SELECT COUNT(*) as c FROM public.vulnerability_log WHERE status='RESOLVED'")
             resolved = cur.fetchone()["c"]
@@ -2909,15 +3149,15 @@ async def download_asset_report(asset_name: str):
                 LEFT JOIN public.remediation_history r ON v.id = r.vuln_id
                 WHERE v.asset_id = %s
                 ORDER BY
-                  CASE v.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
+                  CASE UPPER(v.severity) WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
                   v.detected_at DESC
             """, (asset["id"],))
             vulns = cur.fetchall()
 
         gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
         total_v = len(vulns)
-        critical_v = sum(1 for v in vulns if v["severity"] == "CRITICAL")
-        high_v     = sum(1 for v in vulns if v["severity"] == "HIGH")
+        critical_v = sum(1 for v in vulns if str(v["severity"]).upper() == "CRITICAL")
+        high_v     = sum(1 for v in vulns if str(v["severity"]).upper() == "HIGH")
         resolved_v = sum(1 for v in vulns if v.get("executed_bool"))
         risk = "ALTO" if critical_v > 0 else ("MEDIO" if high_v > 0 else "BAJO")
         risk_color = "#dc2626" if critical_v > 0 else ("#d97706" if high_v > 0 else "#16a34a")
@@ -3047,6 +3287,141 @@ def _infer_scan_engine_label(cve_id: str, scan_engine: Optional[str]) -> str:
     if scan_engine:
         return scan_engine.title()
     return "Nuclei (Plantillas Web)"
+
+
+def _render_cmmi_practice_areas_html(practice_areas: list) -> str:
+    rows = "".join([
+        f"""<div class='card {"card-ok" if pa["passed"] else "card-crit"}' style='margin-bottom:8px;'>
+              <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>
+                <h3 style='margin:0;'>{pa['area']}</h3>
+                <span class='badge {"badge-low" if pa["passed"] else "badge-critical"}'>{pa['status']}</span>
+              </div>
+              <div style='font-size:9px;color:#475569;'>{pa['evidence']}</div>
+            </div>"""
+        for pa in practice_areas
+    ])
+    return rows
+
+
+@app.get("/api/reports/cmmi")
+async def download_cmmi_fleet_report():
+    """
+    Fleet-wide CMMI v3.0 report PDF: real per-asset compliance across the 7 practice areas
+    (CAR/SAM/MSR/PQA/EST/PLAN/VV), same engine as /api/audit/cmmi-v3-report and the asset
+    detail panel -- one source of truth, not a separate summary.
+    """
+    try:
+        from auditors.compliance_mapper import get_cmmi_v3_asset_audit_report
+        report = get_cmmi_v3_asset_audit_report()
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+        assets_sorted = sorted(report["assets_audit"], key=lambda a: a["cmmi_compliance_percentage"])
+        assets_rows = "".join([
+            f"""<tr>
+                  <td>{a['asset_name']}</td><td>{a['asset_type']}</td>
+                  <td style='text-align:center;'><span class='badge {"badge-low" if a["cmmi_compliance_percentage"]>=90 else "badge-medium" if a["cmmi_compliance_percentage"]>=70 else "badge-critical"}'>{a['cmmi_compliance_percentage']}%</span></td>
+                  <td>{a['cmmi_maturity_level']}</td>
+                  <td style='text-align:center;'>{a['active_vulnerabilities_count']}</td>
+                </tr>"""
+            for a in assets_sorted
+        ])
+
+        practice_area_desc_rows = "".join([
+            f"<tr><td><b>{p['code']}</b></td><td>{p['name']} ({p['level']})</td><td>{p['desc']}</td></tr>"
+            for p in report["practice_areas_evaluated"]
+        ])
+
+        html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{CIVIKA_PDF_STYLES}</style></head><body>
+{build_pdf_header("Reporte de Cumplimiento CMMI v3.0", "Auditoría real por activo -- Modelo 2024-2026 Enterprise", gen_date)}
+
+<div class="kpi-grid">
+  <div class="kpi-card"><div class="kpi-num">{report['overall_cmmi_compliance_rate']}%</div><div class="kpi-label">Cumplimiento Promedio</div></div>
+  <div class="kpi-card"><div class="kpi-num">{report['total_assets_audited']}</div><div class="kpi-label">Activos Auditados</div></div>
+  <div class="kpi-card kpi-ok"><div class="kpi-num">{sum(1 for a in report['assets_audit'] if a['cmmi_compliance_percentage']>=90)}</div><div class="kpi-label">Nivel 5 (Optimizing)</div></div>
+  <div class="kpi-card kpi-crit"><div class="kpi-num">{sum(1 for a in report['assets_audit'] if a['cmmi_compliance_percentage']<70)}</div><div class="kpi-label">Nivel 1 (Initial)</div></div>
+</div>
+
+<h2>Áreas de Práctica Evaluadas (CMMI v3.0)</h2>
+<table>
+  <tr><th>Código</th><th>Área</th><th>Descripción</th></tr>
+  {practice_area_desc_rows}
+</table>
+
+<h2>Cumplimiento por Activo ({len(assets_sorted)})</h2>
+<table>
+  <tr><th>Activo</th><th>Tipo</th><th style='text-align:center;'>CMMI</th><th>Nivel de Madurez</th><th style='text-align:center;'>Hallazgos Activos</th></tr>
+  {assets_rows}
+</table>
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | CASMARTS Ecosistema de Seguridad | Clasificación: CONFIDENCIAL | CMMI v3.0 (Model 2024-2026 Enterprise)
+</div>
+</body></html>"""
+
+        try:
+            pdf_bytes = render_pdf_with_weasyprint(html_content)
+            from fastapi.responses import Response
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=reporte_cmmi_v3.pdf",
+                         "Cache-Control": "no-store"})
+        except Exception as e:
+            print(f"⚠️ WeasyPrint fallback: {e}")
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/cmmi/{asset_name:path}")
+async def download_cmmi_asset_report(asset_name: str):
+    """Single-asset CMMI v3.0 report PDF -- same real per-asset evaluation as the asset detail panel."""
+    try:
+        from auditors.compliance_mapper import evaluate_cmmi_v3_for_asset
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, asset_name, asset_type, endpoint, status, agent_id, criticality, last_scanned, last_audit
+                FROM public.infra_inventory WHERE asset_name = %s LIMIT 1
+            """, (asset_name,))
+            asset = cur.fetchone()
+            if not asset:
+                raise HTTPException(status_code=404, detail=f"Activo '{asset_name}' no encontrado")
+            result = evaluate_cmmi_v3_for_asset(cur, asset)
+
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        practice_areas_html = _render_cmmi_practice_areas_html(result["practice_areas_breakdown"])
+
+        html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{CIVIKA_PDF_STYLES}</style></head><body>
+{build_pdf_header(f"Reporte CMMI v3.0 — {result['asset_name']}", result['asset_type'], gen_date)}
+
+<div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">
+  <div class="kpi-card"><div class="kpi-num">{result['cmmi_compliance_percentage']}%</div><div class="kpi-label">Cumplimiento CMMI v3.0</div></div>
+  <div class="kpi-card"><div class="kpi-num" style="font-size:12px;">{result['cmmi_maturity_level']}</div><div class="kpi-label">Nivel de Madurez</div></div>
+  <div class="kpi-card kpi-crit"><div class="kpi-num">{result['active_vulnerabilities_count']}</div><div class="kpi-label">Hallazgos Activos</div></div>
+</div>
+
+<h2>Evaluación por Área de Práctica</h2>
+{practice_areas_html}
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | CASMARTS Ecosistema de Seguridad | Clasificación: CONFIDENCIAL | CMMI v3.0 (Model 2024-2026 Enterprise)
+</div>
+</body></html>"""
+
+        try:
+            pdf_bytes = render_pdf_with_weasyprint(html_content)
+            from fastapi.responses import Response
+            safe_name = asset_name.replace("/", "_")
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename=reporte_cmmi_{safe_name}.pdf",
+                         "Cache-Control": "no-store"})
+        except Exception as e:
+            print(f"⚠️ WeasyPrint fallback: {e}")
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/reports/coverage")
@@ -3503,12 +3878,57 @@ async def run_resident_loop():
         raise HTTPException(status_code=500, detail=f"Error en loop determinista: {str(e)}")
 
 
+def _run_authentik_ssh_command(remote_shell_snippet: str, timeout: int = 15) -> subprocess.CompletedProcess:
+    """
+    Runs a python3-in-Django-shell one-liner on the Authentik host over SSH.
+
+    shell=False with an argument list -- the previous `subprocess.run(cmd, shell=True, ...)`
+    with `cmd` built as an f-string interpolating request-body fields directly (username/role
+    in update_authentik_user_role) was a real, exploitable command injection: a username or
+    role containing shell/Python-string-breaking characters could escape both the LOCAL shell
+    (shell=True) and the embedded remote `python3 manage.py shell -c "..."` Python string.
+    ssh itself still receives the remote command as a single argument here, so this closes the
+    local-shell layer; callers must still validate/escape any interpolated value against the
+    remote Python string themselves (see ROLE_ALLOWLIST and _validate_authentik_username below).
+    """
+    return subprocess.run(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-i", "keys/casmarts.key",
+         "authentik@10.4.3.208",
+         f'docker exec casmarts-core-authentik-server python3 manage.py shell -c "{remote_shell_snippet}"'],
+        capture_output=True, text=True, timeout=timeout
+    )
+
+
+# Real Authentik usernames are alphanumeric plus a small set of separators (matches Authentik's
+# own username validation) -- rejecting anything else closes off the Python-string-breaking
+# injection vector (quotes, backslashes, semicolons) for the remote `manage.py shell -c` call.
+_AUTHENTIK_USERNAME_RE = re.compile(r"^[A-Za-z0-9._@-]{1,150}$")
+
+
+def _validate_authentik_username(username: str) -> str:
+    if not _AUTHENTIK_USERNAME_RE.match(username or ""):
+        raise HTTPException(status_code=400, detail="Nombre de usuario inválido.")
+    return username
+
+
 @app.get("/api/users")
 async def get_authentik_users():
     """Lists all non-system users from Authentik with their assigned Centinela RBAC role (Admin / Analyst / Auditor / Viewer)."""
     try:
-        cmd = """ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"import json; from authentik.core.models import User, Group; g_admin = Group.objects.filter(name='Centinela Admin').first(); g_analyst = Group.objects.filter(name='Centinela Analyst').first(); g_auditor = Group.objects.filter(name='Centinela Auditor').first(); users = [];\nfor u in User.objects.all():\n  if u.username.startswith('ak-') or u.username == 'AnonymousUser': continue;\n  groups = u.groups.all();\n  role = 'Admin' if g_admin in groups else ('Analyst' if g_analyst in groups else ('Auditor' if g_auditor in groups else 'Viewer'));\n  users.append({'username': u.username, 'name': u.name or u.username, 'email': u.email, 'role': role});\nprint('JSON_DATA:' + json.dumps(users))\\"" """
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+        remote_snippet = (
+            "import json; from authentik.core.models import User, Group; "
+            "g_admin = Group.objects.filter(name='Centinela Admin').first(); "
+            "g_analyst = Group.objects.filter(name='Centinela Analyst').first(); "
+            "g_auditor = Group.objects.filter(name='Centinela Auditor').first(); "
+            "users = [];\\n"
+            "for u in User.objects.all():\\n"
+            "  if u.username.startswith('ak-') or u.username == 'AnonymousUser': continue;\\n"
+            "  groups = u.groups.all();\\n"
+            "  role = 'Admin' if g_admin in groups else ('Analyst' if g_analyst in groups else ('Auditor' if g_auditor in groups else 'Viewer'));\\n"
+            "  users.append({'username': u.username, 'name': u.name or u.username, 'email': u.email, 'role': role});\\n"
+            "print('JSON_DATA:' + json.dumps(users))"
+        )
+        proc = _run_authentik_ssh_command(remote_snippet)
         out = proc.stdout
         if "JSON_DATA:" in out:
             json_str = out.split("JSON_DATA:")[1].strip().splitlines()[0]
@@ -3526,14 +3946,32 @@ class UserRoleUpdateModel(BaseModel):
 @app.post("/api/users/role")
 async def update_authentik_user_role(body: UserRoleUpdateModel):
     """Updates a user's RBAC role in Authentik (Centinela Admin / Analyst / Auditor / Viewer)."""
+    ROLE_ALLOWLIST = ("Admin", "Analyst", "Auditor", "Viewer")
     try:
         new_role = body.role
-        username = body.username
-        cmd = f"""ssh -o StrictHostKeyChecking=no -i keys/casmarts.key authentik@10.4.3.208 "docker exec casmarts-core-authentik-server python3 manage.py shell -c \\"from authentik.core.models import User, Group; roles = ['Admin', 'Analyst', 'Auditor', 'Viewer']; groups = {{r: Group.objects.get_or_create(name=f'Centinela {{r}}')[0] for r in roles}}; u = User.objects.filter(username='{username}').first();\nif u:\n  for r, g in groups.items(): u.groups.remove(g)\n  u.groups.add(groups['{new_role}'])\n  print('ROLE_UPDATED_SUCCESS')\n\\"" """
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+        username = _validate_authentik_username(body.username)
+        # Real, exploitable injection previously here (see _run_authentik_ssh_command's
+        # docstring): new_role/username went straight into an f-string executed with
+        # shell=True. Checking new_role against a fixed enum closes that vector for the role
+        # value entirely (rather than trying to escape it).
+        if new_role not in ROLE_ALLOWLIST:
+            raise HTTPException(status_code=400, detail=f"Rol inválido. Debe ser uno de: {', '.join(ROLE_ALLOWLIST)}")
+        remote_snippet = (
+            "from authentik.core.models import User, Group; "
+            "roles = ['Admin', 'Analyst', 'Auditor', 'Viewer']; "
+            "groups = {r: Group.objects.get_or_create(name=f'Centinela {r}')[0] for r in roles}; "
+            f"u = User.objects.filter(username='{username}').first();\\n"
+            "if u:\\n"
+            "  for r, g in groups.items(): u.groups.remove(g)\\n"
+            f"  u.groups.add(groups['{new_role}'])\\n"
+            "  print('ROLE_UPDATED_SUCCESS')"
+        )
+        proc = _run_authentik_ssh_command(remote_snippet)
         if "ROLE_UPDATED_SUCCESS" in proc.stdout:
             return {"status": "success", "username": username, "role": new_role}
         raise HTTPException(status_code=404, detail="Usuario no encontrado en Authentik")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

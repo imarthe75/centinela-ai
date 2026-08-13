@@ -5,6 +5,8 @@ Evaluates infrastructure manifests against security hardening standards.
 import os
 import re
 from typing import List, Dict, Any
+from core import db_manager
+from core.deduplication_engine import log_finding_deduplicated
 
 def audit_kubernetes_yaml(file_path: str, content: str) -> List[Dict[str, Any]]:
     """Audits Kubernetes deployment/pod YAML files for security misconfigurations."""
@@ -53,8 +55,8 @@ def audit_terraform_tf(file_path: str, content: str) -> List[Dict[str, Any]]:
 
     return findings
 
-def run_iac_scan(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]]:
-    """Scans target directory for Kubernetes YAML and Terraform files."""
+def run_iac_scan(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+    """Scans target directory for Kubernetes YAML and Terraform files, persisting findings to the DB."""
     findings = []
     for root, _, files in os.walk(target_dir):
         if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
@@ -71,4 +73,17 @@ def run_iac_scan(target_dir: str = "/opt/centinela-ai") -> List[Dict[str, Any]]:
                     findings.extend(audit_terraform_tf(full_path, content))
             except Exception:
                 continue
+
+    try:
+        with db_manager.get_db_cursor() as cur:
+            for item in findings:
+                rel_path = os.path.relpath(item["file"], target_dir)
+                log_finding_deduplicated(
+                    cur, asset_id, item["cve_id"], item["severity"],
+                    f"{rel_path}:{item['line']} - {item['description']}",
+                    "iac-native", url_path=f"{rel_path}:{item['line']}", preserve_status=True
+                )
+    except Exception as e:
+        print(f"⚠️ [IaC-Auditor] Error logging to DB: {e}")
+
     return findings

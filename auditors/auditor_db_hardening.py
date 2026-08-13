@@ -7,6 +7,7 @@ import socket
 import subprocess
 import json
 from core.db_manager import get_db_connection
+from core.deduplication_engine import log_finding_deduplicated
 
 def check_db_tls(host: str, port: int) -> dict:
     """Verifica si el puerto de la Base de Datos acepta conexiones SSL/TLS."""
@@ -27,9 +28,12 @@ def audit_database_security(asset_id: int, endpoint: str, db_type: str = "SQL"):
     Audita: SSL/TLS en tránsito, exposición de puertos estándar, inyección SQL (SQLMap) y parámetros de cifrado en reposo (TDE / IaC).
     """
     print(f"🗄️ [Auditor-DB-Hardening] Ejecutando auditoría profunda de DB en {endpoint} (Tipo: {db_type})...")
-    conn = get_db_connection()
-    cur = conn.cursor()
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        _audit_database_security_inner(cur, conn, asset_id, endpoint, db_type)
 
+
+def _audit_database_security_inner(cur, conn, asset_id: int, endpoint: str, db_type: str):
     host = endpoint.replace("http://", "").replace("https://", "").split(":")[0].split("/")[0]
     # Mapeo exhaustivo de motores Relacionales, NoSQL, In-Memory y Query Engines
     ep_lower = endpoint.lower()
@@ -45,64 +49,44 @@ def audit_database_security(asset_id: int, endpoint: str, db_type: str = "SQL"):
     elif "redis" in ep_lower or "valkey" in ep_lower: port = 6379
     else: port = 5432
 
+    location = f"{host}:{port}"
+
     # 1. Verificación TLS/SSL
     tls_res = check_db_tls(host, port)
     if not tls_res["tls_active"]:
-        cur.execute("""
-            INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, scan_engine, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (
-            asset_id,
-            "DB-NO-TLS-ENCRYPTION",
-            "HIGH",
+        log_finding_deduplicated(
+            cur, asset_id, "DB-NO-TLS-ENCRYPTION", "HIGH",
             f"El puerto {port} de la base de datos {endpoint} ({db_type}) no exige o no tiene configurado cifrado TLS/SSL en tránsito.",
-            "db-hardening",
-            "OPEN"
-        ))
+            "db-hardening", url_path=location, preserve_status=True
+        )
 
     # 2. Verificación de Exposición de Puertos Predeterminados a Red Abierta
     if port in [5432, 3306, 1521, 1433, 27017, 9042, 8080, 9200, 7687, 6379]:
-        cur.execute("""
-            INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, scan_engine, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (
-            asset_id,
-            "DB-DEFAULT-PORT-EXPOSED",
-            "MEDIUM",
+        log_finding_deduplicated(
+            cur, asset_id, "DB-DEFAULT-PORT-EXPOSED", "MEDIUM",
             f"La base de datos utiliza el puerto por defecto {port}. Se recomienda cambiar el puerto estándar o acotar el acceso mediante Security Groups / Firewall.",
-            "db-hardening",
-            "OPEN"
-        ))
+            "db-hardening", url_path=location, preserve_status=True
+        )
 
     # 3. Auditoría de Cifrado TDE & Configuración (IaC / Nuclei)
     nuclei_cmd = ['nuclei', '-u', f"{host}:{port}", '-tags', 'db,postgres,mysql,mongodb,redis', '-silent', '-jsonl']
     try:
-        res = subprocess.run(nuclei_cmd, capture_output=True, text=True, timeout=15)
+        res = subprocess.run(nuclei_cmd, capture_output=True, text=True, timeout=60)
         if res.stdout:
             for line in res.stdout.splitlines():
                 if not line.strip(): continue
                 try:
                     vuln = json.loads(line)
-                    cur.execute("""
-                        INSERT INTO vulnerability_log (asset_id, cve_id, severity, description, scan_engine, status)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING
-                    """, (
-                        asset_id,
-                        f"DB-{vuln.get('template-id', 'MISCONFIG').upper()}",
-                        vuln.get('info', {}).get('severity', 'MEDIUM').capitalize(),
+                    log_finding_deduplicated(
+                        cur, asset_id, f"DB-{vuln.get('template-id', 'MISCONFIG').upper()}",
+                        vuln.get('info', {}).get('severity', 'MEDIUM').upper(),
                         vuln.get('info', {}).get('description', 'Fallo de configuración o hardening en base de datos.'),
-                        "db-hardening",
-                        "OPEN"
-                    ))
+                        "db-hardening", url_path=location, preserve_status=True
+                    )
                 except Exception:
                     continue
     except Exception as e:
         print(f"⚠️ [Auditor-DB-Hardening] Nuclei DB scan timeout o error: {e}")
 
     conn.commit()
-    cur.close()
-    conn.close()
     print(f"✅ [Auditor-DB-Hardening] Auditoría de base de datos {endpoint} completada.")

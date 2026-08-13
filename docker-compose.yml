@@ -37,9 +37,15 @@ services:
     - AUTHENTIK_INTERNAL_URL=${AUTHENTIK_INTERNAL_URL:-https://auth.casmart.internal}
     - GITLAB_URL=${GITLAB_URL:-http://10.4.3.10}
     - GITLAB_TOKEN=${GITLAB_TOKEN}
+    - SONAR_HOST_URL=${SONAR_HOST_URL:-http://centinela-sonarqube:9000}
+    - SONAR_TOKEN=${SONAR_TOKEN}
+    - HOST_PROJECT_ROOT=${HOST_PROJECT_ROOT:-/opt/centinela-ai}
     - NEO4J_URI=bolt://centinela-neo4j:7687
     - NEO4J_USER=neo4j
     - NEO4J_PASSWORD=password
+    - CLICKHOUSE_HOST=centinela-clickhouse
+    - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+    - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     working_dir: /app
     command: python centinela.py
     deploy:
@@ -74,9 +80,20 @@ services:
     - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-centinela-ai}
     - AUTHENTIK_CLIENT_SECRET=${AUTHENTIK_CLIENT_SECRET}
     - AUTHENTIK_INTERNAL_URL=${AUTHENTIK_INTERNAL_URL:-https://auth.casmart.internal}
+    # SONAR_* also live here (not just centinela-ai) because centinela-backend is where
+    # requirements.txt installs pytest and tests/ actually runs from -- the live
+    # SonarQube integration test in tests/test_auditor_sonarqube.py needs a real token to
+    # exercise the real scan path. centinela-backend already has docker.sock mounted, so it
+    # can spawn the sibling sonar-scanner container the same way centinela-ai does.
+    - SONAR_HOST_URL=${SONAR_HOST_URL:-http://centinela-sonarqube:9000}
+    - SONAR_TOKEN=${SONAR_TOKEN}
+    - HOST_PROJECT_ROOT=${HOST_PROJECT_ROOT:-/opt/centinela-ai}
     - NEO4J_URI=bolt://centinela-neo4j:7687
     - NEO4J_USER=neo4j
     - NEO4J_PASSWORD=password
+    - CLICKHOUSE_HOST=centinela-clickhouse
+    - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+    - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     ports:
     - 8302:8000
     deploy:
@@ -94,6 +111,16 @@ services:
     - ./frontend:/app
     - /app/node_modules
     ports:
+    # REVERTED 2026-08-11: an attempt to restrict this to the host's real interface IP
+    # (10.4.3.34) broke real production access -- confirmed live, casmarts-core-gateway returned
+    # 502 Bad Gateway and the user (who accesses via VPN) lost access entirely. The VPN client's
+    # traffic arrives on a different interface/IP than the host's own ens160 address, which a
+    # bind restricted to 10.4.3.34 silently excluded. Real internet-origin scanner probes were
+    # confirmed hitting this port directly (see CLAUDE.md), so the underlying exposure concern is
+    # still real -- but the fix needs to be a host firewall rule (iptables/ufw) that blocks
+    # non-VPN/non-internal source IPs, not a Docker bind-address restriction, which has no way to
+    # distinguish "legitimate VPN client" from "internet scanner" the way a source-IP firewall
+    # rule can. Not re-attempted here without confirming the VPN's real source IP/subnet first.
     - 8301:5173
     depends_on:
     - centinela-backend
@@ -148,47 +175,60 @@ services:
 #       resources:
 #         limits:
 #           memory: 4G
-#   falco:
-#     image: falcosecurity/falco-no-driver:latest
-#     container_name: falco
-#     privileged: true
-#     user: root
-#     volumes:
-#     - /var/run/docker.sock:/host/var/run/docker.sock
-#     - /dev:/host/dev
-#     - /proc:/host/proc:ro
-#     - /boot:/host/boot:ro
-#     - /lib/modules:/host/lib/modules:ro
-#     - /usr:/host/usr:ro
-#     - /etc:/host/etc:ro
-#     environment:
-#     - FALCO_OUTPUT_PROGRAM_OUTPUT=json
-#     command:
-#     - /usr/bin/falco
-#     - -o
-#     - json_output=true
-#     - -o
-#     - http_output.enabled=true
-#     - -o
-#     - http_output.url=http://falcosidekick:2801/
-#     networks:
-#     - aura-network
-#     deploy:
-#       resources:
-#         limits:
-#           memory: 512M
-#   falcosidekick:
-#     image: falcosecurity/falcosidekick:latest
-#     container_name: falcosidekick
-#     environment:
-#     - REDIS_ADDRESS=casmarts-core-cache:6379
-#     - REDIS_STORAGEKEY=centinela:falco
-#     networks:
-#     - aura-network
-#     deploy:
-#       resources:
-#         limits:
-#           memory: 256M
+  falco:
+    image: falcosecurity/falco:latest
+    container_name: falco
+    privileged: true
+    restart: always
+    volumes:
+    - /var/run/docker.sock:/host/var/run/docker.sock
+    - /dev:/host/dev
+    - /proc:/host/proc:ro
+    - /boot:/host/boot:ro
+    - /lib/modules:/host/lib/modules:ro
+    - /usr:/host/usr:ro
+    - /etc:/host/etc:ro
+    - ./config/falco/falco.yaml:/etc/falco/falco.yaml:ro
+    - ./config/falco/falco_rules.local.yaml:/etc/falco/falco_rules.local.yaml:ro
+    # falcosecurity/falco:latest auto-selects the modern eBPF probe (no separate kernel-module
+    # load step needed) on kernel >=5.8 -- this host runs 6.8.0, confirmed compatible.
+    # http_output.enabled/json_output are set by replacing /etc/falco/falco.yaml outright
+    # (./config/falco/falco.yaml is the image's own default file with just those two values
+    # changed), not `-o` CLI overrides or a config.d/ snippet. Both of those were tried first and
+    # both silently delivered zero events to falcosidekick despite rules firing correctly on
+    # stdout (confirmed live via falcosidekick's own logs showing no inbound event). Root cause:
+    # Falco's own startup log shows config.d/*.yaml loading BEFORE the main falco.yaml, so the
+    # main file's own `http_output.enabled: false` default was applied *after* and silently won
+    # over a config.d override -- replacing the file directly is the only override that actually
+    # takes effect last.
+    command:
+    - /usr/bin/falco
+    networks:
+    - aura-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+  falcosidekick:
+    image: falcosecurity/falcosidekick:latest
+    container_name: falcosidekick
+    restart: always
+    environment:
+    # Matches the real Valkey instance this whole ecosystem already uses (10.4.3.23, see
+    # core/db_manager.py / VALKEY_HOST) -- "casmarts-core-cache" is not a resolvable hostname
+    # inside aura-network.
+    - REDIS_ADDRESS=10.4.3.23:6379
+    # REDIS_STORAGEKEY is set here to document intent, but this falcosidekick build does not
+    # actually honor it -- confirmed live that every real event still lands in a plain "falco"
+    # list regardless of this value. centinela.py's process_falco_alerts() consumes from "falco"
+    # to match the real, observed behavior, not this variable.
+    - REDIS_STORAGEKEY=centinela:falco
+    networks:
+    - aura-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   wazuh-manager:
     image: wazuh/wazuh-manager:4.14.1
@@ -236,6 +276,77 @@ services:
         limits:
           memory: 1G
 
+  centinela-clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: centinela-clickhouse
+    restart: always
+    networks:
+      - aura-network
+    # No host port published -- only core/clickhouse_manager.py (running inside
+    # centinela-backend/centinela-ai on the same aura-network) needs to reach this, via the
+    # container name "centinela-clickhouse" (the module's own default CLICKHOUSE_HOST), matching
+    # how centinela-neo4j above is reached.
+    environment:
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # SonarQube Community Edition -- real code quality/security analysis for GitLab repos
+  # (auditors/auditor_sonarqube.py), separate from the SonarQube instance already running on
+  # another server (different DB: centinela_sonarqube_db on 10.4.3.23, not sonarqube_db, to
+  # avoid colliding with that unrelated instance). Requires vm.max_map_count>=262144 on the
+  # real host for its bundled Elasticsearch -- see .agent/STATE.md / CLAUDE.md for the
+  # one-time sysctl step; this service will crash-loop without it.
+  centinela-sonarqube:
+    image: sonarqube:26.8.0.126808-community
+    container_name: centinela-sonarqube
+    restart: always
+    networks:
+      - aura-network
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://10.4.3.23:5432/centinela_sonarqube_db
+      - SONAR_JDBC_USERNAME=${SONARQUBE_DB_USER:-centinela_sonarqube_user}
+      - SONAR_JDBC_PASSWORD=${SONARQUBE_DB_PASSWORD}
+    # No nproc ulimit here -- confirmed live this is a real Docker footgun, not a SonarQube
+    # requirement: RLIMIT_NPROC is accounted per REAL UID at the host kernel level, not
+    # per-container/namespace. centinela-ai/-backend/-sentinel already run as uid 1000
+    # ("appuser") with thousands of combined threads, and SonarQube's own image also runs
+    # as uid 1000 ("sonarqube") -- setting nproc=4096 here collided with that shared,
+    # already-exceeded host-wide limit and made the JVM fail to spawn its first thread
+    # (posix_spawn EAGAIN) before ever reaching vm.max_map_count/ES startup. Reproduced
+    # directly: `docker run --rm -u 1000:1000 --ulimit nproc=4096:4096 busybox sh -c
+    # "ulimit -u"` fails identically; the same command without the ulimit override reports
+    # "unlimited". nofile is a genuine SonarQube requirement and stays.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-logs:/opt/sonarqube/logs
+      - sonarqube-extensions:/opt/sonarqube/extensions
+    ports:
+      # Only for the one-time human bootstrap (password change, token generation) --
+      # all container-to-container traffic uses the container name over aura-network, same
+      # as centinela-neo4j's 7474 precedent. Coordinate with whoever manages the host
+      # firewall to restrict this port to internal/VPN sources, same as already documented
+      # for centinela-frontend's published port above.
+      - "9000:9000"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
   centinela-zeek:
     image: zeek/zeek:latest
     container_name: centinela-zeek
@@ -254,6 +365,9 @@ services:
           memory: 1G
 
 volumes:
+  sonarqube-data:
+  sonarqube-logs:
+  sonarqube-extensions:
   zap-cache:
     driver: local
     driver_opts:
@@ -261,6 +375,7 @@ volumes:
       device: tmpfs
       o: "size=150m"
   neo4j-data:
+  clickhouse-data:
   zeek-logs:
   wazuh-manager-config:
   wazuh-manager-data:

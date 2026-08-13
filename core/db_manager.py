@@ -111,14 +111,16 @@ def get_db_cursor(cursor_factory=None):
         except Exception as e:
             # rollback() itself raises InterfaceError on an already-dead connection (e.g. the
             # server closed it mid-transaction) -- guard it so that secondary failure doesn't
-            # mask the real exception `e` that callers need to see.
+            # mask the real exception `e` that callers need to see (re-raised below regardless).
+            # Still printed rather than a bare `pass`, so a genuinely unexpected rollback
+            # failure isn't invisible even though it's deliberately not re-raised (Rule #6).
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                print(f"⚠️ [DB-Manager] rollback() failed on an already-dead connection: {rollback_err}")
             raise e
         finally:
             try:
                 cur.close()
-            except Exception:
-                pass
+            except Exception as close_err:
+                print(f"⚠️ [DB-Manager] cur.close() failed (connection likely already dead): {close_err}")

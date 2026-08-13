@@ -5,7 +5,7 @@ import urllib.error
 import ssl
 
 print("[1] Script started")
-api_key = "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"
+api_key = os.environ["NVIDIA_NIM_API_KEY"]
 base_url = "https://integrate.api.nvidia.com/v1"
 model_name = "meta/llama-3.1-70b-instruct"
 

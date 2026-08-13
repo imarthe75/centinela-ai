@@ -142,8 +142,8 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
                             "line": node.lineno,
                             "description": f"Function '{node.name}' has cognitive complexity of {complexity} (max recommended: 15)."
                         })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ [Master-Auditor] Could not parse {file_path} for cognitive complexity: {e}")
 
     return findings
 

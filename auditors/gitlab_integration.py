@@ -110,13 +110,24 @@ class GitLabIntegrator:
             
             try:
                 from auditors import auditor_iac_k8s, auditor_cmmi_v3
-                iac_findings = auditor_iac_k8s.run_iac_scan(target_dir)
-                cmmi_findings = auditor_cmmi_v3.run_cmmi_audit(target_dir)
+                iac_findings = auditor_iac_k8s.run_iac_scan(target_dir, asset_id=asset_id)
+                cmmi_findings = auditor_cmmi_v3.run_cmmi_audit(target_dir, asset_id=asset_id)
             except Exception:
                 iac_findings = []
                 cmmi_findings = []
 
-            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings)
+            try:
+                from auditors import auditor_sonarqube
+                sonar_findings = auditor_sonarqube.run_sonarqube_audit(
+                    target_dir, asset_id=asset_id, repo_display_name=path_ns
+                )
+            except Exception as sonar_err:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [GitLab-Integrator] SonarQube audit error for {path_ns}: {sonar_err}")
+                sonar_findings = []
+
+            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings) + len(sonar_findings)
             summary["scanned_projects"] += 1
             summary["total_vulnerabilities"] += total_findings
             summary["projects_breakdown"].append({
@@ -127,6 +138,7 @@ class GitLabIntegrator:
                 "sast_count": len(sast_findings),
                 "sca_count": len(sca_findings),
                 "standards_count": len(std_findings),
+                "sonarqube_count": len(sonar_findings),
                 "total_vulnerabilities": total_findings
             })
 

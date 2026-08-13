@@ -58,8 +58,23 @@ CHECKS = [
 ]
 
 
-def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: str, command: str) -> str:
-    """Runs a single read-only shell command over SSH via Ansible, returns stripped stdout."""
+def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: str, command: str):
+    """
+    Runs a single read-only shell command over SSH via Ansible.
+
+    Returns the stripped stdout string on a genuine successful execution (which may legitimately
+    be an empty string for some commands), or None if the connection/execution itself never
+    succeeded (unreachable host, auth failure, ansible error, timeout, exception).
+
+    Real bug fixed here: this used to return "" for BOTH cases -- a command that ran and printed
+    nothing, AND a connection that failed outright -- with no way to tell them apart downstream.
+    Confirmed live against "Cisco 4 ESXI" (a VMware ESXi hypervisor -- VMkernel, not Linux, so
+    none of these Linux-specific commands could ever apply there in the first place) and 4 other
+    assets: every single one of the 11 checks silently became a real HIGH/CRITICAL "finding"
+    (e.g. "SSH root login NOT disabled") with the literal fallback text "(sin salida / comando no
+    aplicable)" as its only evidence -- a fabricated Grade F for a host that was never actually
+    reached, not a real audit result.
+    """
     key_file_path = None
     try:
         cmd = [
@@ -77,7 +92,7 @@ def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: 
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd="/app")
         if result.returncode not in (0,):
-            return ""
+            return None
         # Ansible's shell module output format: "<ip> | CHANGED | rc=0 >>\n<actual output>"
         lines = result.stdout.splitlines()
         out_lines = []
@@ -90,7 +105,7 @@ def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: 
                 out_lines.append(line)
         return "\n".join(out_lines).strip()
     except Exception:
-        return ""
+        return None
     finally:
         if key_file_path and os.path.exists(key_file_path):
             os.remove(key_file_path)
@@ -106,13 +121,37 @@ def run_cis_audit(asset_name: str, asset_ip: str) -> Dict[str, Any]:
     sys.path.insert(0, "/app")
     from sentinel import get_ansible_user, get_ssh_private_key, get_sudo_password
 
+    # Some infra_inventory endpoints are stored as full connection URIs
+    # (e.g. "postgresql://10.4.3.23:5432" for a Database asset), not a bare host -- passing that
+    # straight into the ansible inventory line would produce a malformed host entry and silently
+    # fail every check as unreachable. Strip scheme/credentials/port/path down to a bare host,
+    # same normalization already applied to `endpoint` elsewhere in this codebase (see
+    # get_asset_deep_details() in main.py).
+    asset_ip = str(asset_ip or "")
+    if "://" in asset_ip:
+        asset_ip = asset_ip.split("://", 1)[1]
+    asset_ip = asset_ip.split("@")[-1]  # drop any user@ prefix
+    asset_ip = asset_ip.split("/")[0]   # drop any path
+    asset_ip = asset_ip.split(":")[0]   # drop any port
+
     ansible_user = get_ansible_user(asset_name)
     ssh_key = get_ssh_private_key(asset_name)
     sudo_pass = get_sudo_password(asset_name) if not ssh_key else ""
 
     results = []
+    unreachable_count = 0
     for check_id, desc, command, expected, severity in CHECKS:
         output = _run_ssh_command(asset_ip, ansible_user, ssh_key, sudo_pass, command)
+
+        if output is None:
+            # Connection/execution genuinely never succeeded for this check -- not "checked and
+            # failed", genuinely "couldn't verify". Never counted as a real finding below.
+            unreachable_count += 1
+            results.append({
+                "id": check_id, "description": desc, "passed": None,
+                "severity": severity, "raw_output": None,
+            })
+            continue
 
         if check_id == "CIS-2.1":
             passed = bool(output) and output[-1] in ("0", "2", "4", "6")  # no write bit for "other"
@@ -132,13 +171,22 @@ def run_cis_audit(asset_name: str, asset_ip: str) -> Dict[str, Any]:
             "severity": severity, "raw_output": output[:200],
         })
 
-    total = len(results)
-    passed_count = sum(1 for r in results if r["passed"])
-    pct = round((passed_count / total) * 100, 1) if total else 0.0
-    grade = "A" if pct >= 90 else ("B" if pct >= 75 else ("C" if pct >= 50 else "F"))
+    verified = [r for r in results if r["passed"] is not None]
+    total = len(verified)
+    passed_count = sum(1 for r in verified if r["passed"])
+    # Real bug fixed alongside the None/"" distinction above: with 0 checks actually verified
+    # (host completely unreachable), this used to silently produce a fabricated "Grade F (0%)" --
+    # a specific, confident-looking score for a host that was never actually examined. Report the
+    # honest "no se pudo verificar" state instead of a fake grade for that case.
+    pct = round((passed_count / total) * 100, 1) if total else None
+    if total == 0:
+        grade = "SIN_CONEXION"
+    else:
+        grade = "A" if pct >= 90 else ("B" if pct >= 75 else ("C" if pct >= 50 else "F"))
 
     return {"asset_name": asset_name, "checks": results, "passed": passed_count,
-            "total": total, "percentage": pct, "grade": grade}
+            "total": total, "percentage": pct, "grade": grade,
+            "unreachable_count": unreachable_count}
 
 
 def log_cis_findings(asset_id: int, audit_result: Dict[str, Any]):
@@ -147,12 +195,16 @@ def log_cis_findings(asset_id: int, audit_result: Dict[str, Any]):
 
     with db_manager.get_db_cursor() as cur:
         for check in audit_result["checks"]:
-            if check["passed"]:
+            # passed is None -> connection/execution never actually succeeded for this check;
+            # never log this as a real finding (see _run_ssh_command()'s docstring for the real
+            # incident this fixes -- 55 fabricated HIGH/CRITICAL findings across 5 unreachable
+            # assets, all with the identical fallback evidence text, none of them real).
+            if check["passed"] is None or check["passed"]:
                 continue
             description = (
                 f"**Referencia CIS:** {check['id']}\n"
                 f"**Control:** {check['description']}\n"
-                f"**Resultado observado:** `{check['raw_output'] or '(sin salida / comando no aplicable)'}`"
+                f"**Resultado observado:** `{check['raw_output']}`"
             )
             # preserve_status=True: a check that keeps failing on every periodic re-run
             # shouldn't bounce an already-CORRELATED/reviewed finding back to OPEN each time --
@@ -162,12 +214,44 @@ def log_cis_findings(asset_id: int, audit_result: Dict[str, Any]):
                 "cis-benchmark", url_path=check["id"], open_status="OPEN", preserve_status=True
             )
 
-        # Always leave a real, honest completion marker (pass or fail) -- unlike the per-check
-        # findings above, this fires every run regardless of outcome, so the periodic scheduler
-        # in centinela.py can tell "never checked" apart from "checked N days ago, all green"
-        # by querying this row's detected_at instead of needing a dedicated schema column.
-        marker_desc = f"Auditoría CIS Benchmarks completada. Grade: {audit_result['grade']} ({audit_result['percentage']}%, {audit_result['passed']}/{audit_result['total']} checks aprobados)."
+        # Always leave a real, honest completion marker -- unlike the per-check findings above,
+        # this fires every run regardless of outcome, so the periodic scheduler in centinela.py
+        # can tell "never checked" apart from "checked N days ago" by querying this row's
+        # detected_at. Now also honestly distinguishes "genuinely audited" from "couldn't
+        # connect" instead of reporting a fabricated grade for the latter.
+        if audit_result["grade"] == "SIN_CONEXION":
+            marker_desc = (
+                f"Auditoría CIS Benchmarks: no se pudo establecer conexión SSH con el activo "
+                f"({audit_result['unreachable_count']}/{len(audit_result['checks'])} verificaciones sin respuesta). "
+                f"Ningún control fue evaluado -- no se generó calificación."
+            )
+        elif audit_result["unreachable_count"] > 0:
+            marker_desc = (
+                f"Auditoría CIS Benchmarks completada parcialmente. Grade: {audit_result['grade']} "
+                f"({audit_result['percentage']}%, {audit_result['passed']}/{audit_result['total']} checks aprobados; "
+                f"{audit_result['unreachable_count']} verificaciones no pudieron ejecutarse por falla de conexión)."
+            )
+        else:
+            marker_desc = f"Auditoría CIS Benchmarks completada. Grade: {audit_result['grade']} ({audit_result['percentage']}%, {audit_result['passed']}/{audit_result['total']} checks aprobados)."
         deduplication_engine.log_finding_deduplicated(
             cur, asset_id, "CIS-BENCHMARK-AUDIT", "Info", marker_desc,
             "cis-benchmark", url_path="CIS-BENCHMARK-AUDIT", open_status="NEW", preserve_status=True
+        )
+
+        # Persist the grade directly on infra_inventory so the dashboard can show it on every
+        # asset card/detail view without re-running SSH checks or parsing marker text on every
+        # page load. cis_percentage/cis_grade stay NULL for SIN_CONEXION (honest "not evaluated"
+        # state, not a fabricated 0%) -- mirrors the same real/honest distinction just fixed
+        # above in run_cis_audit()/log_cis_findings() itself.
+        cur.execute(
+            """
+            UPDATE infra_inventory
+            SET cis_grade = %s, cis_percentage = %s, cis_checked_at = NOW()
+            WHERE id = %s
+            """,
+            (
+                audit_result["grade"] if audit_result["grade"] != "SIN_CONEXION" else None,
+                audit_result["percentage"],
+                asset_id,
+            ),
         )
