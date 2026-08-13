@@ -66,7 +66,9 @@ def run_cmmi_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) 
     """Scans target directory for CMMI V3.0 Level 5 process and quality violations."""
     all_findings = []
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        # "tests" excluded too -- see the identical exclusion (and its reasoning) in
+        # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
             continue
         for file in files:
             if file.endswith((".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".php")):

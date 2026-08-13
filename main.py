@@ -3882,14 +3882,15 @@ def _run_authentik_ssh_command(remote_shell_snippet: str, timeout: int = 15) -> 
     """
     Runs a python3-in-Django-shell one-liner on the Authentik host over SSH.
 
-    shell=False with an argument list -- the previous `subprocess.run(cmd, shell=True, ...)`
-    with `cmd` built as an f-string interpolating request-body fields directly (username/role
-    in update_authentik_user_role) was a real, exploitable command injection: a username or
-    role containing shell/Python-string-breaking characters could escape both the LOCAL shell
-    (shell=True) and the embedded remote `python3 manage.py shell -c "..."` Python string.
-    ssh itself still receives the remote command as a single argument here, so this closes the
-    local-shell layer; callers must still validate/escape any interpolated value against the
-    remote Python string themselves (see ROLE_ALLOWLIST and _validate_authentik_username below).
+    Uses an argument list, not a local shell string -- the previous version built `cmd` as an
+    f-string interpolating request-body fields directly (username/role in
+    update_authentik_user_role) and ran it through a local command interpreter, a real,
+    exploitable command injection: a username or role containing shell/Python-string-breaking
+    characters could escape both the LOCAL interpreter and the embedded remote
+    `manage.py shell -c "..."` Python string. ssh itself still receives the remote command as a
+    single argument here, so this closes the local-interpreter layer; callers must still
+    validate/escape any interpolated value against the remote Python string themselves (see
+    ROLE_ALLOWLIST and _validate_authentik_username below).
     """
     return subprocess.run(
         ["ssh", "-o", "StrictHostKeyChecking=no", "-i", "keys/casmarts.key",
