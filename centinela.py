@@ -3,6 +3,7 @@ import time
 import json
 import redis
 import psycopg2
+import concurrent.futures
 from psycopg2.extras import RealDictCursor
 from core import db_manager
 try:
@@ -172,16 +173,58 @@ if not (groq_llm or nvidia_llm or gemini_client or openrouter_llm):
     print("⚠️ [Centinela-AI] No AI provider initialized (Groq/Gemini/NVIDIA/OpenRouter all unavailable or missing keys). Correlation will use the heuristic engine only.")
 
 
+# Shared pool for imposing a true wall-clock deadline on each provider call, on top of
+# whatever timeout each client is already configured with. max_workers is generous (I/O-bound
+# calls, not CPU-bound) since several independent background loops (correlation, CIS, CTI,
+# heuristics) can each call call_ai_cascade() around the same time.
+_cascade_executor = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="ai-cascade")
+
+def _call_with_hard_deadline(fn, timeout_s, provider_name):
+    """
+    Runs fn() with a true wall-clock deadline via a worker thread, independent of whatever
+    idle/read-timeout semantics the underlying HTTP client uses internally.
+
+    Real incident, 2026-08-13: a live OpenRouter call hung for 30+ minutes despite
+    request_timeout=90 configured on the ChatOpenAI client. Confirmed live, isolated from any
+    external factor, that the client's own timeout DOES fire correctly against a true
+    "TCP-connected, server never responds" hang (tested against a real hang-simulating local
+    TCP listener -- fired at exactly the configured 15s). That rules out a client
+    misconfiguration. The much more likely real cause: OpenRouter's free-tier gateway trickling
+    periodic keep-alive/SSE-heartbeat bytes while a backed-up shared model churns, which resets
+    httpx's *idle* read-timeout clock on every byte without the response ever completing -- a
+    known real failure mode for streaming-capable HTTP APIs, not something any per-request
+    `timeout=` kwarg protects against on its own.
+
+    future.result(timeout=...) from a separate worker thread doesn't care whether bytes are
+    trickling in or not -- it fires at the wall-clock deadline regardless. The worker thread
+    itself is abandoned (not killed -- Python cannot force-kill a thread) if it doesn't finish
+    in time; that leaks one thread's resources until the underlying network call eventually
+    errors or closes on its own, which is a real but bounded cost, in exchange for never again
+    blocking the whole correlation loop for 30+ minutes on a single stuck call.
+    """
+    future = _cascade_executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError:
+        raise TimeoutError(f"{provider_name} exceeded hard {timeout_s}s wall-clock deadline (client-level timeout did not fire -- likely a keep-alive/heartbeat trickle)")
+
+
 def call_ai_cascade(prompt_text, want_json=True):
     """
     Tries each configured LLM provider in order -- Groq -> Google Gemini -> NVIDIA NIM ->
     OpenRouter -- and returns the text of the first one that actually responds. Returns None if
     every provider is unavailable/unconfigured or errors out (invalid key, rate limit, timeout,
     etc), in which case the caller falls back to the deterministic heuristic engine.
+
+    Every provider call is wrapped in _call_with_hard_deadline() with a hard ceiling somewhat
+    above that provider's own configured client-level timeout (Groq 30s/1 retry -> 70s hard cap;
+    Gemini 30s -> 40s; NVIDIA 90s/0 retries -> 100s; OpenRouter 90s/0 retries -> 100s) -- a
+    second, independent safety net after the real 2026-08-13 incident showed the client's own
+    timeout can be silently defeated by a server-side keep-alive trickle.
     """
     if groq_llm:
         try:
-            response = groq_llm.invoke(prompt_text)
+            response = _call_with_hard_deadline(lambda: groq_llm.invoke(prompt_text), 70, "Groq")
             content = (response.content if hasattr(response, "content") else str(response)).strip()
             if content:
                 print("🧠 [Centinela-AI] Using LLM provider 'groq'...")
@@ -193,10 +236,9 @@ def call_ai_cascade(prompt_text, want_json=True):
         try:
             from google.genai import types
             config = types.GenerateContentConfig(response_mime_type="application/json") if want_json else None
-            response = gemini_client.models.generate_content(
-                model=google_model_name,
-                contents=prompt_text,
-                config=config
+            response = _call_with_hard_deadline(
+                lambda: gemini_client.models.generate_content(model=google_model_name, contents=prompt_text, config=config),
+                40, "Gemini"
             )
             content = response.text.strip()
             if content:
@@ -207,7 +249,7 @@ def call_ai_cascade(prompt_text, want_json=True):
 
     if nvidia_llm:
         try:
-            response = nvidia_llm.invoke(prompt_text)
+            response = _call_with_hard_deadline(lambda: nvidia_llm.invoke(prompt_text), 100, "NVIDIA NIM")
             content = (response.content if hasattr(response, "content") else str(response)).strip()
             if content:
                 print("🧠 [Centinela-AI] Using LLM provider 'nvidia_nim'...")
@@ -217,7 +259,7 @@ def call_ai_cascade(prompt_text, want_json=True):
 
     if openrouter_llm:
         try:
-            response = openrouter_llm.invoke(prompt_text)
+            response = _call_with_hard_deadline(lambda: openrouter_llm.invoke(prompt_text), 100, "OpenRouter")
             content = (response.content if hasattr(response, "content") else str(response)).strip()
             if content:
                 print("🧠 [Centinela-AI] Using LLM provider 'openrouter'...")
@@ -1776,6 +1818,28 @@ def run_cis_benchmark_loop():
             time.sleep(60)
 
 
+def run_wazuh_discovery_loop():
+    """
+    Periodically runs discovery.discover_wazuh_agents() -- confirmed live (2026-08-13) that this
+    function, despite being real and working correctly, was never actually called anywhere in the
+    running system; it only ever ran when a human manually exec'd it in a container. That means
+    any agent enrolled via the zero-trust curl-one-liner install path (main.py's
+    /api/inventory response includes a one-liner that self-enrolls with Wazuh directly, with no
+    Python-side asset_id link at install time -- see hostname column notes in discovery.py) would
+    sit enrolled in Wazuh but never actually get linked to (or created in) infra_inventory until
+    someone remembered to run discovery by hand. All of this function's DB writes are simple
+    upserts keyed by real IP/hostname/asset_name matches (see discovery.py) -- safe to run
+    unattended on a schedule, same risk profile as the other periodic loops here.
+    """
+    from discovery import discovery
+    while True:
+        try:
+            discovery.discover_wazuh_agents()
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error in Wazuh discovery loop: {e}")
+        time.sleep(600)
+
+
 def run_cti_correlation_loop():
     """
     Real CTI/IoC correlation against abuse.ch's Feodo Tracker (live, active C2 server IPs).
@@ -1880,6 +1944,10 @@ def main_loop():
     # Real CIS Level 1 hardening checks over SSH, previously on-demand only
     cis_thread = threading.Thread(target=run_cis_benchmark_loop, daemon=True)
     cis_thread.start()
+
+    # Wazuh agent discovery -- previously never actually scheduled anywhere (manual-exec only)
+    wazuh_discovery_thread = threading.Thread(target=run_wazuh_discovery_loop, daemon=True)
+    wazuh_discovery_thread.start()
 
     # External Auditor Thread
     from auditors import auditor_ext

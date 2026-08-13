@@ -83,7 +83,7 @@ def audit_iso_25010_quality(file_path: str, content: str) -> List[Dict[str, Any]
     return findings
 
 
-def run_compliance_standards_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+def run_compliance_standards_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
     """Runs full Master Audit Standards compliance check across target codebase."""
     all_findings = []
 

@@ -867,18 +867,18 @@
 
     <section id="estado-actual">
       <h2>Estado técnico actual</h2>
-      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (11 de agosto de 2026):</p>
+      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (13 de agosto de 2026):</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Indicador</th><th>Valor actual</th></tr></thead>
           <tbody>
-            <tr><td>Activos monitoreados</td><td>83 (servidores, bases de datos, repositorios GitLab)</td></tr>
-            <tr><td>Hallazgos activos reales</td><td>3,448</td></tr>
-            <tr><td>Hallazgos críticos abiertos</td><td>223</td></tr>
-            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>8</td></tr>
-            <tr><td>Incumplimientos de plazo de corrección (SLA) — críticos</td><td>18</td></tr>
+            <tr><td>Activos monitoreados</td><td>82 (servidores, bases de datos, repositorios GitLab)</td></tr>
+            <tr><td>Hallazgos activos reales</td><td>8,799 (sube frente al 11 de agosto: varios auditores de auto-diagnóstico llevaban escaneando en silencio una ruta que no existe dentro del contenedor — al corregirlo aparecieron cientos de hallazgos reales, previamente invisibles, del propio código de Centinela-AI)</td></tr>
+            <tr><td>Hallazgos críticos abiertos</td><td>1,285</td></tr>
+            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>17</td></tr>
+            <tr><td>Incumplimientos de plazo de corrección (SLA) — críticos</td><td>46</td></tr>
             <tr><td>Proveedores de IA en cadena de respaldo</td><td>4 (Groq → Gemini → NVIDIA → OpenRouter)</td></tr>
-            <tr><td>Cobertura de pruebas automatizadas</td><td>30/30 pasan</td></tr>
+            <tr><td>Cobertura de pruebas automatizadas</td><td>62/62 pasan (sube de 30/30; incluye una falla real detectada y corregida en la sesión del 13 de agosto)</td></tr>
           </tbody>
         </table>
       </div>
@@ -895,11 +895,11 @@
           </tbody>
         </table>
       </div>
-      <p class="dim">Pendiente conocido: la cuenta de servicio <code>monitor</code> aún no tiene acceso Developer al grupo GitLab <code>arquitectura/</code> (el intento de otorgarlo devolvió <code>403 Forbidden</code> pese a usar una cuenta con rol Maintainer) — el escaneo automatizado de GitLab sigue usando un token personal en su lugar. Requiere revisión por un administrador de la instancia GitLab.</p>
+      <p class="dim">Resuelto (13 de agosto de 2026): la cuenta de servicio <code>monitor</code> ya tiene rol Developer en el grupo GitLab <code>arquitectura/</code>. Verificado en vivo — no solo por la interfaz de GitLab — clonando los 18 proyectos reales del grupo con el token configurado: 18/18 exitosos (antes, cada uno de estos mismos repositorios devolvía <code>403 Forbidden</code>). El ciclo periódico de escaneo ya venía usando ese mismo token y tiene <code>last_audit</code> real de hoy en los 18 proyectos — no requirió ningún cambio de código.</p>
     </section>
 
     <footer>
-      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-11
+      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-13
     </footer>
   </main>
 </div>

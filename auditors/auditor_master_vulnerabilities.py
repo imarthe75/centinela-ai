@@ -200,7 +200,7 @@ def scan_iac_dockerfile(file_path: str, content: str) -> List[Dict[str, Any]]:
     return findings
 
 
-def run_master_vulnerability_scan(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
     """Runs SAST and DevSecOps vulnerability scan across target directory."""
     all_findings = []
     

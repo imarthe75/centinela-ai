@@ -62,7 +62,7 @@ def audit_cmmi_v3_level5(file_path: str, content: str) -> List[Dict[str, Any]]:
 
     return findings
 
-def run_cmmi_audit(target_dir: str = "/opt/centinela-ai", asset_id: int = None) -> List[Dict[str, Any]]:
+def run_cmmi_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
     """Scans target directory for CMMI V3.0 Level 5 process and quality violations."""
     all_findings = []
     for root, _, files in os.walk(target_dir):

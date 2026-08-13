@@ -37,11 +37,11 @@ def get_wazuh_manager_ip():
     except Exception:
         return "10.4.3.34"
 
-def install_wazuh_agent_background(endpoint: str, user: str, password: Optional[str] = None, ssh_key: Optional[str] = "/app/keys/casmarts.key"):
+def install_wazuh_agent_background(endpoint: str, user: str, password: Optional[str] = None, ssh_key: Optional[str] = "/app/keys/casmarts.key", asset_name: Optional[str] = None):
     """Executes Ansible to install and configure Wazuh Agent on the remote host via Password or SSH Key in a background thread."""
     def target():
         manager_ip = get_wazuh_manager_ip()
-        print(f"🚀 [Centinela-Backend] Background Ansible Wazuh Agent deployment started for {endpoint} pointing to Manager {manager_ip}...")
+        print(f"🚀 [Centinela-Backend] Background Ansible Wazuh Agent deployment started for {asset_name or endpoint} ({endpoint}) pointing to Manager {manager_ip}...")
         
         install_script = f"export WAZUH_MANAGER='{manager_ip}' && (apt-get update && apt-get install -y curl gnupg && curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import && chmod 644 /usr/share/keyrings/wazuh.gpg && echo 'deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main' | tee /etc/apt/sources.list.d/wazuh.list && apt-get update && apt-get install -y wazuh-agent) || (curl -sL -o /tmp/wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.7.2-1_amd64.deb && dpkg -i /tmp/wazuh-agent.deb) && (sed -i 's/<address>.*<\\/address>/<address>{manager_ip}<\\/address>/g' /var/ossec/etc/ossec.conf || true) && systemctl daemon-reload && systemctl enable wazuh-agent && systemctl restart wazuh-agent"
         
@@ -79,10 +79,44 @@ def install_wazuh_agent_background(endpoint: str, user: str, password: Optional[
                 print(f"✅ [Ansible] Wazuh Agent installed on {endpoint} using SSH Key authentication.")
 
         if success:
+            # Capture the real OS hostname the freshly-enrolled Wazuh agent will register
+            # itself under, at the one moment we have both a known-good SSH session AND the
+            # asset_id this host belongs to already in hand. Wazuh Agent Discovery (discovery.py)
+            # previously had no reliable way to link a later `agent_control -l` hostname back to
+            # this asset except substring-guessing the asset_name (documented gap: hostnames with
+            # zero lexical relation to the asset's business name, e.g. real host "kiwi" for asset
+            # "prism", can't be substring-matched at all and would silently create a duplicate
+            # asset row). Recording the ground-truth mapping here closes that gap at the source
+            # instead of guessing it later from a name string.
+            real_hostname = None
+            try:
+                hn_cmd = ["ansible", "all", "-i", f"{endpoint},", "-m", "command", "-a", "hostname",
+                          "-e", f"ansible_user={user}", "-e", "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"]
+                if password:
+                    hn_cmd += ["-e", f"ansible_ssh_pass={password}"]
+                elif ssh_key and os.path.exists(ssh_key):
+                    hn_cmd += ["-e", f"ansible_ssh_private_key_file={ssh_key}"]
+                hn_res = subprocess.run(hn_cmd, capture_output=True, text=True, timeout=60)
+                if hn_res.returncode == 0:
+                    for line in hn_res.stdout.splitlines():
+                        line = line.strip()
+                        if line and "SUCCESS" not in line and "CHANGED" not in line and ">>" not in line and "|" not in line:
+                            real_hostname = line
+                            break
+            except Exception as hn_e:
+                print(f"⚠️ [Centinela-Backend] Could not capture real hostname for {endpoint}: {hn_e}")
+
             try:
                 with db_manager.get_db_cursor() as cur:
-                    cur.execute("UPDATE public.infra_inventory SET status = 'active' WHERE endpoint = %s", (endpoint,))
-                print(f"🔄 [Centinela-Backend] Database status set to active for {endpoint}.")
+                    if real_hostname:
+                        cur.execute(
+                            "UPDATE public.infra_inventory SET status = 'active', hostname = %s WHERE endpoint = %s",
+                            (real_hostname, endpoint)
+                        )
+                        print(f"🔄 [Centinela-Backend] Database status set to active for {endpoint} (real hostname: {real_hostname}).")
+                    else:
+                        cur.execute("UPDATE public.infra_inventory SET status = 'active' WHERE endpoint = %s", (endpoint,))
+                        print(f"🔄 [Centinela-Backend] Database status set to active for {endpoint} (hostname capture failed, will rely on discovery fallback).")
             except Exception as db_e:
                 print(f"⚠️ [Centinela-Backend] Failed to update status for {endpoint}: {db_e}")
         else:
@@ -436,7 +470,8 @@ async def add_inventory_item(item: AssetModel):
                 endpoint=item.endpoint,
                 user=ansible_user,
                 password=item.vault_sudo_token,
-                ssh_key="/app/keys/casmarts.key"
+                ssh_key="/app/keys/casmarts.key",
+                asset_name=item.asset_name
             )
 
         # Generar comando One-Liner para instalación local sin credenciales (Zero-Trust NIST SP 800-53)
@@ -2594,27 +2629,6 @@ async def wazuh_agent_action(agent_id: str, action: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/wazuh/agent/{agent_id}/info")
-async def get_wazuh_agent_info(agent_id: str):
-    """
-    Returns detailed agent metrics including OS platform, version, registration date and FIM syscheck status.
-    """
-    try:
-        cmd = ["docker", "exec", "casmarts-core-wazuh-manager", "/var/ossec/bin/agent_control", "-i", agent_id]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if res.returncode == 0:
-            lines = res.stdout.splitlines()
-            parsed = {}
-            for line in lines:
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    parsed[k.strip().lower().replace(" ", "_")] = v.strip()
-            return {"agent_id": agent_id, "raw": res.stdout, "parsed": parsed}
-        else:
-            raise Exception(res.stderr or "Agente no encontrado en Wazuh Manager")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/itdr/authentik/webhook")
 async def authentik_itdr_webhook(payload: dict):
     """
@@ -2732,13 +2746,27 @@ async def trigger_gitlab_scan(body: GitLabScanModel):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audit/full-spectrum")
-async def trigger_full_spectrum_audit(target_dir: Optional[str] = "/opt/centinela-ai"):
+async def trigger_full_spectrum_audit(target_dir: Optional[str] = "/app"):
     """Triggers native SAST, SCA, DevSecOps/IaC, Master Audit Standards, and CSPM Cloud-Native check."""
     try:
         from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards, auditor_cspm_cloud
-        sast = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir)
-        sca = auditor_sca_dependencies.run_sca_audit(target_dir)
-        standards = auditor_compliance_standards.run_compliance_standards_audit(target_dir)
+
+        # Every finding these auditors log needs a real asset_id -- without one, the row can
+        # never JOIN to infra_inventory in the main AI-correlation query, so it silently never
+        # gets analyzed and never appears in any asset-scoped dashboard view (confirmed live:
+        # 181 orphaned asset_id=NULL rows had piled up from repeat calls to this endpoint,
+        # all with real url_path values like "package.json:1" proving they came from exactly
+        # this self-audit path). Same root cause CLAUDE.md already documents for the periodic
+        # idle-branch scan, just via this separate on-demand endpoint, which was never given
+        # the same fix. The endpoint's own default of "/opt/centinela-ai" was a second, deeper
+        # bug on top of that -- a host-side path that doesn't exist inside any container (the
+        # real bind mount is /app), so os.walk() on it silently returned zero findings with no
+        # error every time the default was used.
+        asset_id = resolve_self_audit_asset_id(target_dir)
+
+        sast = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir, asset_id=asset_id)
+        sca = auditor_sca_dependencies.run_sca_audit(target_dir, asset_id=asset_id)
+        standards = auditor_compliance_standards.run_compliance_standards_audit(target_dir, asset_id=asset_id)
         cspm = auditor_cspm_cloud.audit_cloud_iac_and_cspm(target_dir)
         return {
             "status": "success",
@@ -2781,13 +2809,37 @@ async def audit_shadow_apis():
     """Runs Shadow API & OpenAPI Drift Auditor."""
     try:
         from auditors.auditor_shadow_api import run_shadow_api_audit
-        findings = run_shadow_api_audit()
+        asset_id = resolve_self_audit_asset_id("/app")
+        findings = run_shadow_api_audit(asset_id=asset_id)
         return {"status": "success", "count": len(findings), "findings": findings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def resolve_self_audit_asset_id(target_dir: str) -> Optional[int]:
+    """
+    Resolve-or-create a stable asset row for an on-demand audit of a local directory, so
+    findings can be attributed to a real asset_id instead of landing as NULL (which silently
+    excludes them from the main AI-correlation query's JOIN and every asset-scoped dashboard
+    view -- confirmed live: 181 orphaned rows had piled up from /api/audit/full-spectrum before
+    this same fix was applied there). Mirrors gitlab_integration.py's own per-repo pattern.
+    """
+    try:
+        asset_label = "Centinela-AI (Self-Audit)" if target_dir == "/app" else f"Self-Audit: {target_dir}"
+        with db_manager.get_db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO public.infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status)
+                VALUES (%s, 'GitLab-Repo', %s, 'MEDIUM', NOW(), 'monitored')
+                ON CONFLICT (asset_name) DO UPDATE SET last_audit = NOW(), status = 'monitored'
+                RETURNING id
+            """, (asset_label, target_dir))
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception as asset_err:
+        print(f"⚠️ [Self-Audit] Could not resolve self-audit asset_id for {target_dir}: {asset_err}")
+        return None
+
 @app.get("/api/audit/llm-governance")
-async def audit_llm_governance(target_dir: Optional[str] = "/opt/centinela-ai"):
+async def audit_llm_governance(target_dir: Optional[str] = "/app"):
     """Runs OWASP LLM & AI Governance Auditor."""
     try:
         from auditors.auditor_llm_governance import run_llm_governance_audit
@@ -2797,11 +2849,12 @@ async def audit_llm_governance(target_dir: Optional[str] = "/opt/centinela-ai"):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audit/iac-k8s")
-async def audit_iac_k8s(target_dir: Optional[str] = "/opt/centinela-ai"):
+async def audit_iac_k8s(target_dir: Optional[str] = "/app"):
     """Runs Terraform & Kubernetes manifest Auditor."""
     try:
-        from auditors.auditor_iac_k8s import run_iac_k8s_audit
-        findings = run_iac_k8s_audit(target_dir)
+        from auditors.auditor_iac_k8s import run_iac_scan
+        asset_id = resolve_self_audit_asset_id(target_dir)
+        findings = run_iac_scan(target_dir, asset_id=asset_id)
         return {"status": "success", "count": len(findings), "findings": findings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

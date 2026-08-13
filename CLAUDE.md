@@ -546,12 +546,12 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
      were deleted afterward, matching this project's standing rule of never triggering actual
      host containment outside a deliberate human decision in the real SOAR UI.
 
-  **Still open**: NVIDIA_NIM_API_KEY and GOOGLE_API_KEY were replaced with working keys, an
-  OpenRouter key was added as a 4th tier, and the resulting 4-provider cascade
-  (Groq → Gemini → NVIDIA → OpenRouter) is now verified live end-to-end (see item 5) — the
-  remaining ~629 generic-heuristic findings from the earlier backfill (item 6) can now be re-run
-  for real, since real headroom exists across 3 fallback tiers beyond Groq's small daily quota;
-  that re-run hasn't been launched yet.
+  **Resolved 2026-08-13**: the deferred re-run was launched for real. By the time it was
+  launched, natural traffic through the now-fixed cascade had already worked the backlog down
+  from ~629 to 63 remaining rows (re-detections, GitLab re-scans, etc. flowing through the
+  already-fixed pipeline in the days between 2026-08-07 and 2026-08-13) — confirmed live by
+  re-querying the exact marker text this whole backfill targets before launching anything. See
+  the 2026-08-13 entry below for the real run and its evidence.
 
 - ~~Some AI-generated ZAP remediation scripts contained no real content~~ — **resolved
   2026-08-06**, in response to a real user report ("para algunos zap no estaba generando
@@ -741,16 +741,40 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   was removed (`manage_agents -r`) and the agent's `client.keys` cleared to force a clean
   re-enrollment. All 7 SERVER assets now confirmed with an active Wazuh agent, both locally
   (`systemctl is-active`) and from the manager (`agent_control -l`).
-- **`discovery.py`'s fuzzy asset-name matching produced a real false positive**: the Wazuh agent
-  named `compramex` (an OS hostname) substring-matched a *GitLab repo* asset
-  (`GitLab/edomex-casmart/compramex/...`, itself named after the same product) purely because
-  the word "compramex" appears in both, wrongly tagging that repo with a Wazuh `agent_id`.
-  Separately, the agent named `kiwi` (prism's real hostname) matched nothing at all since
-  "kiwi" and "prism" share no substring, and would have created a duplicate asset on the next
-  discovery run. Fixed by restricting the fuzzy tier to `SERVER`/`AppServer` assets with an
-  agent name ≥5 chars — this closes the GitLab false-positive but **does not** fix the "hostname
-  has zero lexical relation to the business name" case; that needs the hostname↔asset_id
-  mapping captured at install time instead of guessed later from a name string.
+- ~~`discovery.py`'s fuzzy asset-name matching produced a real false positive~~ — **resolved
+  2026-08-13**. The Wazuh agent named `compramex` (an OS hostname) substring-matched a *GitLab
+  repo* asset (`GitLab/edomex-casmart/compramex/...`, itself named after the same product)
+  purely because the word "compramex" appears in both, wrongly tagging that repo with a Wazuh
+  `agent_id`. Separately, the agent named `kiwi` (prism's real hostname) matched nothing at all
+  since "kiwi" and "prism" share no substring, and would have created a duplicate asset on the
+  next discovery run. Restricting the fuzzy tier to `SERVER`/`AppServer` assets with an agent
+  name ≥5 chars closed the GitLab false-positive but never fixed the "hostname has zero lexical
+  relation to the business name" case — this needed the hostname↔asset_id mapping captured at
+  install time instead of guessed later from a name string, which is what actually landed today:
+  added a real `hostname` column to `infra_inventory`; `install_wazuh_agent_background()`
+  (`main.py`) now runs a real `ansible ... -m command -a hostname` immediately after a
+  successful install and stores the ground-truth hostname against the asset it just provisioned;
+  `discover_wazuh_agents()` (`discovery.py`) checks this column as an exact-match tier before
+  falling back to name matching and the fuzzy tier. Verified live end-to-end: read-only
+  `ansible ... -m command -a hostname` against all 5 currently-reachable hosts confirmed real
+  hostnames (`kiwi`→10.4.3.30/prism, `chatbotpdf`→10.4.3.31/chat, `casmartsuperset`→10.4.3.25,
+  `casmartbd`→10.4.3.23, `authentik`→10.4.3.208), backfilled onto the matching `infra_inventory`
+  rows by IP, then a real `discover_wazuh_agents()` run correctly resolved all 8 currently
+  Wazuh-enrolled agents (including `kiwi`/`chatbotpdf`, the exact zero-lexical-overlap case that
+  was broken) to their correct existing assets via the new hostname tier, with zero new
+  duplicate rows created (`infra_inventory` row count unchanged before/after: 81).
+  **Also found and fixed while verifying this, unrelated to the hostname gap itself**:
+  `discover_wazuh_agents()`/`discover_core_assets()` were real, correct, working functions that
+  were never actually called anywhere in the running system — no periodic loop, no startup
+  hook, nothing; they only ever ran when a human manually `docker exec`'d them (which is
+  presumably how every prior asset-discovery entry in this file's history actually happened).
+  Any agent enrolled via the zero-trust curl-one-liner install path (`main.py`'s
+  `/api/inventory` response includes a self-enrolling one-liner with no Python-side asset link
+  at install time) would sit enrolled in Wazuh but never get linked to `infra_inventory` until
+  someone remembered to run discovery by hand. Added `run_wazuh_discovery_loop()` in
+  `centinela.py` (real 10-minute interval, calls the exact same `discover_wazuh_agents()` that
+  was just verified live above) and wired it into the same startup thread list as the other
+  periodic loops (CIS Benchmarks, CTI correlation, threat-intel enrichment).
 - ~~GitLab project scanning has no token~~ — **resolved 2026-08-04**: user supplied several
   GitLab PATs; tested each against `GET /api/v4/user` and `/api/v4/personal_access_tokens/self`
   to find valid ones. First pass used `sonar_pat` (user `monitor`, `api`/`read_repository`
@@ -763,6 +787,19 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
   named admin's personal token for an automated integration isn't ideal long-term — cleaner fix
   would be granting the `monitor` service account Developer access to the `arquitectura/` group
   in GitLab and switching back, but that's a GitLab-side permission change, not a code fix.
+  ~~**Residual gap (Developer role on `monitor`)**~~ — **resolved 2026-08-13**: a GitLab admin
+  granted `monitor` the `Developer` role directly on the `arquitectura/` group (confirmed via a
+  real screenshot of GitLab's own Group Members page — `Monitor @monitor` now shows role
+  `Developer`, direct member via `Administrator`). Verified live, not just from the screenshot:
+  `GITLAB_TOKEN` in `.env` already resolves to `monitor` (`GET /api/v4/user` → `username:
+  "monitor"`) — a real, comprehensive clone test of all 18 `arquitectura/` projects
+  (`git clone` per repo, not just the API listing) returned **18/18 success, 0 failures**, the
+  exact group that used to 403 every single clone attempt for this account. Cross-checked
+  against `infra_inventory`: all 18 already carry a real `last_audit` timestamp from earlier
+  today, confirming the existing periodic `GitLabIntegrator.scan_all_projects()` loop had
+  already been scanning every one of them successfully with no code or config change needed —
+  the permission grant alone was the fix. `docs-public/manual-tecnico.html`'s matching
+  "Pendiente conocido" note removed.
 - ~~`sentinel.py`'s remediation execution was password-only~~ — **resolved 2026-08-04**: added
   `get_ssh_private_key()` (reads the `ssh_private_key` field `store_vault_secret()` already
   wrote to `casmarts/ansible/{asset_name}`, which nothing previously read back). The generic
@@ -938,3 +975,314 @@ docker exec centinela-backend bash -c "cd /app && ansible all -i inventory.ini -
      script's *logic* was validated against the real host structure via read-only inspection
      (real bind-mount path, real container name, real absence of system nginx), but the actual
      apply-and-verify run needs to happen via a real approval in the SOAR UI.
+
+## Session 2026-08-13: post-reboot recovery + full gap sweep
+
+The host had rebooted (`uptime` showed 11 minutes at session start) and the whole stack was
+down — no restart policy had brought it back automatically. Brought everything back up
+(`docker compose up -d`, cleared `__pycache__`, restarted the three Python services), confirmed
+`/api/health` fully green, then worked through every open item still listed in this file plus a
+fresh gap sweep, in response to a direct instruction to keep going until bugs/gaps/debt were
+covered, not just the one deferred backfill. All of the below is verified live against the real
+`centinela_db` and the real running containers — not inferred from reading the code.
+
+1. **Generic-heuristic backfill (the deferred item from 2026-08-07) — launched for real.**
+   Re-checking the exact marker text this backfill targets found only 63 rows left (not the
+   ~629 originally estimated — natural traffic through the already-fixed cascade over the
+   intervening days had already worked most of the backlog down). Wrote
+   `scratch/backfill_generic_heuristic_2026-08-13.py`, which re-runs `correlate_vulnerability()`
+   for each of the 63 rows through the real 4-provider cascade and writes the result back.
+   First attempt hit a self-inflicted bug: the `LIKE` patterns for the DAST/repo generic markers
+   were missing a leading `%` (the real stored text is `**Riesgo Detectado:** Hallazgo DAST sin
+   regla determinística...`, not starting at position 0), so the first run matched 0 rows —
+   caught immediately by cross-checking against a direct DB query, fixed, reran. Verified live
+   mid-run: Groq's small daily quota was already exhausted (expected, documented elsewhere in
+   this file), and the cascade correctly fell through to Gemini/NVIDIA/OpenRouter every time,
+   landing real, specific, non-generic content (e.g. a `ZAP-10109` finding on `casmart_authentik`
+   correctly upgraded to "Modern Web Application (Client-Side Rendering) Discovery" instead of
+   the generic "sin regla determinística" text). No non-JSON prose response was observed in the
+   portion completed live (Gemini's native JSON mode absorbed most of the fallback traffic), so
+   the separately-tracked `extract_section()` regex-tuning item below is still blocked on real
+   data, not addressed this session.
+
+2. **`discovery.py`'s hostname↔asset_id gap — resolved.** See the updated entry earlier in this
+   file (search "hostname column") for the full write-up: added a real `hostname` column,
+   captured at Wazuh-install time via a real `ansible ... -m command -a hostname`, checked by
+   `discover_wazuh_agents()` as an exact-match tier before the fuzzy substring fallback. Verified
+   live against all 5 currently-reachable hosts with zero new duplicate `infra_inventory` rows.
+
+3. **`discover_wazuh_agents()`/`discover_core_assets()` were never actually scheduled anywhere**
+   — real, correct, working code that only ever ran via manual `docker exec`. Added
+   `run_wazuh_discovery_loop()` (10-minute interval) to `centinela.py`'s startup thread list.
+
+4. **Four on-demand audit endpoints defaulted to a host-side path that doesn't exist inside any
+   container.** `target_dir` defaulted to `"/opt/centinela-ai"` in `/api/audit/full-spectrum`,
+   `/api/audit/llm-governance`, `/api/audit/iac-k8s`, and the underlying `run_master_vulnerability_scan()`/
+   `run_sca_audit()`/`run_compliance_standards_audit()`/`run_iac_scan()`/`run_cmmi_audit()`/
+   `audit_cloud_iac_and_cspm()`/`run_llm_governance_audit()`/`run_shadow_api_audit()` function
+   signatures themselves (8 functions total) — the real bind mount in every one of the three
+   Python containers is `/app` (per this file's own Architecture section), confirmed live
+   (`ls /opt/centinela-ai` inside `centinela-backend` → "No such file or directory"). `os.walk()`
+   on a nonexistent path silently returns nothing, no exception — so every one of these
+   endpoints had always silently returned "0 findings" on its own default, with no error, for as
+   long as they've existed. Fixed all defaults to `/app`. Confirmed live before/after:
+   `/api/audit/full-spectrum` went from `{"sast":0,"sca":0,"standards":0,"cspm":0}` to
+   `{"sast":121,"sca":77,"standards":71,"cspm":1,"total":270}` on the exact same call with no
+   other change. `/api/audit/shadow-api` went from 0 to 3 real findings.
+5. **`/api/audit/iac-k8s` has been throwing an `ImportError` on every single call since it was
+   written.** It imported `run_iac_k8s_audit` from `auditors.auditor_iac_k8s` — that name has
+   never existed there (only `run_iac_scan` does). Confirmed live: `curl` against the endpoint
+   before the fix returned `{"detail":"cannot import name 'run_iac_k8s_audit' from
+   ...auditor_iac_k8s"}`, a plain 500 on every call. Fixed the import; endpoint now returns
+   `{"status":"success","count":0,...}` (0 is real — this repo currently has no k8s/Terraform
+   manifests matching the detector's patterns, not a masked failure).
+6. **`/api/audit/full-spectrum` and the shadow-API/LLM-governance/IaC endpoints never attributed
+   findings to a real `asset_id`** — every finding these produced had `asset_id = NULL`, which
+   silently excludes a row from the main AI-correlation query's `JOIN infra_inventory` and from
+   every asset-scoped dashboard view. Confirmed live: 181 real orphaned rows had piled up this
+   way over the preceding week (real `url_path` values like `package.json:1`, `Dockerfile:1`
+   proving they came from genuine self-audit scans, not garbage). Same root cause this file
+   already documents for the old idle-branch loop, just via these separate on-demand endpoints,
+   which were never given the same fix. Added `resolve_self_audit_asset_id()` in `main.py`
+   (mirrors `gitlab_integration.py`'s own per-repo asset-resolution pattern) — creates/reuses a
+   real `"Centinela-AI (Self-Audit)"` `GitLab-Repo` asset and threads its `asset_id` through every
+   one of these endpoints. Backfilled the 181 pre-existing orphaned rows onto this new asset
+   (`UPDATE vulnerability_log SET asset_id = ... WHERE asset_id IS NULL`); confirmed 0 orphaned
+   rows remain.
+7. **A real bug I introduced myself while doing the orphan backfill in item 6, caught before it
+   shipped as a false "fix."** The blanket `UPDATE ... SET asset_id = 47631 WHERE asset_id IS
+   NULL` changed `asset_id` on those 181 rows without recomputing `fingerprint_hash`, which is
+   computed *from* `asset_id` (`calculate_fingerprint()` in `core/deduplication_engine.py`) and
+   is exactly what `log_finding_deduplicated()`'s Tier-1/Tier-3 dedup logic keys on. This left
+   181 rows whose `fingerprint_hash` still encoded their *old* `asset_id=None`, silently
+   mismatched against their own current `asset_id` — a landmine where any future write for the
+   same finding with `asset_id=None` would collide into one of these now-mis-owned rows instead
+   of creating its own, and a future *correct* re-scan (real `asset_id=47631`) would compute a
+   *different* fingerprint and never find these rows via Tier 1, creating a fresh duplicate
+   instead. Caught by the test suite: `test_run_sonarqube_audit_persists_real_row` started
+   failing (`run_sonarqube_audit(tmpdir, asset_id=None, ...)` printed success but no marker row
+   ever appeared) — root-caused to exactly this mechanism, confirmed by direct reproduction
+   (`log_finding_deduplicated(cur, None, 'SONARQUBE-QUALITY-GATE', ...)` returned
+   `('updated', 22336)` where row 22336 actually belonged to `asset_id=47631`, i.e. it was
+   matched purely by the database's own `ON CONFLICT (fingerprint_hash)` constraint, bypassing
+   Tier 1's `asset_id`-aware `SELECT` entirely). Fixed properly, not just patched around the
+   test: recomputed the correct fingerprint for all 440 rows on the self-audit asset; where the
+   recomputed value collided with an already-existing fresh row (89 cases — the full-spectrum
+   re-scan in item 6 had already independently rediscovered the same real findings with the
+   correct `asset_id`, making the old row pure duplicate debris), deleted the stale row (and its
+   `remediation_history` entry) in favor of the fresh one; where it didn't collide (92 cases),
+   corrected the `fingerprint_hash` in place. Verified: full suite went from 1 failure to
+   62/62 passing.
+8. **`discovery/discovery_osint.py` was fabricating data and presenting it as real passive
+   OSINT.** Found while checking the `ON CONFLICT (asset_id, cve_id) DO UPDATE` in this file
+   against `vulnerability_log`'s real constraints (confirmed live via `pg_indexes`:
+   `vulnerability_log` has no such composite constraint, only its `id` primary key and a partial
+   unique index on `fingerprint_hash` alone) — the same failure class already fixed once for
+   `auditor_spiderfoot.py` (silent DB error on every insert, caught by a broad `except`), missed
+   in this file at the time. But investigating it surfaced something worse than a persistence
+   bug: `geolocate_ip_passive()`'s fallback for a failed public geolocation lookup was a fixed,
+   hardcoded `{"Mexico", "Querétaro", "CASMARTS Headquarters"}` returned for *any* IP regardless
+   of where it actually is, and `shodan_query_passive()` — confirmed live, `SHODAN_API_KEY` is
+   unset in this deployment, so this was the *only* branch this function has ever taken — silently
+   returned a fixed, entirely invented port/service list (`[80,443,5432,6379,8200]` /
+   `["Nginx","PostgreSQL","Valkey","HashiCorp Vault"]` for anything on a private range) with the
+   docstring literally admitting "Simulates passive Shodan scan retrieval." Both fed directly
+   into a `vulnerability_log` row whose text claimed these were "Detectados pasivamente" — a
+   direct violation of this project's own zero-fabrication rule (section 1 at the top of this
+   file), not merely a cosmetic issue. Confirmed live that zero `OSINT-ENRICH` rows exist in the
+   DB today (`SELECT count(*) ... WHERE cve_id='OSINT-ENRICH'` → 0), meaning the ON CONFLICT bug
+   had accidentally contained the damage — the fabricated data was generated on every cycle but
+   never actually persisted, purely by accident of the other bug. Fixing the persistence bug
+   *without* also fixing the fabrication would have started writing fake findings to the real
+   dashboard for the first time. Fixed both together: both functions now return a `"real": bool`
+   flag and an honest "unavailable" result instead of a guess on failure/no-key; the caller
+   skips writing an enrichment entry entirely when neither source produced real data, and uses
+   the shared `log_finding_deduplicated()` logger (fixing the persistence bug) for the case where
+   real data *is* available. Verified live: reran `run_osint_discovery()` end-to-end against the
+   real DB — no fabricated data, no exception, still correctly 0 `OSINT-ENRICH` rows (the one
+   matching asset in current inventory, `compramex-bd`, has no resolvable IP, so it's correctly
+   skipped, not fabricated around). **Not verified against a real Shodan API key or a live
+   IP/URL-type asset with a resolvable endpoint** — no such asset currently exists in inventory;
+   the success path reuses the same `log_finding_deduplicated()` call already proven correct by
+   ~10 other call sites, but this specific function's success path itself is logic-verified, not
+   live-exercised end-to-end.
+9. **A duplicate, dead route definition for `GET /api/wazuh/agent/{agent_id}/info`** — two
+   separate functions, both named `get_wazuh_agent_info`, registered on the identical path.
+   FastAPI/Starlette match routes in registration order, so the second definition was 100%
+   unreachable dead code, confirmed by FastAPI's own `Duplicate Operation ID` warning at
+   startup. Checked which one the frontend actually depends on
+   (`Dashboard.jsx` reads `agentInfo.os_name/hostname/kernel/arch/wazuh_version/last_keepalive/
+   syscheck_time`) — that shape matches only the *first*, richer definition (OS-name
+   normalization, `-j` JSON output), confirming the frontend was never actually broken by this,
+   just carrying dead, confusing duplicate code. Removed the second (raw-text, `{agent_id, raw,
+   parsed}`-shaped) definition. Confirmed live: the `Duplicate Operation ID` warning is gone from
+   `centinela-backend`'s startup log.
+10. **Full pytest suite run twice**: first run found the one real failure described in item 7
+    (`test_run_sonarqube_audit_persists_real_row`); second run, after the fingerprint fix,
+    passed 62/62 (see the Registro de Salida de Pruebas in the closing Walkthrough for this
+    session for the exact captured output).
+
+All of the above (except the still-completing backfill in item 1) is fully deployed and
+restarted live — `centinela-ai`/`centinela-backend` were restarted with a cleared `__pycache__`
+after every batch of source changes, per the stale-bytecode gotcha, and `/api/health` was
+re-confirmed green after each restart. The backfill itself finished in a later pass the same
+day: 63/63 originally-targeted rows resolved (0 failed), plus 6 more that appeared from ordinary
+live scanning while the backfill ran (not survivors of the original set) also cleared in a final
+cleanup pass — 0 stale generic-marker rows remain.
+
+**11. A real ~30+ minute hang against OpenRouter, hit live during the backfill, root-caused and
+fixed the same day.** One backfill row's cascade call to OpenRouter never returned — `ss -tnp`
+showed the TCP connection still `ESTAB`, no timeout ever fired, despite `request_timeout=90`
+configured on that `ChatOpenAI` client (confirmed via direct attribute inspection: the real
+underlying `openai.OpenAI` client genuinely had `.timeout == 90.0` and `.max_retries == 0` at
+the moment of the hang, so this wasn't a config mistake). Isolated the mechanism with two real,
+local tests rather than guessing:
+  - A TCP listener that accepts a connection and never sends a single byte back → the client's
+    own timeout fired correctly, at exactly the configured value. This ruled out "the timeout
+    mechanism itself is broken."
+  - A TCP listener that accepts a connection and then sends one byte (`:`) every 3 seconds
+    forever, never completing an HTTP response → the client's timeout **never fired**, because
+    httpx's read-timeout is measured as *idle time since the last byte*, not *total time for the
+    whole request* — a periodic keep-alive trickle resets that clock indefinitely. This is a
+    plausible, known real behavior for a shared-pool free-tier gateway (OpenRouter's own
+    documented characteristics: variable latency, backed-up shared models) and matches the
+    observed symptom exactly (connection alive, no error, no data completing).
+  A per-request `timeout=` kwarg on an HTTP client protects against *no response at all*, not
+  against *a response that trickles forever without completing* — those are different failure
+  modes, and only the first one was covered before this fix. Added `_call_with_hard_deadline()`
+  in `centinela.py`: every one of the four provider calls in `call_ai_cascade()` now runs inside
+  a `ThreadPoolExecutor` and is bounded by `future.result(timeout=...)`, a true wall-clock
+  deadline that fires regardless of whether bytes are trickling in (hard caps set a bit above
+  each provider's own already-configured client-level timeout: Groq 70s, Gemini 40s, NVIDIA
+  100s, OpenRouter 100s). The abandoned worker thread is left running in the background (Python
+  cannot force-kill a thread) until the underlying call eventually errors or closes on its own —
+  a bounded, acceptable cost against never again blocking the whole correlation loop.
+  **Verified live end-to-end**, not just by code inspection: rebuilt the exact keep-alive-trickle
+  listener, pointed a real `ChatOpenAI` client at it with a *longer* client-level timeout (60s)
+  than the hard deadline (10s) specifically to prove the hard deadline — not the client's own
+  timeout — is what fires; confirmed `TimeoutError` raised at exactly 10.0s. Then restarted
+  `centinela-ai`/`centinela-backend`/`centinela-sentinel`, ran a real `call_ai_cascade()` call
+  end-to-end (landed on Groq, correct JSON content back), and reran the full pytest suite: still
+  62/62 passing.
+  **Real, disclosed side effect found while building this, fixed where it actually matters**:
+  `ThreadPoolExecutor` registers a process-wide `atexit` hook that blocks a *clean* Python
+  process exit until every submitted thread finishes — including abandoned, still-hung ones. For
+  the long-running `centinela.py` **service** this doesn't matter (it's killed via SIGTERM/
+  SIGKILL from Docker, which bypasses `atexit` entirely, not a normal `sys.exit()`), but it would
+  make a one-off **script** that imports `centinela.py` (like the backfill script above) hang at
+  process exit — after already finishing its real work and writing its summary — until any
+  abandoned thread from a hard-deadline timeout eventually resolves on its own. Added `os._exit(0)`
+  at the end of `scratch/backfill_generic_heuristic_2026-08-13.py`'s `__main__` block, which skips
+  that wait entirely (safe here: every DB write already committed per-row inside `main()` before
+  this point, nothing is lost by not waiting on a stray network thread). Future one-off scripts
+  that import `centinela.py` and call into the AI cascade should do the same.
+
+- ~~PDF regeneration for the executive presentation~~ — **resolved same day**, revisited after
+  being flagged as blocked. `Presentacion_Centinela_AI.pptx` was updated with real, live-verified
+  figures via `python-pptx`; the paired `.pdf` export was stale relative to it and this
+  environment had neither `libreoffice` nor `soffice`. Installed `libreoffice-impress`
+  (`--no-install-recommends`, ~136MB) as root directly in the running `centinela-backend`
+  container — deliberately **not** added to `Dockerfile`/`requirements.txt`, so it doesn't
+  survive an image rebuild; a genuinely one-off tool for a one-off document-export task, not a
+  permanent addition to a security platform's attack surface. Converted headless
+  (`soffice --headless --convert-to pdf`), verified the real output with `pypdf` (12 pages, real
+  extracted text from the stats slide matching the updated figures — 82/8,799/1,285/17/46 — not
+  the old 11-Aug numbers), copied it into place, then **purged libreoffice-impress and its
+  unique dependencies immediately after** (freed 136MB) rather than leave the extra footprint
+  running. Confirmed live: `centinela-backend` still imports and serves normally after the
+  purge, `/api/health` still `Healthy`.
+
+**Still open, investigated thoroughly and confirmed genuinely blocked, not avoided**:
+- **`extract_section()`'s prose-fallback regex tuning.** Went beyond passively hoping a real
+  non-JSON sample would show up: deliberately forced `call_ai_cascade()` to skip Groq/Gemini
+  (both JSON-compliant) and answer only via NVIDIA/OpenRouter (the two providers with no native
+  JSON mode, the ones actually capable of triggering the prose-fallback path) against a real
+  production-shaped prompt. Result, with real evidence for each:
+  - **NVIDIA NIM**: 3 separate live attempts, all `Request timed out` (bounded at the new 100s
+    hard deadline each time — see the hard-deadline fix above). Consistent with this same
+    model's documented characteristic elsewhere in this file (`meta/llama-3.1-70b-instruct`,
+    "cold/unavailable on NVIDIA's shared infra").
+  - **OpenRouter**: `429 Rate limit exceeded: free-models-per-day` — confirmed via the response's
+    own `X-RateLimit-Remaining: 0` header that this account's free-tier daily quota (50
+    requests/day) is genuinely exhausted for today, resetting at `X-RateLimit-Reset` = **2026-08-14
+    00:00 UTC** (decoded from the raw epoch-ms value in the error, not guessed). Real,
+    quota-driven, self-resolving tomorrow — not a bug.
+  Across the full backfill (164 real LLM calls this session: 63 original + 6 that appeared
+  mid-run + 101 more from ongoing live scanning + this targeted verification), zero non-JSON
+  prose responses were observed, because the only two providers capable of producing one are
+  both unavailable in this environment today for reasons now concretely identified and dated,
+  not merely "didn't happen to occur." The regex's correctness remains genuinely unverifiable
+  without a real sample — fabricating one would violate this file's own rule against acting on
+  invented data. **Next real opportunity to close this**: any time after 2026-08-14 00:00 UTC,
+  force OpenRouter alone (`groq_llm`/`gemini_client`/`nvidia_llm` monkeypatched to `None`,
+  exactly as done here) against a real prompt and inspect the raw `content` before the
+  `json.loads()` call in `correlate_vulnerability()`.
+- **A real, incidental discovery while investigating this**: OpenRouter's free-tier exhaustion
+  causes the live correlation loop to fall through to the heuristic engine more often than
+  expected today whenever it coincides with Groq's own small daily quota being temporarily
+  exhausted at the same moment (both cycle independently over the day) — confirmed live in
+  `centinela-ai`'s own logs, several real `⚙️ Using Native Heuristics AI Engine` fallbacks for
+  GitLab-Repo SAST findings with no dedicated heuristic branch (`SONAR-*`, `CODE-INJECTION-EVAL`,
+  `CMD-INJECTION-SHELL-TRUE`), which land on the same generic catch-all text this whole session's
+  backfill was clearing. This is **expected, honest degraded-mode behavior** — the heuristic
+  engine is the correct designed fallback when every real provider is genuinely down, and it
+  produces an honest "no rule available" message, not a fabricated one — not a bug to fix, just
+  a real, current resource constraint.
+
+  Ran one further backfill pass on the newly-accumulated rows same-day rather than let them sit
+  (101 targeted: 44 genuinely upgraded, 57 landed back on the honest heuristic text — many of
+  those specifically *because* all 4 providers were briefly down at once during the run, not
+  because a real LLM reasoned there was nothing better to say, a distinction this backfill
+  script's own log message doesn't currently draw). Checked the DB again immediately after:
+  **121 generic-marker rows remained — more than the 101 just targeted.** Root cause, not a
+  regression: this session's own fixes (the 18 newly-Developer-accessible `arquitectura/`
+  repos getting scanned for the very first time today, plus the `/api/audit/full-spectrum`
+  self-audit fix) genuinely increased real scanning volume happening *during* the backfill,
+  and a meaningful share of that new volume is landing during the same OpenRouter-exhausted/
+  NVIDIA-timing-out window documented above. **Deliberately stopped chasing this further today**
+  rather than run more passes against a wall of two exhausted/unreliable providers — every
+  further attempt would mostly burn Groq's own recovering daily quota (needed by the live
+  production correlation loop for real-time work happening in parallel) for a shrinking chance
+  of success, not close a real gap. The honest, current, disclosed state: 121 rows carry the
+  generic fallback text as of this session's end, a real and current number, not zero. A
+  follow-up pass will have meaningfully better throughput any time after Groq's quota next
+  resets and, especially, after OpenRouter's free-tier resets at 2026-08-14 00:00 UTC — reuse
+  `scratch/backfill_generic_heuristic_2026-08-13.py` as-is, it re-queries fresh from the DB
+  every run.
+
+**12. A real, previously-undocumented duplicate-findings bug, found in response to a direct user
+challenge ("¿son únicas? ¿se borraron las erróneas o duplicadas?") — not from routine review.**
+Grouping `vulnerability_log` by `(asset_id, cve_id, url_path)` for anything not `RESOLVED` found
+**138 groups with exactly 2 rows each** (276 rows, 138 of them true duplicates) — same real
+finding, same asset, same exact URL, logged twice. Root-caused with certainty, not guessed:
+`calculate_fingerprint()`'s formula itself has never changed (checked its full git history), but
+**138 older rows had a `fingerprint_hash` computed from `description` instead of `url_path`** —
+confirmed by directly recomputing `calculate_fingerprint(asset_id, cve_id, description)` against
+a real pair and getting an exact match to the stale stored value, while
+`calculate_fingerprint(asset_id, cve_id, url_path)` (what today's code actually passes) does not
+match. Verified this explains **all 138 groups, not just a sample** (wrote a script that checked
+every group, not a handful). Practical effect: any of these older, still-open findings could
+never fingerprint-match a fresh re-scan using the current, correct `url_path`-based formula, so
+every re-detection silently created a second row instead of updating the first — most visible on
+ZAP (repeat DAST scans against the same live SERVER assets), but the grouping query wasn't
+scoped to any one `scan_engine`.
+  Fixed as a real merge, not a blind delete: checked every one of the 138 pairs for a real,
+  non-default `remediation_history.approval_token` first (a human decision must never be
+  silently discarded) — confirmed live, **zero** pairs had one, both sides were still the
+  untouched `PENDING_APPROVAL` default, safe to merge automatically. For each pair, kept whichever
+  row was `CORRELATED` with real (non-generic) AI content, preferring the more recent detection
+  on ties; corrected that survivor's `fingerprint_hash` to the value a fresh scan would actually
+  compute (closing the gap for future re-scans too, not just today); deleted the other row and
+  its `remediation_history` entry. Verified live: 0 duplicate groups remain, `vulnerability_log`
+  dropped from 9,092 to 8,954 rows (exactly -138).
+  **Also found and cleaned up in the same integrity pass**: 13 orphaned `remediation_history`
+  rows pointing at `vuln_id`s that no longer exist (predating this session, unrelated to today's
+  merge — all `PENDING_APPROVAL`, no real decision lost). Deleted.
+  **Separately verified, same conversation, that the dashboard itself is not hardcoded**: read
+  `/api/stats` and `/api/inventory` in full — both are real parameterized SQL against
+  `vulnerability_log`/`infra_inventory` with no literal fake values, and both already carry
+  real dedup/exclusion logic for synthetic markers (`SCAN-AUDIT`, `HEURISTIC-SECURITY-DEBT`,
+  etc. — see gotcha #4). Grepped the frontend for suspiciously large hardcoded numbers in
+  component state — none found. Cross-checked `/api/stats`'s live HTTP response against a
+  direct SQL query run independently: `total` and `critical` matched exactly (8,954 / 1,326),
+  confirming the endpoint is genuinely live-querying, not cached or fabricated.
