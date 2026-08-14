@@ -15,6 +15,7 @@ python-dotenv
 groq
 httpx
 requests
+cvss
 pandas
 typing-extensions
 WeasyPrint

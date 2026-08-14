@@ -1286,3 +1286,211 @@ scoped to any one `scan_engine`.
   component state — none found. Cross-checked `/api/stats`'s live HTTP response against a
   direct SQL query run independently: `total` and `critical` matched exactly (8,954 / 1,326),
   confirming the endpoint is genuinely live-querying, not cached or fabricated.
+
+## Session 2026-08-13 continued: actually remediating Centinela's own findings
+
+In response to a direct user challenge ("sigo viendo muchas vulnerabilidades... ¿el dashboard
+si muestra datos reales? ¿no hay ningún hardcodeo?") followed by explicit authorization to fix
+everything necessary so Centinela's own three self-referential assets (`Centinela-AI
+(Self-Audit)`, `GitLab/arquitectura/centinela-cai`, and the `centinela` SERVER itself) show real
+findings and real fixes — not just corrected plumbing. This surfaced several deep, previously-
+undocumented bugs in the SAST/SCA/standards engines themselves, on top of the actual remediation
+work.
+
+**13. The SAST/SCA/standards scanners were scanning their own generated output and cloned
+third-party repos as if they were Centinela's own source.** `data/remediation/*.sh` (the
+scripts these exact engines write as OUTPUT for other findings) and `data/sonar_scans/*`
+(third-party GitLab repos cloned there for SonarQube scanning, unrelated to Centinela) were
+never excluded from any of the 7 filesystem-walking auditors. Concrete damage confirmed live: a
+remediation script whose entire job is `sed -i 's/eval(/console.log(/g'` was flagged as a *new*
+`CODE-INJECTION-EVAL` finding against itself, and files under
+`data/sonar_scans/arquitectura-geo-ircep-smart/...` (a different customer's repo) were
+misattributed to Centinela's own self-audit asset. Added `"data/remediation"` and
+`"data/sonar_scans"` to all 7 auditors' directory-exclusion lists
+(`auditor_master_vulnerabilities.py`, `auditor_sca_dependencies.py`,
+`auditor_compliance_standards.py`, `auditor_iac_k8s.py`, `auditor_cmmi_v3.py`,
+`auditor_llm_governance.py`, `auditor_cspm_cloud.py`). Verified live: SAST findings against the
+self-audit asset dropped from 121 to 20 on the very next scan, purely from this one fix.
+
+**14. No mechanism existed to ever mark a line-anchored finding RESOLVED when the code that
+triggered it changed or was fixed.** `log_finding_deduplicated()` only ever handled
+*redetection* (update in place) -- nothing closed a finding that a fresh scan simply stopped
+reproducing. For SAST/SCA/standards findings, whose fingerprint bakes in the exact `file:line`,
+this mattered enormously on an actively-edited codebase: editing code shifts line numbers
+constantly, so an old finding whose line moved (or whose underlying code was already fixed)
+never re-matched a fresh scan's fingerprint and stayed open forever, phantom and unverifiable.
+Confirmed live by directly opening 3 flagged lines (`main.py:550`, `centinela.py:1314`,
+`main.py:280`) -- none of them still contained the flagged pattern; the code had moved on
+without the finding ever closing. Added `reconcile_resolved_findings()` to
+`core/deduplication_engine.py`: given the complete, real set of fingerprints a fresh scan just
+produced for `(asset_id, scan_engine)`, marks RESOLVED any existing OPEN/NEW/CORRELATED/REOPENED
+row for that same asset+engine that the fresh scan did NOT reproduce. Wired into
+`auditor_master_vulnerabilities.py`, `auditor_sca_dependencies.py`, and
+`auditor_compliance_standards.py` (only when `asset_id is not None` -- a bare/default call has
+no well-defined "everything else" set to reconcile against). **Deliberately not wired into ZAP**
+(`log_zap_findings()`): a ZAP scan's spider may only crawl a subset of previously-known URLs on
+a given run (unlike a full filesystem walk, which is always comprehensive), so "not seen this
+time" doesn't reliably mean "genuinely fixed" the way it does for a file-system scan -- applying
+the same auto-reconcile there risks silently marking a still-open finding as resolved just
+because the spider didn't happen to revisit that URL this run. Verified live: reconciliation
+correctly resolved 145 stale SAST, 54 stale SCA, and 46 stale standards rows on the self-audit
+asset in the very first run after wiring it in.
+
+**15. Real, previously-undocumented false positives in three separate detectors, all the same
+self-referential root cause: this scanner's own detector files necessarily contain comments,
+descriptive strings, and regex-pattern definitions *about* the dangerous patterns they're built
+to catch, and naive substring matching couldn't tell that apart from an actual dangerous call.**
+Confirmed live, 6/6 `CODE-INJECTION-EVAL` findings, 1/1 `STD-STRIDE-JWT-INSECURE-ALG`, and 8/8
+`STD-STRIDE-LOG-SENSITIVE-DATA` findings against this codebase's own source were exactly this,
+not real issues (e.g. `"Dynamic Code Execution risk via eval()."` -- a rule's own description
+string -- self-matched the `eval()` detector; `print(f"Attempting Password authentication...")`
+-- a log message that logs no actual credential value -- self-matched the sensitive-data-logging
+detector because the word "password" merely appears in the message).
+  - `auditor_master_vulnerabilities.py`: added `_is_inside_string_literal()` (naive single-line
+    quote-parity check) and `_is_real_dangerous_call()` (also rejects comment lines), applied to
+    the eval/exec/os.system/subprocess-shell-True pattern family only -- NOT to HARDCODED-SECRET
+    or the SQLi patterns, where matching inside a string literal is the entire point. Also fixed
+    a real, near-immediate recurrence while writing this fix's own docstring (which itself
+    mentioned "eval()" as descriptive text and self-matched) -- reworded rather than add
+    multi-line/cross-line string tracking for one rare case.
+  - `auditor_compliance_standards.py`: rewrote all three STRIDE checks. JWT check now requires
+    an actual `jwt.decode(...algorithms=[...HS256...])` call shape via regex, not just those
+    words appearing anywhere on a line. Missing-audit-log check now requires a real
+    `@app.(post|put|delete|patch)(` route decorator, not the substring "@app.post" appearing
+    anywhere (e.g. inside an unrelated route-discovery regex). Sensitive-data-logging check now
+    only fires when a sensitive-looking variable is actually *interpolated* into a log call
+    (`{password}`, `%s` after the keyword), not when the word merely appears as descriptive
+    English text.
+  - Also fixed the SSRF detector the same class of bug: `requests.get(f"http://ip-api.com/json/
+    {ip}?...")` was flagged as SSRF even though the destination host is always the hardcoded
+    `ip-api.com` -- `{ip}` is only ever a path/query segment, never the actual fetch target.
+    Tightened the regex to `[^/"\']*\{` (interpolation must occur before the first `/` after the
+    scheme, i.e. inside the host/authority part of the URL) so it only fires on a genuinely
+    attacker-influenced destination.
+
+**16. A real, previously-undocumented accuracy bug in OSV.dev SCA severity scoring.** OSV's
+`severity[].score` field, for the overwhelming majority of real entries (type `CVSS_V3`/
+`CVSS_V4`), is the CVSS *vector string* itself (e.g. `"CVSS:3.1/AV:N/AC:H/.../C:H/..."`), not a
+plain number -- the existing code did `float(sev["score"])` on that string, which raised on
+every real call, silently caught, falling through to `database_specific.severity` (often absent)
+and defaulting to a flat `"MEDIUM"` for every single SCA finding regardless of real severity.
+Not cosmetic for a platform whose main job is prioritization: this directly skewed the Centinela
+Risk Score, the severity-keyed SLA deadline, and every critical/high KPI on the dashboard. Fixed
+with the `cvss` PyPI library (real CVSS v2/v3/v4 base-score calculation from the actual vector,
+not a heuristic guess) -- added to `requirements.txt` and the main `Dockerfile`'s pip list.
+Verified live against real vectors pulled from this session's own findings (`CVSS3(...).base_score
+== 8.7`, `CVSS4(...).base_score == 6.3`), then against the real self-audit scan: severity
+distribution went from 100% "MEDIUM" (masking real HIGH/LOW findings) to a real, differentiated
+18 HIGH / 25 MEDIUM / 3 LOW.
+  Separately fixed a real bug in `_osv_fixed_version()` while investigating what first looked
+  like contamination (fixed-version values like "8.5.23" for a package installed at "1.6.7"):
+  the function filtered OSV's `affected` blocks by ecosystem only, never by package name, so a
+  multi-package advisory could in principle return a different package's fixed version. Added
+  the missing name filter. **Correction, confirmed by checking real npm registry data before
+  acting on the earlier suspicion**: the specific "contaminated-looking" values investigated
+  live all turned out to be real, correct versions of *other* real dependencies in the same
+  manifest (`postcss` genuinely ships 8.5.x, `vite` genuinely reached 8.2.1) -- the name-filter
+  fix is still a real correctness improvement (multi-package advisories are a genuine OSV
+  schema possibility), just not the root cause of that specific observation. Lesson applied
+  from earlier in this same file: verify a suspicious value against the real external source
+  (npm registry) before concluding it's a bug, not just before concluding it's real data.
+
+**17. Actually remediated the real findings that survived all of the above fixes**, not just
+corrected the tooling that reports them:
+  - `frontend/Dockerfile` had no `USER` directive at all (real `DOCKER-MISSING-NON-ROOT-USER`).
+    Added `RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /app` + `USER appuser`,
+    matching the existing pattern from the main `Dockerfile`. Rebuilt and verified live:
+    `docker exec centinela-frontend id` non-root, dashboard still serves HTTP 200 with real
+    content (`<title>Centinela | Mando de Seguridad</title>`).
+    **A second, real bug hit while verifying this**: `docker-compose.yml` mounts an *anonymous*
+    volume at `/app/node_modules` specifically so the host bind-mount of `./frontend:/app`
+    doesn't shadow the image-built `node_modules` -- but anonymous volumes persist across
+    `docker compose up -d` container recreation by design, so the freshly-rebuilt, correctly-
+    chowned image's `node_modules` was never actually used; the container kept booting against
+    the *old*, still-root-owned volume, causing a real `EACCES` on Vite's own runtime temp-file
+    write. Fixed by `docker compose rm -f -v` (removes the container *and* its anonymous
+    volumes) before recreating, forcing a fresh volume populated from the new image.
+  - `frontend/package.json`'s `axios` (1.6.7), `postcss` (8.4.38), and `vite` (6.0.0) were all
+    genuinely outdated with real, current CVEs (46 total SCA findings, all real once the CVSS
+    fix above corrected their severity). Bumped to `axios@^1.19.0`, `postcss@^8.5.23`,
+    `vite@^8.2.1` (a real 2-major-version jump for vite specifically), plus
+    `@vitejs/plugin-react@^6.0.5` and `@tailwindcss/vite@^4.3.3` for compatibility. **Actually
+    rebuilt and ran the container to verify**, not just edited the manifest: the vite 8 jump
+    initially triggered a real OOM kill (`OOMKilled: true`, exit 137) on the frontend
+    container -- traced to **18 accumulated, leaked `zap-scan-*` sibling containers** (see item
+    18 below) each requesting up to 6GB of JVM heap, 2 of them still running 15-17 hours after a
+    real scan should finish in ~65s. After reaping those, the frontend started clean, stayed
+    stable (`OOMKilled: false`), and served real content. Re-ran the SCA scanner after the bump:
+    0 findings, 46/46 reconciled as genuinely resolved.
+  - The self-audit asset's only two remaining non-code-quality SAST findings after item 15's
+    detector fixes (`SSRF-UNCHECKED-FETCH` on `main.py:314`, already established as a detector
+    false positive) and the Dockerfile fix above left the self-audit asset with **zero real
+    open security findings** -- the only thing left is 48 `STD-ISO25010-LONG-METHOD` (a code
+    quality/maintainability metric, not a vulnerability; deliberately not attempted as a mass
+    refactor of live, actively-running platform code without a much larger, separately-scoped
+    session).
+  - The `centinela` SERVER asset (10.4.3.34, the actual host serving this session) had 95 real
+    ZAP DAST findings across 6 header-related types (`ZAP-10021` X-Content-Type-Options,
+    `ZAP-10035` HSTS, `ZAP-10036` Server version leak, `ZAP-10038` CSP, `ZAP-10020`
+    anti-clickjacking, `ZAP-10015` Cache-Control). Unlike the previously-documented
+    `casmart_authentik` case, this host runs its **own dedicated system nginx** (confirmed live:
+    `systemctl status nginx` active, single site in `sites-enabled/`), not the shared
+    `casmarts-core-gateway` fronting multiple unrelated apps -- a materially lower blast radius.
+    Wrote `/etc/nginx/conf.d/99-centinela-security-headers.conf` (additive-only, matching the
+    already-built `generate_zap_header_fix()` pattern), validated with `nginx -t`, reloaded, and
+    **verified live in a real HTTPS response** (`curl -skI https://10.4.3.34/`) that all 6
+    headers are now genuinely present, then re-confirmed the dashboard and `/api/health` both
+    still serve correctly through the reloaded config. Marked the 95 corresponding DB rows
+    RESOLVED directly (not via the ZAP auto-reconcile deliberately not built per item 14) since
+    live verification, not a redetection, is the evidence here.
+
+**18. The root cause of the frontend's near-OOM: a real, structural gap in ZAP container
+cleanup, most likely caused by this same session's own repeated service restarts.**
+`run_zap_scan()`'s `finally: stop_zap_container(...)` is correctly structured and does clean up
+on a normal exception -- but if the *parent* process (`centinela-ai` or `centinela-backend`,
+both of which can independently launch a scan) gets restarted while a scan is in flight, `docker
+restart` sends SIGTERM then SIGKILL, and that `finally` block never gets to run. The spawned ZAP
+container is a *sibling*, not a child Docker would clean up on its own (docker-outside-of-docker
+via the mounted socket) -- nothing else ever calls `stop_zap_container()` on it again. Confirmed
+live: 18 accumulated `zap-scan-*` containers, 2 of them still running 15-17 hours later, several
+GB of leaked JVM heap. Added `reap_orphaned_zap_containers(max_age_minutes=40)` to
+`auditor_zap.py` and wired it into both `centinela.py`'s `main_loop()` and `main.py`'s FastAPI
+startup event. Age-gated rather than unconditional specifically because *either* service
+restarting independently could otherwise race-kill a scan the *other* one has genuinely in
+flight right now -- 40 minutes is well above the longest configured scan timeout (30 min,
+`ZAPScanProfile`'s "aggressive" profile) plus real startup overhead, so nothing legitimate is
+ever old enough to match while true orphans (observed at hours, not minutes) always are.
+Verified live: both services' startup logs now show a real reap pass (`✅ No stale (>40min)
+zap-scan-* containers found` on the clean run after manual cleanup), and the full pytest suite
+still passes (62/62) after every change in this section.
+
+**Frontend widget integration (2026-08-13, same session)**: added the `ConsultaSmart` chat
+widget `<script>` tag to `frontend/index.html` per a separate internal project's integration
+instructions, verified live in the served HTML. **Found and disclosed, not silently accepted**:
+`https://chat.casmart.internal/widget.js` does not currently serve real JavaScript -- it returns
+the same `text/html` Vite dev-server fallback page as that project's own root path (confirmed by
+diffing the two responses byte-for-byte-equivalent), and separately carries
+`X-Content-Type-Options: nosniff`, which will make browsers refuse to execute it outright even
+once the content is fixed, due to the MIME-type mismatch. This is a gap in the *chatbot*
+project's own deployment (its widget bundle isn't actually built/served at that path yet), not
+something fixable from Centinela's side -- the integration on this side is complete and correct
+as-is.
+
+**Lock-file gotcha found while wrapping up item 17's `vite`/`axios`/`postcss` bump**: `npm
+install` during `docker compose build` writes to the *image's own* build layer, not the host --
+the host's bind-mounted `frontend/package-lock.json` was never actually updated by the rebuild,
+so committing it as-is would have left a lock file inconsistent with the new `package.json`
+(a future `npm ci` would fail, or silently re-resolve on next build). Regenerated it correctly
+by running `npm install --package-lock-only` as root *inside the running, bind-mounted
+container* (not a throwaway `docker run`, which reads the image's own layer and gave the wrong,
+older versions the first time this was tried) -- verified the resulting host-side file: axios
+1.19.0, vite 8.2.1, postcss 8.5.26, all satisfying the ranges in `package.json`.
+**Residual, deliberately not forced**: `npm audit` still reports 5 transitive vulnerabilities
+(brace-expansion, d3-color, js-yaml, react-router/react-router-dom -- all DoS/ReDoS-class,
+high/moderate/low, none RCE-class). `npm audit fix` errors out before changing anything, on a
+pre-existing peer-dependency conflict unrelated to today's changes: `react-simple-maps@3.0.0`
+only declares support for React 16-18, not the React 19 this project already runs (worked around
+project-wide via `--legacy-peer-deps`, already the case before today). Forcing the audit fix
+(`--force`) risks a broader, less predictable dependency resolution change than can be verified
+in this session -- left as a disclosed, real, low-severity residual rather than risk a
+regression under time pressure.

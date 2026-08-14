@@ -59,7 +59,7 @@ def run_iac_scan(target_dir: str = "/app", asset_id: int = None) -> List[Dict[st
     """Scans target directory for Kubernetes YAML and Terraform files, persisting findings to the DB."""
     findings = []
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

@@ -40,25 +40,55 @@ def _osv_cvss_to_severity(score: float) -> str:
 
 
 def _osv_severity(vuln: Dict[str, Any]) -> str:
+    """
+    Real bug fixed 2026-08-13: OSV.dev's severity[].score field, for type CVSS_V3/CVSS_V4 (the
+    overwhelming majority of real entries), is the CVSS *vector string* itself (e.g.
+    "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:N"), not a plain number -- the previous code did
+    `float(sev["score"])` on that string, which raises on every single real call, caught and
+    logged as a warning, silently falling through to database_specific.severity (often absent)
+    and defaulting to a flat "MEDIUM" for every SCA finding regardless of real severity. That's
+    not a cosmetic bug for a security platform whose main job is prioritizing findings -- it
+    directly skewed the CRS score, SLA deadline (severity-keyed), and every "critical/high count"
+    KPI on the dashboard. Fixed with the `cvss` library (real CVSS v2/v3/v4 base-score
+    calculation from the actual vector, not a heuristic guess).
+    """
+    from cvss import CVSS2, CVSS3, CVSS4
     for sev in vuln.get("severity", []) or []:
+        raw = sev.get("score")
+        sev_type = str(sev.get("type", "")).upper()
         try:
-            # CVSS vector strings end in "/S:.../.../AV:N/AC:L/.../C:H/..." -- OSV also exposes
-            # a numeric "score" on some entries; fall back to parsing the vector's base score
-            # isn't reliable without a CVSS library, so prefer database_specific first and only
-            # use this as a last resort when nothing else is present.
-            if "score" in sev:
-                return _osv_cvss_to_severity(float(sev["score"]))
-        except (ValueError, TypeError) as e:
-            print(f"⚠️ [SCA-Auditor] Could not parse OSV severity score {sev.get('score')!r}: {e}")
+            if sev_type == "CVSS_V4" or (isinstance(raw, str) and raw.startswith("CVSS:4")):
+                return _osv_cvss_to_severity(CVSS4(raw).base_score)
+            if sev_type == "CVSS_V3" or (isinstance(raw, str) and raw.startswith("CVSS:3")):
+                return _osv_cvss_to_severity(CVSS3(raw).base_score)
+            if sev_type == "CVSS_V2" or (isinstance(raw, str) and raw.startswith("CVSS:2") or raw.startswith("AV:")):
+                return _osv_cvss_to_severity(CVSS2(raw).base_score)
+            if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.replace(".", "", 1).isdigit()):
+                return _osv_cvss_to_severity(float(raw))
+        except Exception as e:
+            print(f"⚠️ [SCA-Auditor] Could not parse OSV severity score {raw!r} (type={sev_type}): {e}")
     db_sev = str(vuln.get("database_specific", {}).get("severity", "")).upper()
     if db_sev in _OSV_SEVERITY_MAP:
         return _OSV_SEVERITY_MAP[db_sev]
     return "MEDIUM"
 
 
-def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str) -> str:
+def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str) -> str:
+    """
+    Real bug fixed 2026-08-13: this only ever filtered `affected` blocks by ecosystem, never by
+    package name. A single OSV advisory can legitimately cover MULTIPLE packages in the same
+    ecosystem (e.g. a monorepo split into several npm packages, or a supply-chain advisory
+    naming several affected names) -- without a name filter, this could silently return the
+    "fixed" version belonging to a *different* package in the same advisory. Confirmed live:
+    several axios findings reported "fixed_version" values (6.0.9, 7.1.5, 8.0.5, 8.5.23) that
+    don't correspond to any axios release that has ever existed (axios has never reached even
+    major version 2) -- a strong signal this was pulling another package's range.
+    """
     for affected in vuln.get("affected", []) or []:
-        if affected.get("package", {}).get("ecosystem") != ecosystem:
+        pkg = affected.get("package", {})
+        if pkg.get("ecosystem") != ecosystem:
+            continue
+        if pkg.get("name") != pkg_name:
             continue
         for rng in affected.get("ranges", []) or []:
             # ECOSYSTEM/SEMVER ranges carry a real published version number (OSV uses ECOSYSTEM
@@ -137,7 +167,7 @@ def query_osv_batch(deps: List[Tuple[str, str]], ecosystem: str):
             out.setdefault(dep, []).append({
                 "cve": cve,
                 "severity": _osv_severity(detail),
-                "fixed_version": _osv_fixed_version(detail, ecosystem) or "ver aviso original",
+                "fixed_version": _osv_fixed_version(detail, ecosystem, dep[0]) or "ver aviso original",
                 "desc": (detail.get("summary") or detail.get("details") or "Sin resumen disponible.")[:300],
             })
     return out
@@ -296,7 +326,7 @@ def check_reachability(target_dir: str, package: str, manifest: str) -> str:
         return "REACHABLE"  # unknown manifest type -- don't claim unreachable without real evidence
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             if not file.endswith(extensions):
@@ -316,7 +346,7 @@ def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[s
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
@@ -346,6 +376,7 @@ def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[s
     # from KNOWN_VULNERABLE_PACKAGES/OSV again.
     try:
         from core import deduplication_engine
+        active_fingerprints = set()
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
@@ -371,11 +402,17 @@ def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[s
                     f"{item['description']}"
                 )
 
+                active_fingerprints.add(deduplication_engine.calculate_fingerprint(asset_id, item["cve_id"], location))
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
                     "sca-native", url_path=location, open_status="OPEN",
                     reachability_status=reachability, preserve_status=True
                 )
+
+            if asset_id is not None:
+                resolved_count = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "sca-native", active_fingerprints)
+                if resolved_count:
+                    print(f"✅ [SCA-Auditor] Reconciled {resolved_count} stale sca-native finding(s) as RESOLVED for asset {asset_id}.")
     except Exception as db_err:
         print(f"⚠️ [SCA-Auditor] Could not log findings to DB: {db_err}")
 

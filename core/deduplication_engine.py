@@ -229,3 +229,42 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
         """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta))
     new_id, was_inserted = cur.fetchone()
     return ("inserted" if was_inserted else "updated"), new_id
+
+
+def reconcile_resolved_findings(cur, asset_id: int, scan_engine: str, active_fingerprints: "set[str]") -> int:
+    """
+    Marks RESOLVED any currently OPEN/NEW/CORRELATED/REOPENED finding for this
+    (asset_id, scan_engine) whose fingerprint was NOT reproduced by the fresh scan that just
+    ran. This closes a real, previously-missing capability: log_finding_deduplicated() only
+    ever handles a finding being *redetected* (update in place) -- nothing ever marked a finding
+    resolved when it simply stopped being detected. For line/text-anchored findings (SAST/SCA/
+    standards, whose fingerprint bakes in the exact file:line), this matters a lot: editing code
+    shifts line numbers constantly, so an old finding whose line moved (or whose underlying code
+    was already fixed) never re-matches a fresh scan's fingerprint and was previously left open
+    forever, phantom and unverifiable, no matter how long ago the real issue was actually fixed.
+
+    Confirmed live, 2026-08-13: multiple SAST findings against Centinela's own actively-edited
+    main.py/centinela.py pointed at line numbers that, when actually opened, contained completely
+    unrelated code -- the flagged pattern had moved or been removed, but the finding stayed open
+    indefinitely with no mechanism to ever close it.
+
+    Caller runs a full fresh scan first, computes the fingerprint for every finding it produced
+    into `active_fingerprints`, then calls this once per (asset_id, scan_engine) so only a real,
+    complete re-scan can resolve anything -- a partial/failed scan naturally won't wipe out
+    findings it simply didn't get around to checking, since it wouldn't call this at all in that
+    case (call sites only invoke this after a scan completes without raising).
+    """
+    cur.execute("""
+        SELECT id, fingerprint_hash FROM public.vulnerability_log
+        WHERE asset_id = %s AND scan_engine = %s
+          AND status IN ('OPEN', 'NEW', 'CORRELATED', 'REOPENED')
+          AND fingerprint_hash IS NOT NULL
+    """, (asset_id, scan_engine))
+    stale_ids = [row[0] for row in cur.fetchall() if row[1] not in active_fingerprints]
+    if not stale_ids:
+        return 0
+    cur.execute("""
+        UPDATE public.vulnerability_log SET status = 'RESOLVED'
+        WHERE id = ANY(%s)
+    """, (stale_ids,))
+    return len(stale_ids)

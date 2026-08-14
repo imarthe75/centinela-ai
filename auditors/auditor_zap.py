@@ -19,7 +19,7 @@ import time
 import requests
 import logging
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from core import db_manager, deduplication_engine
 import random
 import string
@@ -186,6 +186,57 @@ def stop_zap_container(container_id: str):
         print(f"🧹 [ZAP-Auditor] Cleaned up {container_id}")
     except Exception as e:
         logger.warn(f"Could not cleanup {container_id}: {e}")
+
+
+def reap_orphaned_zap_containers(max_age_minutes: int = 40):
+    """
+    Removes leftover zap-scan-* sibling containers older than `max_age_minutes`. Real incident,
+    2026-08-13: run_zap_scan()'s own `finally: stop_zap_container(...)` is correctly structured
+    and does clean up on a normal exception -- but if the PARENT process itself gets restarted/
+    killed (docker restart sends SIGTERM then SIGKILL) while a scan is in flight, that `finally`
+    block never gets to run, and the sibling ZAP container (docker-outside-of-docker, not a child
+    process Docker would clean up on its own) is orphaned permanently -- nothing else ever calls
+    stop_zap_container() on it again. Confirmed live: 18 accumulated zap-scan-* containers found
+    on this host, 2 of them still running 15-17 hours after their real scan would have finished
+    in ~65s, together consuming multiple GB of JVM heap (each ZAP instance requests up to 6GB)
+    and directly contributing to a real OOM kill of an unrelated container during this session.
+
+    Both `centinela-ai` and `centinela-backend` can independently launch a ZAP scan (the periodic
+    loop, and main.py's on-demand endpoint respectively) -- reaping unconditionally at startup
+    would risk one container's restart killing a scan the *other* container genuinely has in
+    flight right now. The age filter is what makes this safe to call from both: 40 minutes is
+    well above the longest configured scan timeout (ZAPScanProfile's own "aggressive" profile is
+    30 min) plus real container/addon-download startup overhead, so nothing genuinely in progress
+    is ever old enough to match, while true orphans (observed at 15-17 *hours*) always will.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name={ZAP_CONTAINER_PREFIX}-",
+             "--format", "{{.Names}}\t{{.CreatedAt}}"],
+            capture_output=True, text=True, timeout=15
+        )
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        stale = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            name, created_at = line.split("\t", 1)
+            # Docker's --format CreatedAt looks like "2026-08-13 10:35:37 +0000 UTC"
+            try:
+                created = datetime.strptime(created_at.rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S %z")
+            except ValueError:
+                continue  # unexpected format -- skip rather than guess and risk a false match
+            if created < cutoff:
+                stale.append(name)
+        if not stale:
+            print("✅ [ZAP-Auditor] No stale (>%dmin) zap-scan-* containers found at startup." % max_age_minutes)
+            return
+        print(f"🧹 [ZAP-Auditor] Reaping {len(stale)} stale zap-scan-* container(s) older than {max_age_minutes}min...")
+        subprocess.run(["docker", "stop", "-t", "5"] + stale, capture_output=True, timeout=30)
+        subprocess.run(["docker", "rm"] + stale, capture_output=True, timeout=15)
+        print(f"✅ [ZAP-Auditor] Reaped {len(stale)} stale container(s).")
+    except Exception as e:
+        logger.warn(f"Could not reap orphaned zap-scan-* containers at startup: {e}")
 
 def configure_zap_context(target_url: str, scan_profile: str = "balanced"):
     """
