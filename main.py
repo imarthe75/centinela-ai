@@ -2446,6 +2446,16 @@ async def startup_event():
     asyncio.create_task(poll_new_alerts())
     asyncio.create_task(poll_asset_status())
 
+    # Same reap as centinela-ai's startup -- this service can also independently launch a ZAP
+    # scan (see /api/audit endpoints below), so an ungraceful restart here can orphan a sibling
+    # container the same way. Age-gated (see reap_orphaned_zap_containers()'s docstring), so it
+    # can't race-kill a scan the *other* service genuinely has in flight right now.
+    try:
+        from auditors.auditor_zap import reap_orphaned_zap_containers
+        reap_orphaned_zap_containers()
+    except Exception as e:
+        print(f"⚠️ [Centinela-Backend] ZAP container reap at startup failed: {e}")
+
 class TicketModel(BaseModel):
     title: str
     description: str

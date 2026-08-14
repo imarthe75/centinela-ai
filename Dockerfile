@@ -65,7 +65,8 @@ RUN pip install --no-cache-dir \
     semgrep \
     prowler \
     medusa-security==2026.7.0 \
-    neo4j
+    neo4j \
+    cvss
 
 # Create non-root user for CMMI / CIS hardening compliance
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app

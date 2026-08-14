@@ -1915,7 +1915,17 @@ def run_cti_correlation_loop():
 
 def main_loop():
     print("🚀 [Centinela-AI] Aura-Guard v2026.4.2 active.")
-    
+
+    # Reap any zap-scan-* sibling containers orphaned by a previous, ungraceful process exit
+    # (docker restart mid-scan skips run_zap_scan()'s own finally-block cleanup -- see
+    # reap_orphaned_zap_containers()'s own docstring for the real incident this fixes). Age-gated
+    # (40min) so it's safe even though centinela-backend can also launch a scan independently.
+    try:
+        from auditors.auditor_zap import reap_orphaned_zap_containers
+        reap_orphaned_zap_containers()
+    except Exception as e:
+        print(f"⚠️ [Centinela-AI] ZAP container reap at startup failed: {e}")
+
     import threading
     falco_thread = threading.Thread(target=process_falco_alerts, daemon=True)
     falco_thread.start()

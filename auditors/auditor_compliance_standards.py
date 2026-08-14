@@ -8,14 +8,33 @@ from typing import List, Dict, Any
 from core import db_manager
 
 
+# Real bug fixed 2026-08-13, same self-referential class already fixed in
+# auditor_master_vulnerabilities.py's CODE-INJECTION-EVAL check: naive substring matching on
+# "jwt.decode"/"password"/etc. flags this scanner's OWN detector logic (which necessarily
+# contains those words to define what it looks for) and any log message merely *mentioning* a
+# word like "password" as descriptive English text (e.g. "Attempting Password authentication...")
+# without ever interpolating a real secret value. Confirmed live: 100% of this codebase's own
+# STD-STRIDE-JWT-INSECURE-ALG (1/1) and STD-STRIDE-LOG-SENSITIVE-DATA (8/8) findings were exactly
+# this, not real issues.
+_JWT_WEAK_ALG_RE = re.compile(r'jwt\.decode\s*\([^)]*algorithms\s*=\s*\[[^\]]*(HS256|none)', re.IGNORECASE)
+# Only flags a log statement that actually *interpolates* a sensitive-looking variable
+# ({password}, {token}, f"{obj.secret_key}", %s formatting of one, etc.) -- not the word
+# appearing anywhere in the message text.
+_SENSITIVE_INTERPOLATION_RE = re.compile(
+    r'(print|logger\.\w+)\s*\(.*[{%](\s*\w*\.)?(password|jwt|secret_key|auth_token)\w*[}%s]', re.IGNORECASE
+)
+
+
 def audit_stride_threat_matrix(file_path: str, content: str) -> List[Dict[str, Any]]:
     """Audits code against STRIDE threat model standards."""
     findings = []
     lines = content.splitlines()
 
-    # 1. Spoofing: Unsigned or HS256 JWT algorithm check
+    # 1. Spoofing: Unsigned or HS256 JWT algorithm check -- requires an actual jwt.decode(...)
+    # call with an algorithms=[...] argument naming a weak algorithm, not just those words
+    # appearing anywhere on the line (which self-matched this very detector's own source).
     for idx, line in enumerate(lines, 1):
-        if "jwt.decode" in line and "algorithms" in line and ("HS256" in line or "none" in line.lower()):
+        if _JWT_WEAK_ALG_RE.search(line) and not line.lstrip().startswith("#"):
             findings.append({
                 "standard": "STRIDE-SPOOFING",
                 "cve_id": "STD-STRIDE-JWT-INSECURE-ALG",
@@ -25,30 +44,34 @@ def audit_stride_threat_matrix(file_path: str, content: str) -> List[Dict[str, A
                 "description": f"STRIDE Spoofing Violation: JWT configured with weak algorithm (HS256/none). Standard requires RS256/Ed25519 asymmetric signatures. Line {idx}: {line.strip()}"
             })
 
-    # 2. Repudiation: Missing audit logging in state-changing endpoints (POST/PUT/DELETE)
-    if "FastAPI" in content or "@app.post" in content or "@app.delete" in content:
-        if "db_manager" in content and "remediation_history" not in content and "vulnerability_log" not in content:
-            findings.append({
-                "standard": "STRIDE-REPUDIATION",
-                "cve_id": "STD-STRIDE-MISSING-AUDIT-LOG",
-                "severity": "MEDIUM",
-                "file": file_path,
-                "line": 1,
-                "description": "STRIDE Repudiation Violation: Endpoint modifies state without writing an immutable audit log entry (who, what, when)."
-            })
+    # 2. Repudiation: Missing audit logging in state-changing endpoints (POST/PUT/DELETE).
+    # Real FastAPI route decorators only, not any file that merely mentions the word "FastAPI"
+    # or contains the substring "@app.post" inside an unrelated regex/string (e.g. a route-
+    # discovery detector's own pattern definition).
+    has_state_changing_route = bool(re.search(r'@app\.(post|put|delete|patch)\s*\(', content))
+    if has_state_changing_route and "db_manager" in content and "remediation_history" not in content and "vulnerability_log" not in content:
+        findings.append({
+            "standard": "STRIDE-REPUDIATION",
+            "cve_id": "STD-STRIDE-MISSING-AUDIT-LOG",
+            "severity": "MEDIUM",
+            "file": file_path,
+            "line": 1,
+            "description": "STRIDE Repudiation Violation: Endpoint modifies state without writing an immutable audit log entry (who, what, when)."
+        })
 
-    # 3. Information Disclosure: Unmasked PII or raw stacktrace exposure
+    # 3. Information Disclosure: only flags when a sensitive-looking VARIABLE is actually
+    # interpolated into the log call -- not when the word merely appears as descriptive text
+    # (e.g. "Attempting Password authentication..." logs no real secret value at all).
     for idx, line in enumerate(lines, 1):
-        if "print(" in line or "logger." in line:
-            if any(sensitive in line.lower() for sensitive in ["password", "jwt", "secret_key", "auth_token"]):
-                findings.append({
-                    "standard": "STRIDE-INFO-DISCLOSURE",
-                    "cve_id": "STD-STRIDE-LOG-SENSITIVE-DATA",
-                    "severity": "HIGH",
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"STRIDE Information Disclosure: Sensitive credential or token logged directly. Line {idx}: {line.strip()}"
-                })
+        if _SENSITIVE_INTERPOLATION_RE.search(line):
+            findings.append({
+                "standard": "STRIDE-INFO-DISCLOSURE",
+                "cve_id": "STD-STRIDE-LOG-SENSITIVE-DATA",
+                "severity": "HIGH",
+                "file": file_path,
+                "line": idx,
+                "description": f"STRIDE Information Disclosure: Sensitive credential or token logged directly. Line {idx}: {line.strip()}"
+            })
 
     return findings
 
@@ -90,7 +113,7 @@ def run_compliance_standards_audit(target_dir: str = "/app", asset_id: int = Non
     for root, _, files in os.walk(target_dir):
         # "tests" excluded too -- see the identical exclusion (and its reasoning) in
         # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
@@ -110,16 +133,23 @@ def run_compliance_standards_audit(target_dir: str = "/app", asset_id: int = Non
     # second ticket for the same real finding reported by a different engine.
     try:
         from core import deduplication_engine
+        active_fingerprints = set()
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
                 location = f"{rel_path}:{item.get('line', 0)}"
                 description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
 
+                active_fingerprints.add(deduplication_engine.calculate_fingerprint(asset_id, item["cve_id"], location))
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
                     "standards-audit", url_path=location, open_status="OPEN", preserve_status=True
                 )
+
+            if asset_id is not None:
+                resolved_count = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "standards-audit", active_fingerprints)
+                if resolved_count:
+                    print(f"✅ [Standards-Auditor] Reconciled {resolved_count} stale standards-audit finding(s) as RESOLVED for asset {asset_id}.")
     except Exception as db_err:
         print(f"⚠️ [Standards-Auditor] Could not log findings to DB: {db_err}")
 

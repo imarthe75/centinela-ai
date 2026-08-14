@@ -68,7 +68,7 @@ def run_cmmi_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[
     for root, _, files in os.walk(target_dir):
         # "tests" excluded too -- see the identical exclusion (and its reasoning) in
         # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             if file.endswith((".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".php")):

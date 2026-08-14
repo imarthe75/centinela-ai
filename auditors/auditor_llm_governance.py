@@ -48,7 +48,7 @@ def run_llm_governance_audit(target_dir: str = "/app") -> List[Dict[str, Any]]:
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             if file.endswith((".py", ".js", ".ts", ".jsx", ".tsx")):

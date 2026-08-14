@@ -9,6 +9,37 @@ from typing import List, Dict, Any
 from core import db_manager
 
 
+def _is_inside_string_literal(line: str, pos: int) -> bool:
+    """
+    Naive single-line string-literal detector: True if `pos` falls inside an open quote span on
+    this line. Not a full tokenizer (doesn't handle triple-quoted or multi-line strings), but
+    correctly handles the real false-positive case found live 2026-08-13: this scanner's own
+    rule-definition tuples describe what they detect in a plain string
+    (`"Dynamic Code Execution risk via eval()."`), which naive substring matching flagged as a
+    fresh CODE-INJECTION-EVAL finding against the scanner's own source on every self-audit run.
+    """
+    before = re.sub(r"\\['\"]", "", line[:pos])  # drop escaped quotes so they don't skew parity
+    return (before.count("'") % 2 == 1) or (before.count('"') % 2 == 1)
+
+
+def _is_real_dangerous_call(line: str, match: "re.Match") -> bool:
+    """
+    Used only for the code-execution-risk family (dynamic-eval / exec / os.system / subprocess
+    shell=True) -- NOT for HARDCODED-SECRET or the SQLi patterns, where matching inside a string
+    literal is the entire point. Real bug fixed 2026-08-13: this scanner's own detector files
+    (which necessarily contain comments and description strings *about* those risky calls, to
+    define what they catch) were self-flagging on every scan -- confirmed live, 6/6
+    CODE-INJECTION-EVAL findings against this codebase's own auditors/*.py were exactly this,
+    not a real dynamic-eval call. (Note: this single-line heuristic doesn't track state across a
+    multi-line triple-quoted docstring, so a docstring that spells out the flagged pattern
+    literally can still self-match, as this one nearly did -- worded around it rather than
+    add cross-line tracking for a single, rare self-referential case.)
+    """
+    if line.lstrip().startswith("#"):
+        return False
+    return not _is_inside_string_literal(line, match.start())
+
+
 def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     """Performs AST & Pattern SAST analysis on source code files."""
     findings = []
@@ -57,7 +88,8 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     ]
     for idx, line in enumerate(lines, 1):
         for pattern, rule_id, severity, desc in cmd_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
+            m = re.search(pattern, line, re.IGNORECASE)
+            if m and _is_real_dangerous_call(line, m):
                 findings.append({
                     "cve_id": rule_id,
                     "severity": severity,
@@ -67,8 +99,16 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
                 })
 
     # 3. SSRF (Server-Side Request Forgery)
+    # Real false positive fixed 2026-08-13: the old pattern flagged ANY f-string URL starting
+    # with http(s)://, regardless of whether the interpolated {variable} controls the actual
+    # destination HOST (real SSRF risk) or is merely a path/query segment on an otherwise
+    # hardcoded, fixed host (not SSRF at all -- e.g. main.py's own
+    # `requests.get(f"http://ip-api.com/json/{ip}?...")`, where the request always goes to
+    # ip-api.com no matter what `ip` contains). `[^/"\']*\{` requires the first `{` interpolation
+    # to appear before the first `/` after the scheme -- i.e. inside the host/authority part of
+    # the URL, which is the actual condition for SSRF (attacker-influenced destination).
     ssrf_patterns = [
-        (r'requests\.(get|post|put|delete)\s*\(\s*f["\']https?://', "SSRF-UNCHECKED-FETCH", "MEDIUM", "Potential SSRF via dynamic URL fetch without private IP validation.")
+        (r'requests\.(get|post|put|delete)\s*\(\s*f["\']https?://[^/"\']*\{', "SSRF-UNCHECKED-FETCH", "MEDIUM", "Potential SSRF: the request's destination HOST is dynamically interpolated without private/internal IP validation.")
     ]
     for idx, line in enumerate(lines, 1):
         for pattern, rule_id, severity, desc in ssrf_patterns:
@@ -211,7 +251,16 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
         # tests/test_sast_db_patterns.py's SQL injection fixtures) -- these aren't real
         # production vulnerabilities and previously polluted compliance scoring for the
         # asset that owns this source tree.
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests"]):
+        # "data/remediation" excluded 2026-08-13: this is Centinela's own GENERATED OUTPUT
+        # (the remediation scripts/patches this exact function writes for other findings), not
+        # source code -- a script whose entire job is `sed -i 's/eval(/console.log(/g'` was
+        # being flagged as a NEW eval() vulnerability, creating a real feedback loop where fixing
+        # a finding generated a new "finding" about the fix itself. "data/sonar_scans" excluded
+        # same day: cloned THIRD-PARTY repositories from other GitLab projects' SonarQube scans,
+        # not Centinela's own code at all -- were being misattributed to Centinela's own
+        # self-audit asset (confirmed live: findings under
+        # data/sonar_scans/arquitectura-geo-ircep-smart/... on the Centinela-AI (Self-Audit) asset).
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
@@ -243,16 +292,30 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
     #    one ticket instead of creating a second one).
     try:
         from core import deduplication_engine
+        active_fingerprints = set()
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
                 location = f"{rel_path}:{item.get('line', 0)}"
                 description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
 
+                active_fingerprints.add(deduplication_engine.calculate_fingerprint(asset_id, item["cve_id"], location))
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], description,
                     "sast-native", url_path=location, open_status="OPEN", preserve_status=True
                 )
+
+            # Only reconcile when scoped to a real asset -- a bare/default asset_id=None call
+            # (e.g. ad-hoc testing) has no well-defined "everything else for this asset" set to
+            # resolve against. See reconcile_resolved_findings()'s own docstring: this closes a
+            # real gap where line-anchored findings on actively-edited files (e.g. Centinela's
+            # own source) never got marked resolved even long after the flagged code moved or
+            # was already fixed, because line-number drift meant a fresh scan's fingerprint
+            # would never match the old one again.
+            if asset_id is not None:
+                resolved_count = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "sast-native", active_fingerprints)
+                if resolved_count:
+                    print(f"✅ [Master-Auditor] Reconciled {resolved_count} stale sast-native finding(s) as RESOLVED for asset {asset_id}.")
     except Exception as db_err:
         print(f"⚠️ [Master-Auditor] Could not log findings to DB: {db_err}")
 
