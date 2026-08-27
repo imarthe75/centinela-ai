@@ -52,7 +52,8 @@ import {
   LayoutGrid,
   List,
   Gauge,
-  Target
+  Target,
+  Code2
 } from 'lucide-react'
 import {
   BarChart,
@@ -93,7 +94,9 @@ export default function Dashboard() {
   const auth = useAuth()
   const [currentView, setCurrentView] = useState('dashboard')
   const [stats, setStats] = useState({ alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
-  const [vulnStats, setVulnStats] = useState({ total: 0, critical: 0, high: 0, pending_ia: 0, pending_approval: 0 })
+  const [vulnStats, setVulnStats] = useState({ total: 0, real_vulnerabilities_total: 0, infra_vulnerabilities: 0, code_vulnerabilities: 0, infra_informational: 0, code_informational: 0, critical: 0, high: 0, pending_ia: 0, pending_approval: 0 })
+  const [soarCategoryFilter, setSoarCategoryFilter] = useState('ALL')
+  const [soarAssetCategoryFilter, setSoarAssetCategoryFilter] = useState('ALL')
   const [mapData, setMapData] = useState([])
   const [alerts, setAlerts] = useState([])
   const [inventory, setInventory] = useState([])
@@ -105,6 +108,7 @@ export default function Dashboard() {
   const [dailyDetections, setDailyDetections] = useState([])
   const [tops, setTops] = useState({ recent_assets: [], most_vulnerable: [], most_remediated: [] })
   const [dashboardCharts, setDashboardCharts] = useState({ cis_grade_distribution: [], top_mitre_techniques: [], crs_distribution: [], sla_compliance_percentage: null })
+  const [severityByCategory, setSeverityByCategory] = useState({ infra: {}, code: {} })
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState([])
   const toastIdCounter = useRef(0)
@@ -168,7 +172,7 @@ export default function Dashboard() {
   const [pingResults, setPingResults] = useState({}) // { [assetName]: { status, ping_ok, latency_ms, loading, message } }
   const [showAssetDetailsModal, setShowAssetDetailsModal] = useState(false)
   const [assetDetailsData, setAssetDetailsData] = useState(null)
-  const [activeCmmiAreaFilter, setActiveCmmiAreaFilter] = useState(null) // area code ('CAR'|'SAM'|'MSR'|'PQA') or null
+  const [activeCmmiAreaFilter, setActiveCmmiAreaFilter] = useState(null) // area code ('CAR'|'PQA'|'CM'|'MC'|'VV') or null
   const [itdrEvents24h, setItdrEvents24h] = useState([])
   const [itdrEventsRecent, setItdrEventsRecent] = useState([])
   const [itdrAnomalies, setItdrAnomalies] = useState([])
@@ -537,8 +541,9 @@ export default function Dashboard() {
         axios.get(`${API_BASE}/stats/soar-roi`),
         axios.get(`${API_BASE}/audit/cmmi-v3-report`),
         axios.get(`${API_BASE}/audit/iso27001-report`),
-        axios.get(`${API_BASE}/stats/dashboard-charts`)
-      ]).then(([resHealth, resDaily, resTops, resRoi, resCmmi, resIso, resCharts]) => {
+        axios.get(`${API_BASE}/stats/dashboard-charts`),
+        axios.get(`${API_BASE}/stats/severity-by-category`)
+      ]).then(([resHealth, resDaily, resTops, resRoi, resCmmi, resIso, resCharts, resSeverityCat]) => {
         setHealthStatus(resHealth.data && resHealth.data.services ? resHealth.data : { services: [] })
         setDailyDetections(Array.isArray(resDaily.data) ? resDaily.data : [])
         setTops(resTops.data || { recent_assets: [], most_vulnerable: [], most_remediated: [] })
@@ -546,6 +551,7 @@ export default function Dashboard() {
         setCmmiReport(resCmmi.data?.report || { overall_cmmi_compliance_rate: null, assets_audit: [] })
         setIsoReport(resIso.data?.report || { overall_iso_compliance_rate: null, assets_audit: [] })
         setDashboardCharts(resCharts.data || { cis_grade_distribution: [], top_mitre_techniques: [], crs_distribution: [], sla_compliance_percentage: null })
+        setSeverityByCategory(resSeverityCat.data || { infra: {}, code: {} })
       }).catch(err => console.error("Error fetching secondary dashboard metrics:", err))
     } catch (error) {
       console.error("Error fetching dashboard data:", error)
@@ -844,10 +850,12 @@ export default function Dashboard() {
       soarStatusFilter === 'AI_FAILED' ? r.status === 'AI_FAILED' && !r.executed_bool : true
     ) : true;
     const matchSearch = soarSearch ? (
-      r.cve_id?.toLowerCase().includes(soarSearch.toLowerCase()) || 
+      r.cve_id?.toLowerCase().includes(soarSearch.toLowerCase()) ||
       r.script_path?.toLowerCase().includes(soarSearch.toLowerCase())
     ) : true;
-    return matchAsset && matchSeverity && matchStatus && matchSearch;
+    const matchCategory = soarCategoryFilter && soarCategoryFilter !== 'ALL' ? r.finding_category === soarCategoryFilter : true;
+    const matchAssetCategory = soarAssetCategoryFilter && soarAssetCategoryFilter !== 'ALL' ? r.asset_category === soarAssetCategoryFilter : true;
+    return matchAsset && matchSeverity && matchStatus && matchSearch && matchCategory && matchAssetCategory;
   }) : [];
 
   // CIS Benchmarks (Hardening Level 1) grade badge -- shared by the inventory grid card, the
@@ -1111,13 +1119,17 @@ export default function Dashboard() {
         <div className="p-8">
           {currentView === 'dashboard' && (
             <>
-              {/* Top Metric Grid (7 Executive KPI Cards) */}
-              <div className="grid grid-cols-2 lg:grid-cols-7 gap-4 mb-8">
-                <MetricCard 
-                    label="Usuarios Activos" 
-                    value={stats?.users || 0} 
-                    icon={<Users size={20} />} 
-                    color="text-[#06B6D4]" 
+              {/* Global KPIs -- métricas que no se dividen por infra/código (identidades, alertas
+                  de runtime, cumplimiento fleet-wide, cola de remediación). Reorganizado
+                  2026-08-14 a petición del usuario: las métricas de vulnerabilidades ahora viven
+                  en 2 grupos claramente etiquetados (Infraestructura / Código) más abajo, en vez
+                  de mezcladas en una sola fila sin distinción. */}
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-4">
+                <MetricCard
+                    label="Usuarios Activos"
+                    value={stats?.users || 0}
+                    icon={<Users size={20} />}
+                    color="text-[#06B6D4]"
                     sub="Sincronizado CDMX"
                     onClick={() => setCurrentView('itdr')}
                     title="Ver gestión de identidades y telemetría ITDR (Haz clic para ir)"
@@ -1147,7 +1159,7 @@ export default function Dashboard() {
                     color="text-indigo-400"
                     sub={`${cmmiReport.total_assets_audited || 0} activos auditados en vivo`}
                     onClick={() => setCurrentView('inventory')}
-                    title="Promedio real de cumplimiento CMMI v3.0 (CAR/SAM/MSR/PQA/EST/PLAN/VV) sobre todos los activos auditados"
+                    title="Promedio real de cumplimiento CMMI v3.0 (CAR/PQA/CM/MC/VV -- las 5 áreas que este escáner puede evidenciar de código/historial de escaneo) sobre todos los activos auditados"
                 />
                 <MetricCard 
                     label="Alertas en Tiempo Real" 
@@ -1159,30 +1171,73 @@ export default function Dashboard() {
                     onClick={() => setCurrentView('threat-hunting')}
                     title="Ver búsqueda de amenazas y log maestro en tiempo real (Haz clic para ir)"
                 />
-                <MetricCard 
-                    label="Vulnerabilidades" 
-                    value={vulnStats?.total || 0} 
-                    icon={<ShieldAlert size={20} />} 
-                    color="text-orange-400" 
-                    sub="Pendientes de Remediar"
-                    onClick={() => setCurrentView('soar')}
-                    title="Ver hallazgos de seguridad y parches de remediación (Haz clic para ir)"
-                />
-                <MetricCard 
-                    label="Remediación con IA" 
-                    value={vulnStats?.pending_ia || 0} 
-                    icon={<Zap size={20} />} 
-                    color="text-[#06B6D4]" 
+                <MetricCard
+                    label="Remediación con IA"
+                    value={vulnStats?.pending_ia || 0}
+                    icon={<Zap size={20} />}
+                    color="text-[#06B6D4]"
                     sub="En cola de análisis"
                     onClick={() => setCurrentView('soar')}
                     title="Ver parches automáticos e IA SOAR (Haz clic para ir)"
                 />
               </div>
 
+              {/* Vulnerabilidades por categoría -- reorganizado 2026-08-14 a petición del usuario
+                  en 2 grupos claramente etiquetados (Infraestructura / Código), cada uno con su
+                  par Real/Informativo, en vez de una sola fila mixta sin distinción visual. */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+                <div className="bg-[#1E293B]/50 border border-slate-800 rounded-[24px] p-4">
+                  <p className="text-[11px] font-black text-orange-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Server size={12} /> Infraestructura</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <MetricCard
+                        label="Vulnerabilidades"
+                        value={vulnStats?.infra_vulnerabilities || 0}
+                        icon={<ShieldAlert size={20} />}
+                        color="text-orange-400"
+                        sub="Hallazgos reales"
+                        onClick={() => { setSoarCategoryFilter('VULNERABILITY'); setSoarAssetCategoryFilter('INFRA'); setCurrentView('soar') }}
+                        title="Vulnerabilidades de seguridad reales sobre infraestructura (servidores, bases de datos). Haz clic para ver filtrado."
+                    />
+                    <MetricCard
+                        label="Informativos"
+                        value={vulnStats?.infra_informational || 0}
+                        icon={<Info size={20} />}
+                        color="text-slate-400"
+                        sub="Auditorías / marcadores"
+                        onClick={() => { setSoarCategoryFilter('INFORMATIONAL'); setSoarAssetCategoryFilter('INFRA'); setCurrentView('soar') }}
+                        title="Hallazgos informativos sobre infraestructura: marcadores de auditoría (CIS Benchmarks, escaneos completados) -- no son vulnerabilidades de seguridad. Haz clic para ver filtrado."
+                    />
+                  </div>
+                </div>
+                <div className="bg-[#1E293B]/50 border border-slate-800 rounded-[24px] p-4">
+                  <p className="text-[11px] font-black text-amber-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Code2 size={12} /> Código</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <MetricCard
+                        label="Vulnerabilidades"
+                        value={vulnStats?.code_vulnerabilities || 0}
+                        icon={<ShieldAlert size={20} />}
+                        color="text-amber-400"
+                        sub="Hallazgos reales"
+                        onClick={() => { setSoarCategoryFilter('VULNERABILITY'); setSoarAssetCategoryFilter('CODE'); setCurrentView('soar') }}
+                        title="Vulnerabilidades de seguridad reales sobre código fuente (SAST/SCA/DAST de repos GitLab). Haz clic para ver filtrado."
+                    />
+                    <MetricCard
+                        label="Informativos"
+                        value={vulnStats?.code_informational || 0}
+                        icon={<Info size={20} />}
+                        color="text-slate-400"
+                        sub="Calidad de código"
+                        onClick={() => { setSoarCategoryFilter('INFORMATIONAL'); setSoarAssetCategoryFilter('CODE'); setCurrentView('soar') }}
+                        title="Hallazgos informativos sobre código: SonarQube code smells, métricas ISO 25010 (longitud de método), CMMI (deuda técnica) -- no son vulnerabilidades de seguridad. Haz clic para ver filtrado."
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-8 space-y-8">
                   {/* Map Section */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 relative overflow-hidden group">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 relative overflow-hidden group" title="Ubicación geográfica real de los activos con coordenadas registradas en el inventario">
                     <div className="flex items-center justify-between mb-8">
                       <div>
                         <h3 className="text-white font-bold text-xl mb-1 flex items-center gap-2">
@@ -1198,7 +1253,7 @@ export default function Dashboard() {
                   </div>
 
                   {/* Alerts Table */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Últimas 5 alertas de runtime (Falco/Zeek) detectadas en vivo -- distinto de las vulnerabilidades de escaneo mostradas en otras secciones">
                     <div className="flex items-center justify-between mb-8">
                       <h3 className="text-white font-bold text-xl flex items-center gap-2">
                         <Activity className="text-[#06B6D4]" size={20} />
@@ -1265,7 +1320,7 @@ export default function Dashboard() {
                   </div>
 
                   {/* Daily Detections Chart */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8" title="Cantidad de nuevos hallazgos (todos los motores, infra y código) detectados por día">
                     <div>
                       <h3 className="text-white font-bold text-xl mb-1 flex items-center gap-2">
                         <Activity className="text-[#06B6D4]" size={20} />
@@ -1345,7 +1400,7 @@ export default function Dashboard() {
                   </div>
 
                   {/* SOAR ROI Metrics Section */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 mt-8" title="Impacto medido del motor de remediación automática frente a la remediación manual, sobre datos reales de remediation_history">
                     <div>
                       <h3 className="text-white font-bold text-xl mb-1 flex items-center gap-2">
                         <Zap className="text-[#06B6D4]" size={20} />
@@ -1392,7 +1447,7 @@ export default function Dashboard() {
                 </div>
                 {/* Right Sidebar */}
                 <div className="lg:col-span-4 space-y-8">
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Conteo de TODAS las alertas de runtime (Falco/Zeek) agrupadas por severidad -- no confundir con las vulnerabilidades de Infra/Código de las tarjetas superiores, que son hallazgos de escaneo, no alertas en vivo">
                     <h3 className="text-white font-bold text-lg mb-6">Distribución de Riesgo</h3>
                     <div className="h-64">
                       <ResponsiveContainer width="100%" height="100%">
@@ -1448,6 +1503,50 @@ export default function Dashboard() {
                     <p className="text-[12px] text-slate-500 font-bold text-center uppercase tracking-widest mt-4">Haz clic en un segmento para filtrar alertas</p>
                   </div>
 
+                  {/* Severidad por Infra/Código -- agregado 2026-08-14 a petición del usuario, tras
+                      la separación de vulnerabilidades reales vs informativas: antes solo existía
+                      un total fleet-wide sin distinguir de dónde viene cada severidad. Excluye
+                      hallazgos INFORMATIONAL (SonarQube code smells, ISO 25010, CMMI) a propósito --
+                      ver /api/stats/severity-by-category. */}
+                  {[
+                    { key: 'infra', label: 'Severidad — Infraestructura', icon: <Server size={16} className="text-orange-400" />, tip: 'Vulnerabilidades reales (excluye hallazgos informativos/de calidad) en servidores, bases de datos y activos de red, agrupadas por severidad.' },
+                    { key: 'code', label: 'Severidad — Código', icon: <ShieldAlert size={16} className="text-amber-400" />, tip: 'Vulnerabilidades reales (excluye SonarQube code smells, ISO 25010, CMMI) en repositorios GitLab (SAST/SCA), agrupadas por severidad.' },
+                  ].map(({ key, label, icon, tip }) => {
+                    const dist = severityByCategory[key] || {}
+                    const order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
+                    const colors = { CRITICAL: '#EF4444', HIGH: '#F97316', MEDIUM: '#EAB308', LOW: '#10B981', INFO: '#64748B' }
+                    const chartData = order.filter(s => (dist[s] || 0) > 0).map(s => ({ severity: s, value: dist[s] }))
+                    const total = order.reduce((sum, s) => sum + (dist[s] || 0), 0)
+                    return (
+                      <div key={key} className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title={tip}>
+                        <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">{icon} {label}</h3>
+                        <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest mb-4">{total} hallazgos reales</p>
+                        <div className="h-40">
+                          {chartData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                                <XAxis type="number" hide />
+                                <YAxis type="category" dataKey="severity" stroke="#64748B" fontSize={10} tickLine={false} width={60} />
+                                <Tooltip
+                                  contentStyle={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', fontSize: '11px' }}
+                                  itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                                  formatter={(value) => [`${value} hallazgos`, '']}
+                                />
+                                <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                                  {chartData.map((entry, idx) => (
+                                    <Cell key={idx} fill={colors[entry.severity]} />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-slate-500 font-bold text-xs uppercase">Sin hallazgos reales registrados</div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+
                   <div className="bg-gradient-to-br from-[#06B6D4]/20 to-blue-900/20 rounded-[32px] border border-[#06B6D4]/20 p-8">
                     <div className="flex items-center gap-3 mb-4">
                       <Zap className="text-[#06B6D4]" size={24} />
@@ -1478,14 +1577,14 @@ export default function Dashboard() {
                   <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mb-6">Medidores en vivo, calculados sobre hallazgos y auditorías reales</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     {[
-                      { label: 'ISO 27001 / 25010', value: vulnStats?.iso_compliance_percentage, sub: 'Controles sin violaciones activas' },
-                      { label: 'CMMI v3.0', value: cmmiReport.overall_cmmi_compliance_rate, sub: `${cmmiReport.total_assets_audited || 0} activos auditados` },
-                      { label: 'Cumplimiento SLA', value: dashboardCharts.sla_compliance_percentage, sub: `${dashboardCharts.sla_within || 0} dentro de plazo · ${dashboardCharts.sla_breached || 0} vencidos` },
+                      { label: 'ISO 27001 / 25010', value: vulnStats?.iso_compliance_percentage, sub: 'Controles sin violaciones activas', tip: 'Porcentaje real del universo fijo de controles ISO 27001/25010 sin ninguna violación activa en toda la flota (excluye activos nunca auditados).' },
+                      { label: 'CMMI v3.0', value: cmmiReport.overall_cmmi_compliance_rate, sub: `${cmmiReport.total_assets_audited || 0} activos auditados`, tip: 'Promedio real de cumplimiento CMMI v3.0 (5 áreas de práctica evaluables por código: CAR/PQA/CM/MC/VV, de las 19 del modelo tailored de C&A), solo sobre activos genuinamente verificados por algún motor -- excluye activos nunca alcanzados.' },
+                      { label: 'Cumplimiento SLA', value: dashboardCharts.sla_compliance_percentage, sub: `${dashboardCharts.sla_within || 0} dentro de plazo · ${dashboardCharts.sla_breached || 0} vencidos`, tip: 'Porcentaje de hallazgos abiertos que aún están dentro de su plazo SLA (24h Crítico / 7d Alto / 30d Medio / 90d Bajo) según severidad.' },
                     ].map((g, idx) => {
                       const pct = g.value ?? 0
                       const color = pct >= 75 ? '#10B981' : pct >= 50 ? '#06B6D4' : pct >= 25 ? '#F59E0B' : '#EF4444'
                       return (
-                        <div key={idx} className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-6 flex flex-col items-center">
+                        <div key={idx} className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-6 flex flex-col items-center" title={g.tip}>
                           <div className="h-36 w-full relative">
                             <ResponsiveContainer width="100%" height="100%">
                               <RadialBarChart innerRadius="70%" outerRadius="100%" data={[{ value: pct }]} startAngle={90} endAngle={-270}>
@@ -1506,9 +1605,11 @@ export default function Dashboard() {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Radar CMMI 7 áreas -- agregado en cliente: % de activos que pasan cada área
-                      real (CAR/SAM/MSR/PQA/EST/PLAN/VV), sobre datos ya reales de cmmiReport. */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  {/* Radar CMMI 5 áreas -- agregado en cliente: % de activos que pasan cada área
+                      real (CAR/PQA/CM/MC/VV), sobre datos ya reales de cmmiReport. Realineado 2026-08-25
+                      contra el modelo CMMI V3.0 tailored de 19 áreas de C&A (SAM/MSR retirados: no son
+                      áreas reales de ese modelo) -- ver compliance_mapper.py. */}
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Radar de las 5 áreas de práctica CMMI v3.0 evaluables por código (CAR/PQA/CM/MC/VV): cada eje muestra el % de activos que aprueban esa área específica, a nivel flota">
                     <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">
                       <Target className="text-indigo-400" size={20} /> CMMI v3.0 — 7 Áreas de Práctica
                     </h3>
@@ -1546,7 +1647,7 @@ export default function Dashboard() {
                   {/* Distribución CIS Benchmark -- grade real por activo (auditors/auditor_cis_benchmarks.py),
                       distingue honestamente 'Sin Conexión' (verificado, inalcanzable) de 'No Evaluado'
                       (nunca corrido) en vez de mezclarlos con un grade fabricado. */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Grade real (A-F) de hardening CIS Level 1 por activo. 'Sin Conexión' = auditoría intentada pero el host no respondió por SSH; 'No Evaluado' = nunca se ha corrido la auditoría; 'N/A' = repos de código, donde CIS no aplica">
                     <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">
                       <ShieldCheck className="text-cyan-400" size={20} /> Distribución CIS Benchmarks
                     </h3>
@@ -1585,7 +1686,7 @@ export default function Dashboard() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {/* Remediación IA vs Manual -- dato real ya calculado en /api/stats/soar-roi,
                       graficado aquí como pie en vez de solo la barra numérica existente arriba. */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Cuántas remediaciones ya ejecutadas (remediation_history) fueron aplicadas automáticamente por el motor SOAR/IA frente a las aplicadas manualmente por un analista">
                     <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">
                       <Zap className="text-[#06B6D4]" size={20} /> Remediación: IA vs Manual
                     </h3>
@@ -1615,7 +1716,7 @@ export default function Dashboard() {
 
                   {/* Distribución Centinela Risk Score -- histograma real (calculate_centinela_risk_score,
                       combina CVSS+EPSS+CISA KEV+criticidad del activo) sobre hallazgos abiertos. */}
-                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                  <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Histograma del Centinela Risk Score (0-100) sobre hallazgos abiertos: combina severidad tipo-CVSS + probabilidad real de explotación (EPSS) + presencia en el catálogo CISA KEV + criticidad del activo">
                     <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">
                       <Activity className="text-orange-400" size={20} /> Distribución Centinela Risk Score
                     </h3>
@@ -1645,7 +1746,7 @@ export default function Dashboard() {
 
                 {/* Top MITRE ATT&CK -- técnicas reales detectadas y mapeadas por core/mitre_attack.py
                     sobre hallazgos abiertos, no una lista genérica del framework. */}
-                <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8">
+                <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8" title="Técnicas MITRE ATT&CK reales, mapeadas automáticamente desde los hallazgos abiertos de la flota (no una lista genérica del framework) -- ver core/mitre_attack.py">
                   <h3 className="text-white font-bold text-lg mb-1 flex items-center gap-2">
                     <ShieldAlert className="text-red-400" size={20} /> Top Técnicas MITRE ATT&CK Detectadas
                   </h3>
@@ -1753,12 +1854,46 @@ export default function Dashboard() {
                                 <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
                         </div>
+
+                        {/* Category Select: real vulnerability vs. informational/quality marker */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-2 rounded-xl border border-slate-800" title="Vulnerabilidad: hallazgo de seguridad real y accionable. Informativo: métricas de calidad de código, deuda técnica o marcadores de auditoría (no son vulnerabilidades)">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Categoría:</span>
+                            <div className="relative flex items-center">
+                                <select
+                                    value={soarCategoryFilter}
+                                    onChange={(e) => setSoarCategoryFilter(e.target.value)}
+                                    className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
+                                >
+                                    <option value="ALL">TODAS</option>
+                                    <option value="VULNERABILITY">VULNERABILIDAD REAL</option>
+                                    <option value="INFORMATIONAL">INFORMATIVO / CALIDAD</option>
+                                </select>
+                                <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                            </div>
+                        </div>
+
+                        {/* Asset Category Select: infrastructure vs. code repos */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-2 rounded-xl border border-slate-800" title="Infraestructura: servidores, bases de datos. Código: repositorios GitLab (SAST/SCA/calidad de código)">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Activo:</span>
+                            <div className="relative flex items-center">
+                                <select
+                                    value={soarAssetCategoryFilter}
+                                    onChange={(e) => setSoarAssetCategoryFilter(e.target.value)}
+                                    className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
+                                >
+                                    <option value="ALL">TODOS</option>
+                                    <option value="INFRA">INFRAESTRUCTURA</option>
+                                    <option value="CODE">CÓDIGO</option>
+                                </select>
+                                <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                            </div>
+                        </div>
                     </div>
 
                     <div className="flex gap-2">
-                        {(soarSearch || soarSeverityFilter !== 'ALL' || soarStatusFilter !== 'ALL') && (
-                            <button 
-                                onClick={() => { setSoarSearch(''); setSoarSeverityFilter('ALL'); setSoarStatusFilter('ALL'); }}
+                        {(soarSearch || soarSeverityFilter !== 'ALL' || soarStatusFilter !== 'ALL' || soarCategoryFilter !== 'ALL' || soarAssetCategoryFilter !== 'ALL') && (
+                            <button
+                                onClick={() => { setSoarSearch(''); setSoarSeverityFilter('ALL'); setSoarStatusFilter('ALL'); setSoarCategoryFilter('ALL'); setSoarAssetCategoryFilter('ALL'); }}
                                 className="px-4 py-2 rounded-xl bg-slate-850 hover:bg-slate-700 text-slate-400 hover:text-white text-[11px] font-black uppercase tracking-widest transition-all"
                             >
                                 Limpiar Filtros
@@ -1769,12 +1904,14 @@ export default function Dashboard() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     <div className={`${selectedRemediation ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-6 transition-all duration-500`}>
-                        {remediationLog.length === 0 ? (
+                        {filteredRemediations.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-32 bg-[#1E293B] rounded-[48px] border border-slate-800 border-dashed">
                                 <ZapOff size={64} className="text-slate-700 mb-6" />
                                 <h3 className="text-white font-bold text-2xl mb-2">Sin Orquestaciones Pendientes</h3>
                                 <p className="text-slate-500 text-sm max-w-md text-center font-medium">
-                                    No se han generado planes de remediación automáticos en las últimas 24 horas.
+                                    {remediationLog.length === 0
+                                        ? 'No se han generado planes de remediación automáticos en las últimas 24 horas.'
+                                        : 'Ningún hallazgo coincide con los filtros seleccionados.'}
                                 </p>
                             </div>
                         ) : (
@@ -2284,24 +2421,49 @@ export default function Dashboard() {
                                         >
                                             <Eye size={16} />
                                         </button>
-                                        {pingResults[group.name] ? (
+                                        {String(group.status).toLowerCase() === 'active' ? (
+                                            // Real bug fixed 2026-08-14: a Wazuh agent actively reporting IS stronger
+                                            // evidence of liveness than a raw ICMP ping (many real hosts -- Windows
+                                            // workstations by default, hardened Linux servers -- block inbound ICMP
+                                            // Echo while remaining fully reachable), so this trusts group.status
+                                            // (kept genuinely fresh by the backend's periodic Wazuh/ping poller) over a
+                                            // ping result. A SECOND bug, found live right after the first fix shipped:
+                                            // this used to also accept a bare `group.agent_id` as sufficient on its own
+                                            // -- but agent_id only proves an agent was EVER enrolled, not that it's
+                                            // connected NOW. Confirmed live: a genuinely disconnected workstation
+                                            // (status='disconnected' in the DB, Wazuh's own agent_control reporting
+                                            // "Disconnected") still showed "Sincronizado" purely because agent_id was
+                                            // still set (agent_id is never cleared just because a host went offline).
+                                            // Dropped the agent_id fallback entirely -- group.status alone decides.
+                                            <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado por agente o sondeo">
+                                                <CheckCircle size={10} /> Sincronizado{pingResults[group.name]?.ping_ok ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
+                                            </p>
+                                        ) : pingResults[group.name] ? (
                                             pingResults[group.name].loading ? (
                                                 <p className="text-[12px] font-black text-cyan-400 uppercase tracking-tighter flex items-center gap-1">
-                                                    <RefreshCw size={10} className="animate-spin" /> Verificando Ping...
+                                                    <RefreshCw size={10} className="animate-spin" /> Verificando...
                                                 </p>
                                             ) : pingResults[group.name].ping_ok ? (
-                                                <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Host responde a ICMP Ping en vivo">
-                                                    <CheckCircle size={10} /> En línea ({pingResults[group.name].latency_ms}ms)
+                                                <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message || "Host responde"}>
+                                                    <CheckCircle size={10} /> En línea{pingResults[group.name].latency_ms ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
+                                                </p>
+                                            ) : pingResults[group.name].method === 'wazuh_agent' ? (
+                                                // Real gap fixed 2026-08-14, per direct user question: assets enrolled
+                                                // remotely/via VPN have no fixed IP (endpoint="remote-agent"), so a
+                                                // network ping is structurally undeliverable, not "no response" --
+                                                // confirmed live, pinging such an agent's real VPN IP got an explicit
+                                                // "Destination Host Unreachable" from the gateway itself, not a
+                                                // timeout. The backend now checks Wazuh's own live agent status
+                                                // instead (method='wazuh_agent') and this shows that real result
+                                                // honestly, distinct from a genuine network ping failure below.
+                                                <p className="text-[12px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message}>
+                                                    <ZapOff size={10} className="text-amber-400" /> Agente: Desconectado
                                                 </p>
                                             ) : (
                                                 <p className="text-[12px] font-black text-slate-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message || "Host sin respuesta de ICMP Ping"}>
                                                     <ZapOff size={10} className="text-slate-500" /> Offline (Sin respuesta ICMP)
                                                 </p>
                                             )
-                                        ) : (group.status === 'active' || group.agent_id) ? (
-                                            <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado por agente o sondeo">
-                                                <CheckCircle size={10} /> Sincronizado
-                                            </p>
                                         ) : group.last_seen ? (
                                             <p className="text-[12px] font-black text-amber-400 uppercase tracking-tighter flex items-center gap-1" title={`Desconectado. Última conexión: ${new Date(group.last_seen).toLocaleString('es-MX')}`}>
                                                 <ZapOff size={10} className="text-amber-400" /> Offline (Desconectado)
@@ -2482,20 +2644,27 @@ export default function Dashboard() {
                                             <span className="text-[10px] font-black text-slate-500 uppercase block">ISO 27001 / 25010</span>
                                             <span className="text-xs font-black text-emerald-400">
                                                 {(() => {
+                                                    // is_verified=false means no engine capable of an ISO-relevant audit
+                                                    // (CIS hardening, SAST/SCA) has actually reached this asset yet -- an
+                                                    // EDR agent connecting is not enough on its own (see
+                                                    // evaluate_iso27001_for_asset()'s 2026-08-14 fix). Absence of findings
+                                                    // on a never-audited asset is not evidence of compliance.
                                                     const real = isoReport.assets_audit?.find(a => a.asset_name === group.name)
-                                                    return real ? `${real.iso_compliance_percentage}%` : '—'
+                                                    if (!real) return '—'
+                                                    return real.is_verified ? `${real.iso_compliance_percentage}%` : 'Sin Verificar'
                                                 })()}
                                             </span>
                                         </div>
                                         <ShieldCheck size={16} className="text-emerald-400/60" />
                                     </div>
-                                    <div className="bg-[#0F172A] p-2.5 rounded-xl border border-indigo-500/20 flex items-center justify-between" title="Cumplimiento CMMI v3.0 real (CAR/SAM/MSR/PQA/EST/PLAN/VV)">
+                                    <div className="bg-[#0F172A] p-2.5 rounded-xl border border-indigo-500/20 flex items-center justify-between" title="Cumplimiento CMMI v3.0 real (CAR/PQA/CM/MC/VV)">
                                         <div>
                                             <span className="text-[10px] font-black text-slate-500 uppercase block">CMMI v3.0 (Real)</span>
                                             <span className="text-xs font-black text-indigo-400">
                                                 {(() => {
                                                     const real = cmmiReport.assets_audit?.find(a => a.asset_name === group.name)
-                                                    return real ? `${real.cmmi_compliance_percentage}%` : '—'
+                                                    if (!real) return '—'
+                                                    return real.is_verified ? `${real.cmmi_compliance_percentage}%` : 'Sin Verificar'
                                                 })()}
                                             </span>
                                         </div>
@@ -2592,7 +2761,7 @@ export default function Dashboard() {
                                             {group.interfaces[0]?.endpoint || '10.4.3.34'}
                                         </td>
                                         <td className="p-4 text-xs font-bold">
-                                            {pingResults[group.name]?.ping_ok || group.status === 'active' || group.agent_id ? (
+                                            {String(group.status).toLowerCase() === 'active' || pingResults[group.name]?.ping_ok ? (
                                                 <span className="text-emerald-400 flex items-center gap-1">
                                                     <CheckCircle size={12} /> Sincronizado (Online)
                                                 </span>
@@ -4051,7 +4220,7 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
-                                {/* Bloque de Cumplimiento CMMI v3.0 -- 7 áreas de práctica reales (CAR/SAM/MSR/PQA/EST/PLAN/VV),
+                                {/* Bloque de Cumplimiento CMMI v3.0 -- 5 áreas de práctica reales evaluables por código (CAR/PQA/CM/MC/VV),
                                     evaluadas en vivo contra los hallazgos reales de este activo (evaluate_cmmi_v3_for_asset). */}
                                 <div className="space-y-2">
                                     <div className="flex items-center justify-between">
@@ -4178,11 +4347,15 @@ export default function Dashboard() {
 
                                 {/* Desglose de Fallos Reales que Afectan el Cumplimiento */}
                                 {assetDetailsData.info?.compliance?.iso_findings?.length > 0 && (() => {
+                                    // Realigned 2026-08-25 to match compliance_mapper.py's evaluate_cmmi_v3_for_asset():
+                                    // SAM/MSR removed (not real CMMI V3.0 codes under C&A's own ISACA-verified 19-area
+                                    // model -- see the manual citation in that file), PQA broadened to absorb the former
+                                    // MSR keywords (no honest per-finding CMMI area exists for a hardcoded sleep). CM/MC/VV
+                                    // are boolean/evidence-based, not finding-keyword-based, so they have no entry here
+                                    // (same as EST/PLAN/VV before this change) -- clicking them shows all findings.
                                     const CMMI_AREA_KEYWORDS = {
                                         CAR: ['INJECTION', 'SWALLOWED', 'CAR'],
-                                        SAM: ['SCA', 'CVE', 'DEP'],
-                                        MSR: ['DEBT', 'SLEEP', 'COMPLEXITY'],
-                                        PQA: ['HARDCODED', 'SECRET', 'TODO'],
+                                        PQA: ['HARDCODED', 'SECRET', 'TODO', 'SLEEP', 'DEBT', 'COMPLEXITY'],
                                     }
                                     const keywords = activeCmmiAreaFilter ? CMMI_AREA_KEYWORDS[activeCmmiAreaFilter] || [] : null
                                     const findings = keywords

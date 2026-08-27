@@ -17,7 +17,7 @@ def audit_cloud_iac_and_cspm(target_dir: str = "/app") -> List[Dict[str, Any]]:
     findings = []
     
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

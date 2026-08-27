@@ -467,7 +467,7 @@
           <tbody>
             <tr><td>ZAP</td><td><code>zap</code></td><td>DAST — app en ejecución</td><td>Cabeceras de seguridad, XSS, fugas de información, configuración de sesión</td></tr>
             <tr><td>Nuclei</td><td>—</td><td>Web / red</td><td>CVEs conocidos y malas configuraciones vía plantillas comunitarias</td></tr>
-            <tr><td>Semgrep</td><td><code>semgrep</code></td><td>SAST — código fuente</td><td>Patrones de código inseguro, multi-lenguaje</td></tr>
+            <tr><td>Semgrep</td><td><code>semgrep</code></td><td>SAST — código fuente</td><td>Patrones de código inseguro. Ruleset elegido automáticamente por lenguaje real detectado en el repo (no fijo): Python, JS/TS, Java, PHP, Go — ampliado 25 ago 2026 con Rust, Terraform, Ruby, C#, C, Kotlin, Swift, Scala y Elixir, cada nombre de ruleset verificado en vivo contra el registry real de Semgrep antes de agregarlo. Conectado al ciclo periódico de escaneo de todo el fleet de GitLab desde esa misma fecha (antes solo se disparaba manualmente).</td></tr>
             <tr><td>Motor SAST propio</td><td><code>sast-native</code></td><td>SAST — código fuente</td><td>eval() peligroso, inyección SQL/comandos, SSRF, secretos hardcodeados, complejidad cognitiva</td></tr>
             <tr><td>Motor SCA propio</td><td><code>sca-native</code></td><td>Dependencias Multi-Lenguaje</td><td>Paquetes vulnerables npm, pip, Maven (Java `pom.xml`), Go (`go.mod`) y Packagist (PHP `composer.json`) — consulta OSV.dev en vivo por paquete y versión exacta con análisis de alcanzabilidad</td></tr>
             <tr><td>Auditor IaC K8s & TF (propio)</td><td><code>iac-native</code></td><td>Infraestructura como Código</td><td>Contenedores privilegiados en Kubernetes (`privileged: true`), montajes hostPath inseguros y buckets S3/Security Groups públicos en Terraform (`.tf`)</td></tr>
@@ -483,7 +483,8 @@
             <tr><td>BloodHound / Neo4j</td><td><code>bloodhound</code></td><td>Active Directory</td><td>Rutas de escalamiento de privilegios en el dominio — motor real, en espera de datos reales (ver Omni-XDR más abajo)</td></tr>
             <tr><td>CIS Benchmarks (propio)</td><td><code>cis-benchmark</code></td><td>Hardening de SO</td><td>Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH; automático cada 7 días por activo, o bajo demanda</td></tr>
             <tr><td>Auditor DB Hardening (propio)</td><td><code>db-hardening</code></td><td>Seguridad & Hardening DB</td><td>Cifrado TLS en tránsito, verificación TDE (IaC), exposición de puertos por defecto y pruebas para PostgreSQL, MySQL, Oracle (1521), MSSQL (1433), Trino (8080), Cassandra (9042), Elasticsearch (9200) y Neo4j (7687)</td></tr>
-            <tr><td>Auditor CMMI V3.0 Level 5 (propio)</td><td><code>cmmi-audit</code></td><td>Procesos & Calidad CMMI</td><td>Auditoría de prevención de defectos CAR, predictibilidad MSR y aseguramiento de calidad de software PQA</td></tr>
+            <tr><td>Auditor CMMI V3.0 (propio)</td><td><code>cmmi-audit</code></td><td>Procesos & Calidad CMMI</td><td>Realineado 25 ago 2026 contra el modelo CMMI V3.0 tailored de 19 áreas reales de C&amp;A (cruzado contra el manual de metodología propio de la empresa, verificado ahí contra la CMMI Model Quick Reference Guide V3.0 de ISACA): <code>CAR</code> (análisis causal, excepciones silenciadas), <code>PQA</code> (higiene de código: secretos, TODO, sleeps duros), <code>CM</code> (Gestión de Configuración — historial Git real vía <code>git rev-list</code>), <code>MC</code> (Monitor and Control — conectividad + auditoría reciente). Los códigos <code>SAM</code>/<code>MSR</code> usados hasta la sesión anterior no eran reales (no existen en el modelo tailored de C&amp;A) y fueron retirados. Las otras 14 áreas del modelo de 19 quedan explícitamente marcadas "no evaluado" en el desglose de cumplimiento en vez de asumidas.</td></tr>
+            <tr><td>Auditor de Accesibilidad WCAG 2.1 (propio, nuevo 25 ago 2026)</td><td><code>accessibility-wcag</code></td><td>Accesibilidad — requisito legal sector público</td><td>6 reglas estáticas: <code>alt</code> faltante en imágenes, control de formulario sin <code>&lt;label&gt;</code>/<code>aria-label</code>, enlace/botón vacío sin nombre accesible, <code>&lt;html&gt;</code> sin <code>lang</code>, <code>tabindex</code> positivo, <code>&lt;div&gt;</code>/<code>&lt;span&gt;</code> clickeable sin rol. Dos falsos positivos reales encontrados y corregidos antes de estabilizar el motor: el atributo <code>label=</code> de PrimeNG y <code>th:text=</code> de Thymeleaf inyectan texto visible en tiempo de render, así que un botón/enlace con ese atributo no está realmente vacío aunque su HTML fuente lo parezca.</td></tr>
             <tr><td>Gestor CTI & Threat Feeds (propio)</td><td><code>cti-feed</code></td><td>Inteligencia de Amenazas</td><td>Consultas en vivo y correlación de IoCs propietarios con VirusTotal Enterprise, MISP Threat Sharing y HashiCorp Vault</td></tr>
           </tbody>
         </table>
@@ -712,6 +713,7 @@
       <p>Un módulo separado (<code>compliance_mapper.py</code>) no detecta nada por sí mismo — toma los hallazgos que ya existen y los mapea contra los controles de los marcos regulatorios más comunes:</p>
       <p><span class="chip info">ISO 27001:2022</span> <span class="chip info">NIST SP 800-53</span> <span class="chip info">PCI-DSS v4.0</span> <span class="chip info">SOC 2</span> <span class="chip info">GDPR</span></p>
       <p class="dim">Sirve para responder "¿qué controles regulatorios están en riesgo?" sin re-escanear nada — es una capa de reporte sobre los hallazgos ya recolectados.</p>
+      <p class="dim">Añadido 25 ago 2026: un control real de <code>ISO 25010 (Usability — Accessibility)</code> para los 6 tipos de hallazgo del nuevo motor <code>accessibility-wcag</code> — no existía ninguna dimensión de accesibilidad en el mapeo hasta esta fecha.</p>
     </section>
 
     <section id="omni-xdr">
@@ -753,7 +755,7 @@
             <tr>
               <td><b>Auditoría CMMI® v3.0 por Activo</b></td>
               <td><span class="chip verified">✅ Real</span></td>
-              <td>Reporte cuantitativo empírico por activo para las 7 áreas de práctica de CMMI (CAR, SAM, MSR, PQA, EST, PLAN, VV) disponible en endpoint <code>/api/audit/cmmi-v3-report</code>.</td>
+              <td>Reporte cuantitativo empírico por activo para las 5 áreas de práctica de CMMI evaluables honestamente desde código (CAR, PQA, CM, MC, VV, de las 19 del modelo tailored real de C&amp;A) disponible en endpoint <code>/api/audit/cmmi-v3-report</code>.</td>
             </tr>
             <tr>
               <td><b>Instaladores Multi-OS & ossec.conf</b></td>
@@ -867,18 +869,19 @@
 
     <section id="estado-actual">
       <h2>Estado técnico actual</h2>
-      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (13 de agosto de 2026):</p>
+      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (25 de agosto de 2026):</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Indicador</th><th>Valor actual</th></tr></thead>
           <tbody>
-            <tr><td>Activos monitoreados</td><td>82 (servidores, bases de datos, repositorios GitLab)</td></tr>
-            <tr><td>Hallazgos activos reales</td><td>8,799 (sube frente al 11 de agosto: varios auditores de auto-diagnóstico llevaban escaneando en silencio una ruta que no existe dentro del contenedor — al corregirlo aparecieron cientos de hallazgos reales, previamente invisibles, del propio código de Centinela-AI)</td></tr>
-            <tr><td>Hallazgos críticos abiertos</td><td>1,285</td></tr>
-            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>17</td></tr>
-            <tr><td>Incumplimientos de plazo de corrección (SLA) — críticos</td><td>46</td></tr>
+            <tr><td>Activos monitoreados</td><td>87 (servidores, bases de datos, repositorios GitLab)</td></tr>
+            <tr><td>Hallazgos reales (finding_category=VULNERABILITY)</td><td>4,916 — separados de 23,129 hallazgos informativos (calidad de código, defectos funcionales, marcadores de auditoría) desde la clasificación real/informativo introducida el 14-20 de agosto; el número sin diferenciar (28,045) sobrerrepresenta el riesgo real, ver "Taxonomía de clasificación" arriba</td></tr>
+            <tr><td>Hallazgos críticos reales abiertos</td><td>285</td></tr>
+            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>24</td></tr>
+            <tr><td>Incumplimientos de plazo de corrección (SLA) — hallazgos reales</td><td>898</td></tr>
+            <tr><td>Hallazgos de accesibilidad WCAG 2.1 (motor nuevo, 25 ago)</td><td>224, incluidos en el total de hallazgos reales de arriba</td></tr>
             <tr><td>Proveedores de IA en cadena de respaldo</td><td>4 (Groq → Gemini → NVIDIA → OpenRouter)</td></tr>
-            <tr><td>Cobertura de pruebas automatizadas</td><td>62/62 pasan (sube de 30/30; incluye una falla real detectada y corregida en la sesión del 13 de agosto)</td></tr>
+            <tr><td>Cobertura de pruebas automatizadas</td><td>85/85 pasan (sube de 62/62; 22 pruebas nuevas para el motor WCAG y el realineamiento CMMI, ambas del 25 de agosto)</td></tr>
           </tbody>
         </table>
       </div>
@@ -889,17 +892,19 @@
           <tbody>
             <tr><td><code>db-hardening</code></td><td>Operativo</td><td>Verificado contra bases de datos reales (TLS en tránsito, exposición de puertos por defecto)</td></tr>
             <tr><td><code>iac-native</code></td><td>Operativo</td><td>Persistencia verificada; detección de contenedores privilegiados, montajes <code>hostPath</code> y recursos públicos en Terraform</td></tr>
-            <tr><td><code>cmmi-audit</code></td><td>Operativo</td><td>Cada hallazgo se atribuye al repositorio y archivo:línea exacto; el reporte <code>/api/audit/cmmi-v3-report</code> refleja datos reales por activo</td></tr>
+            <tr><td><code>cmmi-audit</code></td><td>Operativo</td><td>Realineado 25 ago 2026 a 5 áreas reales evaluables desde código (<code>CAR</code>/<code>PQA</code>/<code>CM</code>/<code>MC</code>/<code>VV</code>, ver tabla de motores arriba); cada hallazgo se atribuye al repositorio y archivo:línea exacto; el reporte <code>/api/audit/cmmi-v3-report</code> refleja datos reales por activo</td></tr>
+            <tr><td><code>accessibility-wcag</code></td><td>Operativo (nuevo 25 ago 2026)</td><td>224 hallazgos reales verificados en vivo contra SIAT/SIDECO; conectado al ciclo periódico de GitLab</td></tr>
             <tr><td>SpiderFoot OSINT</td><td>Operativo</td><td>Enumeración pasiva (subdominios, CT logs, WHOIS) activa sobre activos <code>SERVER</code>/<code>AppServer</code></td></tr>
             <tr><td>Motor de deduplicación</td><td>Operativo</td><td>Comparación segura ante valores nulos; sin duplicados en alertas agregadas ni en hallazgos por activo</td></tr>
           </tbody>
         </table>
       </div>
       <p class="dim">Resuelto (13 de agosto de 2026): la cuenta de servicio <code>monitor</code> ya tiene rol Developer en el grupo GitLab <code>arquitectura/</code>. Verificado en vivo — no solo por la interfaz de GitLab — clonando los 18 proyectos reales del grupo con el token configurado: 18/18 exitosos (antes, cada uno de estos mismos repositorios devolvía <code>403 Forbidden</code>). El ciclo periódico de escaneo ya venía usando ese mismo token y tiene <code>last_audit</code> real de hoy en los 18 proyectos — no requirió ningún cambio de código.</p>
+      <p class="dim">Resuelto (25 de agosto de 2026): el modelo CMMI del motor propio se cruzó contra el manual de metodología real de C&amp;A (<code>Manual_Metodologia_CA_v2_COMPLETO.docx</code>) y se encontraron dos códigos fabricados (<code>SAM</code>, <code>MSR</code>) que nunca existieron en el modelo de 19 áreas tailored de la empresa. Reemplazados por 5 áreas reales evaluables desde código; las otras 14 quedan explícitamente marcadas "no evaluado" en vez de asumidas. Ese mismo manual recibió un nuevo "Glosario de acrónimos" (acrónimo, inglés, español, descripción técnica y entendible) para las 19 áreas CMMI y otros términos del manual.</p>
     </section>
 
     <footer>
-      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-13
+      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-25
     </footer>
   </main>
 </div>

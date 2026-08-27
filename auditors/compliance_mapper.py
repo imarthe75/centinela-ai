@@ -58,6 +58,17 @@ COMPLIANCE_MAPPING_MATRIX = {
         "SOC_2": "CC6.1 (Logical Access Security)",
         "GDPR": "Art 32 (Security of Processing)"
     },
+    # Real ISO 25010 mapping, added 2026-08-25 alongside the new WCAG auditor: ISO/IEC 25010
+    # explicitly lists "Accessibility" as a sub-characteristic of Usability -- a real, correct
+    # control to cite here, not invented for this codebase. No NIST 800-53/PCI-DSS/SOC 2/GDPR
+    # entry is listed for these: none of those frameworks have an accessibility-specific control
+    # (they're security/privacy frameworks), so those columns are left absent rather than forced.
+    "WCAG-1.1.1-IMG-MISSING-ALT": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
+    "WCAG-1.3.1-FORM-CONTROL-NO-LABEL": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
+    "WCAG-2.4.4-EMPTY-INTERACTIVE-ELEMENT": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
+    "WCAG-3.1.1-HTML-MISSING-LANG": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
+    "WCAG-2.4.3-POSITIVE-TABINDEX": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
+    "WCAG-4.1.2-CLICKABLE-DIV-NO-ROLE": {"ISO_27001": "ISO 25010 (Usability — Accessibility)"},
     "CMMI-CAR-SWALLOWED-EXCEPTION": {
         "ISO_27001": "A.8.28 (Secure Coding)",
         "NIST_800_53": "SI-11 (Error Handling)",
@@ -72,7 +83,11 @@ COMPLIANCE_MAPPING_MATRIX = {
         "PCI_DSS": "Req 2.2 (System Hardening)",
         "SOC_2": "CC7.2 (Monitoring)",
         "GDPR": "Art 32 (Performance)",
-        "CMMI_V3": "MSR (Measurement & Performance Level 5)"
+        # Real fix 2026-08-25: "MSR" is not a real CMMI V3.0 practice area code under C&A's own
+        # ISACA-verified taxonomy (see compliance_mapper.py's CMMI_V3_PRACTICE_AREAS comment) --
+        # the cve_id string itself is kept as-is for dedup/history continuity, but this label no
+        # longer claims a fabricated area. Scored under PQA in evaluate_cmmi_v3_for_asset().
+        "CMMI_V3": "PQA (Process Quality Assurance) -- proxy de higiene de código, sin área CMMI real dedicada a este antipatrón"
     },
     "CMMI-PQA-DEBT-TODO": {
         "ISO_27001": "A.8.9 (Configuration Management)",
@@ -80,7 +95,7 @@ COMPLIANCE_MAPPING_MATRIX = {
         "PCI_DSS": "Req 6.5 (Software Quality)",
         "SOC_2": "CC6.8 (Hardening)",
         "GDPR": "Art 32 (Quality Control)",
-        "CMMI_V3": "PQA (Process Quality Assurance Level 5)"
+        "CMMI_V3": "PQA (Process Quality Assurance)"
     },
     "ORM-N-PLUS-ONE-QUERY": {
         "ISO_27001": "ISO 25010 (Performance Efficiency)",
@@ -185,14 +200,74 @@ def map_vulnerabilities_to_compliance() -> Dict[str, Any]:
     return mapped_matrix
 
 
+
+# Real bug fixed 2026-08-25, found while cross-checking this list against C&A's own methodology
+# manual (Manual_Metodologia_CA_v2_COMPLETO.docx, Parte II cap. 10 -- its own CMMI mapping is
+# explicitly verified against ISACA's CMMI Model Quick Reference Guide V3.0, a real external
+# source, not invented for the manual). C&A's own tailored model applies 19 real areas: RDM, PQA,
+# PR, VV, TS, PI, EST, PLAN, MC, RSK, OT, CM, DAR, CAR, GOV, II, MPM, PAD, PCM. Two of the codes
+# this auditor used before did not survive that check: "SAM" (Supplier Agreement Management) is
+# not one of C&A's 19 tailored areas at all -- they don't treat open-source dependency tracking
+# as a formal supplier-agreement process. "MSR" is not a real CMMI V3.0 code under any taxonomy;
+# the closest real area is MPM (Managing Performance and Measurement), but MPM's real evidence
+# per the manual is org-level estimated-vs-actual delivery data, not a hardcoded Thread.sleep()
+# in source -- there is no honest 1:1 mapping for that finding type at the code level, so its
+# scoring is folded into PQA (code hygiene / technical debt) below instead of kept as its own
+# fabricated area.
+#
+# A second, deeper problem surfaced doing this cross-check, not just wrong codes: even the
+# letters that DID coincidentally match a real CMMI code (EST, PLAN) were measuring something
+# textually similar but substantively different from what the manual defines. Real EST evidence
+# is "estimación con supuestos... registro estimado-vs-real" (project estimation accuracy) --
+# this auditor's old "EST" instead checked asset network reachability, which has nothing to do
+# with estimation. Real PLAN evidence is "Plan de proyecto (desglose, cronograma, línea base)" --
+# a project-management document this auditor has no way to see. Centinela is a security/code
+# scanner: it can see source code and scan history, not C&A's project plans, estimates, risk
+# registers, training logs, or peer-review sign-offs, which is where most of the 19 real areas
+# actually live. Relabeling the same connectivity/last-scan checks under those two codes would
+# have repeated the exact mistake, just with correct-looking labels -- the same "fake precision"
+# problem already flagged elsewhere in this codebase for MITRE ATT&CK (see CLAUDE.md item 5).
+#
+# Fixed by keeping this auditor honest about its real, narrow scope: it evaluates only the areas
+# where source code and scan history genuinely constitute evidence (a strict subset of the 19),
+# using the manual's own area names/codes and staying within what its real evidence column
+# describes, and it now explicitly lists the areas it does NOT evaluate (CMMI_V3_NOT_EVALUATED)
+# instead of silently omitting them, so a report reader sees the coverage boundary instead of
+# assuming full-19-area coverage from a 5-area score.
 CMMI_V3_PRACTICE_AREAS = [
-    {"code": "CAR", "name": "Causal Analysis and Resolution", "level": "Level 5", "desc": "Identificación de causa raíz de defectos y automatización de acciones correctivas."},
-    {"code": "SAM", "name": "Supplier Agreement Management", "level": "Level 3-5", "desc": "Auditoría de componentes de terceros, librerías open-source y dependencias (SCA)."},
-    {"code": "MSR", "name": "Managing Performance and Measurement", "level": "Level 5", "desc": "Métricas cuantitativas de desempeño de software, mantenibilidad y ausencia de parches duros."},
-    {"code": "PQA", "name": "Process Quality Assurance", "level": "Level 3-5", "desc": "Aseguramiento de estándares de calidad de proceso, control de secretos y cero deuda técnica."},
-    {"code": "EST", "name": "Estimating & Resource Management", "level": "Level 3", "desc": "Planificación y asignación adecuada de recursos de infraestructura y capacidad."},
-    {"code": "PLAN", "name": "Planning & Project Execution", "level": "Level 3", "desc": "Trazabilidad de cambios mediante parches auditados y Merge Requests en control de versiones."},
-    {"code": "VV", "name": "Verification and Validation", "level": "Level 3-5", "desc": "Pruebas de seguridad automatizadas (SAST/DAST/EDR) antes de paso a producción."}
+    {"code": "CAR", "name": "Causal Analysis and Resolution", "level": "Enabling / Supporting Implementation",
+     "desc": "Análisis causal real: excepciones silenciadas (catch/except vacío) y fallas de inyección detectadas en código -- evidencia de que los defectos no se están enterrando sin diagnóstico."},
+    {"code": "PQA", "name": "Process Quality Assurance", "level": "Doing / Ensuring Quality",
+     "desc": "Higiene de código como proxy de aseguramiento de calidad: secretos/credenciales expuestas, deuda técnica declarada (TODO) y antipatrones de rendimiento (sleeps duros) sin resolver."},
+    {"code": "CM", "name": "Configuration Management", "level": "Enabling / Supporting Implementation",
+     "desc": "Evidencia real de control de versiones: para repositorios, historial Git verificable (no una carpeta cargada sin control de cambios)."},
+    {"code": "MC", "name": "Monitor and Control", "level": "Managing / Planning & Managing Work",
+     "desc": "Seguimiento operativo real: el activo está bajo monitoreo activo del pipeline SOAR (conectividad verificada o auditoría de hardening reciente) y tiene al menos una auditoría registrada."},
+    {"code": "VV", "name": "Verification and Validation", "level": "Doing / Ensuring Quality",
+     "desc": "Evidencia de verificación automatizada: escaneos de seguridad (SAST/SCA/DAST) o telemetría EDR con hallazgos o cobertura real registrada."},
+]
+
+# Areas from C&A's own 19-area tailored CMMI V3.0 model (see the manual citation above) that this
+# auditor deliberately does NOT score, because their real evidence lives in project-management
+# artifacts (plans, estimates, risk registers, training logs, peer-review sign-offs, requirements
+# traceability matrices) that a source-code/vulnerability scanner has no visibility into. Listed
+# here so a report can disclose the gap explicitly instead of a reader assuming these 5 areas are
+# the whole model.
+CMMI_V3_NOT_EVALUATED = [
+    {"code": "RDM", "name": "Requirements Management", "reason": "Requiere matriz de trazabilidad de requerimientos -- no existe en el alcance de este escáner."},
+    {"code": "PR", "name": "Peer Review", "reason": "Requiere identidad del revisor por cambio -- posible a futuro vía historial de Merge Requests de GitLab, no implementado aún."},
+    {"code": "TS", "name": "Technical Solution", "reason": "Requiere documento de arquitectura/diseño detallado -- artefacto de proyecto, no derivable del código en sí."},
+    {"code": "PI", "name": "Product Integration", "reason": "Requiere contratos de API y pruebas de integración documentadas -- fuera del alcance de un escáner de vulnerabilidades."},
+    {"code": "EST", "name": "Estimating", "reason": "Requiere registro estimado-vs-real del Plan de proyecto -- dato de gestión de proyecto, no de código."},
+    {"code": "PLAN", "name": "Planning", "reason": "Requiere el Plan de proyecto (desglose, cronograma, línea base) -- documento de gestión, no un artefacto que un escáner de código produzca o lea."},
+    {"code": "RSK", "name": "Risk and Opportunity Management", "reason": "Requiere el registro de riesgos del proyecto -- no integrado con este escáner."},
+    {"code": "OT", "name": "Organizational Training", "reason": "Requiere registro de capacitación del equipo -- dato de RH/organizacional."},
+    {"code": "DAR", "name": "Decision Analysis and Resolution", "reason": "Requiere el registro de excepciones estructuradas (ruta 0B-3) -- proceso de gobernanza, no visible en el código."},
+    {"code": "GOV", "name": "Governance", "reason": "Requiere actas de comité y certificación de fidelidad al catálogo tecnológico -- documentos organizacionales."},
+    {"code": "II", "name": "Implementation Infrastructure", "reason": "Requiere evidencia de adopción del repositorio de activos organizacionales -- fuera del alcance por-activo de este escáner."},
+    {"code": "MPM", "name": "Managing Performance and Measurement", "reason": "Requiere datos estimado-vs-real acumulados a nivel organizacional -- no un antipatrón de código individual."},
+    {"code": "PAD", "name": "Process Asset Development", "reason": "Requiere plantillas/checklists/prompts versionados como activo organizacional -- no un artefacto por-proyecto."},
+    {"code": "PCM", "name": "Process Management", "reason": "Requiere lecciones aprendidas consolidadas a nivel organizacional -- fuera del alcance por-activo de este escáner."},
 ]
 
 
@@ -251,11 +326,13 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
     cmmi_compliance_details = []
     passed_count = 0
 
-    # 1. CAR (Level 5) - Causal Analysis & Remediation
+    # 1. CAR - Causal Analysis and Resolution (real code per manual: "Análisis causal sobre
+    # defectos reales" -- a swallowed exception or an injection flaw IS a real, un-analyzed
+    # defect at the point it's found).
     car_fails = [v for v in real_vulns if "INJECTION" in v["cve_id"] or "SWALLOWED" in v["cve_id"] or "CAR" in v["cve_id"]]
     if not car_fails:
         cmmi_compliance_details.append({
-            "area": "CAR (Level 5)",
+            "area": "CAR (Enabling)",
             "status": "CUMPLE (100%)",
             "passed": True,
             "evidence": "Sin fallas de inyección ni supresión de excepciones. Causa raíz mitigada en código."
@@ -263,67 +340,40 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
         passed_count += 1
     else:
         cmmi_compliance_details.append({
-            "area": "CAR (Level 5)",
+            "area": "CAR (Enabling)",
             "status": f"NO CUMPLE ({len(car_fails)} fallas)",
             "passed": False,
             "evidence": f"Detectadas {len(car_fails)} desviaciones graves de análisis de causa raíz ({car_fails[0]['cve_id']})."
         })
 
-    # 2. SAM (Level 3-5) - Supplier Agreement Management / SCA
-    sam_fails = [v for v in real_vulns if "SCA" in v["cve_id"] or "CVE" in v["cve_id"] or "DEP" in v["cve_id"]]
-    if not sam_fails:
-        cmmi_compliance_details.append({
-            "area": "SAM (Level 3-5)",
-            "status": "CUMPLE (100%)",
-            "passed": True,
-            "evidence": "Librerías de terceros y paquetes open-source actualizados sin vulnerabilidades conocidas."
-        })
-        passed_count += 1
-    else:
-        cmmi_compliance_details.append({
-            "area": "SAM (Level 3-5)",
-            "status": f"NO CUMPLE ({len(sam_fails)} dependencias vulnerables)",
-            "passed": False,
-            "evidence": f"Librerías desactualizadas detectadas ({sam_fails[0]['cve_id']}). Requiere actualización de componentes."
-        })
-
-    # 3. MSR (Level 5) - Measurement & Performance
-    msr_fails = [v for v in real_vulns if "DEBT" in v["cve_id"] or "SLEEP" in v["cve_id"] or "COMPLEXITY" in v["cve_id"]]
-    if not msr_fails:
-        cmmi_compliance_details.append({
-            "area": "MSR (Level 5)",
-            "status": "CUMPLE (100%)",
-            "passed": True,
-            "evidence": "Rendimiento optimizado. Ausencia de retardos duros (sleep) y complejidad de código bajo límites (<15)."
-        })
-        passed_count += 1
-    else:
-        cmmi_compliance_details.append({
-            "area": "MSR (Level 5)",
-            "status": f"NO CUMPLE ({len(msr_fails)} ineficiencias)",
-            "passed": False,
-            "evidence": f"Detectados antipatrones de desempeño o complejidad excesiva ({msr_fails[0]['cve_id']})."
-        })
-
-    # 4. PQA (Level 3-5) - Process Quality Assurance
-    pqa_fails = [v for v in real_vulns if "HARDCODED" in v["cve_id"] or "SECRET" in v["cve_id"] or "TODO" in v["cve_id"]]
+    # 2. PQA - Process Quality Assurance, code-hygiene proxy. Broadened 2026-08-25 to absorb the
+    # former fabricated "MSR" bucket's evidence (SLEEP/COMPLEXITY/DEBT) -- there is no honest
+    # per-finding CMMI area for a hardcoded sleep or an over-complex method under C&A's real
+    # 19-area model, and PQA's own category (Doing / Ensuring Quality) is the closest real home
+    # for "code hygiene debt" without inventing a new area. SCA/dependency findings (formerly the
+    # fabricated "SAM" bucket) are deliberately NOT folded in here: an outdated third-party
+    # library is a supply-chain/verification concern (already covered by VV's scan-evidence
+    # check below), not a code-hygiene-debt concern the author of this code controls directly.
+    pqa_fails = [v for v in real_vulns if any(
+        kw in v["cve_id"] for kw in ("HARDCODED", "SECRET", "TODO", "SLEEP", "DEBT", "COMPLEXITY")
+    )]
     if not pqa_fails:
         cmmi_compliance_details.append({
-            "area": "PQA (Level 3-5)",
+            "area": "PQA (Doing)",
             "status": "CUMPLE (100%)",
             "passed": True,
-            "evidence": "Aseguramiento de calidad verificado. Sin credenciales expuestas ni remanentes TODO/Mocks en fuentes."
+            "evidence": "Sin credenciales expuestas, deuda técnica declarada (TODO) ni antipatrones de rendimiento (sleeps duros) sin resolver."
         })
         passed_count += 1
     else:
         cmmi_compliance_details.append({
-            "area": "PQA (Level 3-5)",
-            "status": f"NO CUMPLE ({len(pqa_fails)} violaciones de calidad)",
+            "area": "PQA (Doing)",
+            "status": f"NO CUMPLE ({len(pqa_fails)} violaciones de higiene de código)",
             "passed": False,
-            "evidence": f"Halladas violaciones de aseguramiento de calidad o credenciales expuestas ({pqa_fails[0]['cve_id']})."
+            "evidence": f"Halladas violaciones de higiene de código: credenciales expuestas, deuda técnica o antipatrones de rendimiento ({pqa_fails[0]['cve_id']})."
         })
 
-    # Real, positive verification signals for this asset -- used by EST/VV below and by the
+    # Real, positive verification signals for this asset -- used by CM/MC/VV below and by the
     # is_verified gate at the end. cis_grade is only non-None after a genuinely successful SSH
     # connection (see auditor_cis_benchmarks.py's SIN_CONEXION handling); asset.get() is used
     # since not every caller's SELECT includes cis_grade.
@@ -339,52 +389,75 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
     status_upper = str(asset.get("status") or "").upper()
     is_genuinely_active = status_upper == "ACTIVE" or bool(asset.get("agent_id"))
 
-    # 5. EST (Level 3) - Resource Management / Connectivity
-    # Real bug fixed here: this used to also pass on `asset["endpoint"]` being merely non-empty --
-    # in practice nearly every asset has SOME endpoint string set (even a broken one like
-    # "remote-agent" or an unreachable IP), so this almost never actually failed regardless of
-    # real connectivity. Also fixed a case-sensitivity bug: compared status to lowercase "active"
-    # while every real value in this column is uppercase ("ACTIVE"), so is_online was silently
-    # False for every real asset even before the weak endpoint fallback papered over it.
-    if is_genuinely_active or has_cis_grade:
+    # 3. CM - Configuration Management (new 2026-08-25, real code per manual: "Historial de
+    # versiones y release"). Only meaningful for code repositories -- a real Git history is
+    # genuine, checkable evidence of version control; a SERVER/infra asset has no repo of its
+    # own to check, so it's marked N/A here rather than forced to pass or fail on a question
+    # that doesn't apply to it. Evidence comes from the CMMI-GIT-HISTORY-CHECK marker
+    # auditor_cmmi_v3.py's check_git_history() logs on every real scan (same pattern as the
+    # CIS-BENCHMARK-AUDIT completion marker) -- read from the RAW vulns list (not real_vulns,
+    # which excludes markers) since it's a Info-severity marker, not a vulnerability.
+    git_marker = next((v for v in vulns if str(v["cve_id"]).upper() == "CMMI-GIT-HISTORY-CHECK"), None)
+    if git_marker:
+        m = re.search(r"(\d+) commits reales", git_marker.get("description") or "")
+        commit_count = int(m.group(1)) if m else 0
+        has_git_history = commit_count > 1
+    else:
+        has_git_history = False
+    if is_gitlab_repo:
+        if has_git_history:
+            cmmi_compliance_details.append({
+                "area": "CM (Enabling)",
+                "status": "CUMPLE (100%)",
+                "passed": True,
+                "evidence": "Historial de control de versiones (Git) verificado -- más de un commit real registrado."
+            })
+            passed_count += 1
+        else:
+            cmmi_compliance_details.append({
+                "area": "CM (Enabling)",
+                "status": "NO CUMPLE (Sin Historial Git Verificable)",
+                "passed": False,
+                "evidence": "No se pudo verificar un historial de control de versiones real (0 o 1 commit, o carpeta sin .git) -- posible carga directa de archivos sin control de cambios."
+            })
+    else:
         cmmi_compliance_details.append({
-            "area": "EST (Level 3)",
+            "area": "CM (Enabling)",
+            "status": "N/A (no aplica a este tipo de activo)",
+            "passed": None,
+            "evidence": "Gestión de configuración vía Git solo aplica a repositorios de código; este activo es infraestructura."
+        })
+
+    # 4. MC - Monitor and Control (replaces the former fabricated "EST"/"PLAN" connectivity and
+    # last-audit checks, merged 2026-08-25). Real MC evidence per the manual is "seguimiento...
+    # bitácora (desviación · causa · decisión)" -- ongoing operational monitoring. Both of the old
+    # signals (is this asset reachable right now, has it ever been processed by the audit
+    # pipeline) are genuinely sub-signals of "is this asset under active monitoring", which MC
+    # means; neither one is honestly "estimación" (EST) or a "Plan de proyecto" (PLAN), the real
+    # meanings of those two codes, which this scanner has no visibility into at all (see
+    # CMMI_V3_NOT_EVALUATED above).
+    if (is_genuinely_active or has_cis_grade) and asset.get("last_audit"):
+        cmmi_compliance_details.append({
+            "area": "MC (Managing)",
             "status": "CUMPLE (100%)",
             "passed": True,
-            "evidence": f"Conectividad real verificada ({asset['endpoint']}): agente activo o auditoría de hardening exitosa."
+            "evidence": f"Monitoreo activo verificado: conectividad real ({asset['endpoint']}) o hardening exitoso, y al menos una auditoría registrada (última: {asset['last_audit']})."
         })
         passed_count += 1
     else:
+        missing = []
+        if not (is_genuinely_active or has_cis_grade):
+            missing.append("sin agente activo ni auditoría de hardening exitosa")
+        if not asset.get("last_audit"):
+            missing.append("sin fecha de última auditoría registrada")
         cmmi_compliance_details.append({
-            "area": "EST (Level 3)",
-            "status": "NO CUMPLE (Sin Verificar)",
+            "area": "MC (Managing)",
+            "status": "NO CUMPLE (Sin Monitoreo Verificado)",
             "passed": False,
-            "evidence": f"No hay evidencia real de que este activo ({asset['endpoint']}) haya respondido: sin agente activo ni auditoría de hardening exitosa."
+            "evidence": f"No hay evidencia real de monitoreo activo sobre este activo ({asset['endpoint']}): {', '.join(missing)}."
         })
 
-    # 6. PLAN (Level 3) - Planning & Git MR Version Control
-    # Real bug fixed here: this always returned CUMPLE (100%) unconditionally, for every asset,
-    # regardless of any real evidence -- a hardcoded result presented as a verified finding,
-    # exactly what this project's own rules prohibit. last_audit is a real timestamp set when the
-    # discovery/audit pipeline has actually processed this asset at least once; used here as
-    # genuine (if imperfect) evidence of pipeline traceability instead of a constant.
-    if asset.get("last_audit"):
-        cmmi_compliance_details.append({
-            "area": "PLAN (Level 3)",
-            "status": "CUMPLE (100%)",
-            "passed": True,
-            "evidence": f"Activo procesado por el pipeline de auditoría SOAR (última auditoría: {asset['last_audit']})."
-        })
-        passed_count += 1
-    else:
-        cmmi_compliance_details.append({
-            "area": "PLAN (Level 3)",
-            "status": "NO CUMPLE (Sin Auditoría Registrada)",
-            "passed": False,
-            "evidence": "Este activo nunca ha sido procesado por el pipeline de auditoría SOAR (sin fecha de última auditoría)."
-        })
-
-    # 7. VV (Level 3-5) - Verification & Validation / EDR
+    # 5. VV - Verification and Validation / EDR
     # Real bug fixed here: last_scanned can be set even by a FAILED scan attempt (a connection
     # timeout still updates a "last attempted" timestamp in some engines), so this could pass
     # without a single real detection ever having happened. Now requires an actual positive
@@ -393,7 +466,7 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
     # network reachability at all, so it's a valid signal on its own for that asset type).
     if real_vulns or asset.get("agent_id") or is_gitlab_repo or has_cis_grade:
         cmmi_compliance_details.append({
-            "area": "VV (Level 3-5)",
+            "area": "VV (Doing)",
             "status": "CUMPLE (100%)",
             "passed": True,
             "evidence": "Escaneos de seguridad automatizados (SAST/SCA) o telemetría EDR activa, con evidencia real registrada."
@@ -401,13 +474,20 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
         passed_count += 1
     else:
         cmmi_compliance_details.append({
-            "area": "VV (Level 3-5)",
+            "area": "VV (Doing)",
             "status": "NO CUMPLE (Sin Verificación)",
             "passed": False,
             "evidence": "Activo sin escaneos periódicos exitosos ni telemetría EDR registrada."
         })
 
-    asset_score = round((passed_count / len(CMMI_V3_PRACTICE_AREAS)) * 100, 1)
+    # Real bug avoided here: dividing by the fixed len(CMMI_V3_PRACTICE_AREAS) would silently
+    # punish (or, on a repo, silently never award) the CM area for asset types where it's
+    # genuinely N/A ("passed": None, see CM above) -- a SERVER asset would always show 4/5 max
+    # (80%) even with everything else passing, which is a fabricated ceiling, not a real score.
+    # Excluding N/A entries from the denominator keeps the percentage meaningful for both asset
+    # types instead of applying one asset type's evidence gap to the other's score.
+    evaluated_areas = [d for d in cmmi_compliance_details if d["passed"] is not None]
+    asset_score = round((passed_count / len(evaluated_areas)) * 100, 1) if evaluated_areas else None
 
     # Real bug fixed here: a never-reached asset (no EDR agent, no successful hardening scan, not
     # a GitLab repo, zero real findings from any engine) would still get a confident numeric CMMI
@@ -418,15 +498,32 @@ def evaluate_cmmi_v3_for_asset(cur, asset: Dict[str, Any], vulns: list = None) -
     # is_verified surfaces this honestly so the frontend can show "Sin Verificar" instead of a
     # fabricated-looking percentage, and the fleet-wide average (get_cmmi_v3_asset_audit_report)
     # excludes unverified assets instead of letting them silently inflate/deflate it.
-    is_verified = bool(real_vulns) or has_cis_grade or bool(asset.get("agent_id")) or is_gitlab_repo
+    #
+    # Second real bug fixed 2026-08-14, found live by a direct user report on a freshly-added
+    # workstation: `bool(asset.get("agent_id"))` used to count as its own sufficient "verified"
+    # signal here, but a Wazuh agent enrolling only proves EDR telemetry connectivity -- it says
+    # nothing about whether any ISO/CMMI-relevant audit (CIS hardening, SAST/SCA) has actually
+    # run. Confirmed live: a brand-new AppServer asset showed CMMI/ISO 100% within seconds of
+    # being added (the agent connects almost instantly) while its own card honestly showed
+    # "CIS: NO EVALUADO" right next to it -- the two facts contradicted each other on the same
+    # screen. agent_id is still real, valid evidence for the VV/EST *practice areas* above (a
+    # narrower, correctly-scoped claim: "this host is reachable"), just not for the broader
+    # "a compliance audit has actually happened" gate.
+    is_verified = bool(real_vulns) or has_cis_grade or is_gitlab_repo
 
     return {
         "asset_name": aname,
         "asset_type": atype,
         "endpoint": asset["endpoint"],
         "cmmi_compliance_percentage": asset_score,
-        "cmmi_maturity_level": "CMMI Nivel 5 (Optimizing)" if asset_score >= 90 else "CMMI Nivel 3 (Defined)" if asset_score >= 70 else "CMMI Nivel 1 (Initial)",
+        "cmmi_maturity_level": (
+            None if asset_score is None else
+            "CMMI Nivel 5 (Optimizing)" if asset_score >= 90 else
+            "CMMI Nivel 3 (Defined)" if asset_score >= 70 else
+            "CMMI Nivel 1 (Initial)"
+        ),
         "active_vulnerabilities_count": len(vulns),
+        "areas_not_evaluated": CMMI_V3_NOT_EVALUATED,
         "practice_areas_breakdown": cmmi_compliance_details,
         "is_verified": is_verified
     }
@@ -448,6 +545,7 @@ def get_cmmi_v3_asset_audit_report(asset_id_filter: int = None) -> Dict[str, Any
         "total_assets_audited": 0,
         "overall_cmmi_compliance_rate": 0.0,
         "practice_areas_evaluated": CMMI_V3_PRACTICE_AREAS,
+        "practice_areas_not_evaluated": CMMI_V3_NOT_EVALUATED,
         "assets_audit": []
     }
 
@@ -600,9 +698,12 @@ def evaluate_iso27001_for_asset(cur, asset: Dict[str, Any], vulns: list = None) 
     # Verification gate -- same reasoning as evaluate_cmmi_v3_for_asset()'s is_verified: an
     # asset never actually reached by any engine would otherwise get a confident 100% purely
     # from the ABSENCE of findings, which means nothing was checked, not that it's compliant.
+    # agent_id deliberately excluded (see evaluate_cmmi_v3_for_asset()'s matching comment,
+    # 2026-08-14): a Wazuh agent enrolling proves EDR connectivity, not that any ISO-relevant
+    # audit (CIS hardening, SAST/SCA) has actually run against this asset.
     has_cis_grade = asset.get("cis_grade") is not None
     is_gitlab_repo = str(atype).upper() == "GITLAB-REPO"
-    is_verified = bool(real_vulns) or has_cis_grade or bool(asset.get("agent_id")) or is_gitlab_repo
+    is_verified = bool(real_vulns) or has_cis_grade or is_gitlab_repo
 
     return {
         "asset_name": aname,

@@ -77,9 +77,33 @@ def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: 
     """
     key_file_path = None
     try:
+        # "raw" instead of "shell": real gap found 2026-08-22 auditing a live CentOS 8 host with
+        # only Python 3.6.8 installed (the distro's own stock python3, common on real
+        # legacy/government infrastructure that hasn't been rebuilt since CentOS 8's release).
+        # The "shell" module (like all real Ansible modules) ships Python code that uses
+        # `from __future__ import annotations`, a 3.7+ syntax feature -- confirmed live, it fails
+        # on the target with a raw SyntaxError before the command ever runs, which this
+        # function's own exception handling correctly treated as "unreachable" (technically
+        # true: the module itself never executed) but was actually a fully reachable, fully
+        # legitimate host being reported as SIN_CONEXION. "raw" pipes the command directly over
+        # SSH via the remote shell with no Python module involved at all -- verified live it
+        # produces the identical output format ("<ip> | CHANGED | rc=0 >>\n<output>") this
+        # function's own parsing below already expects, so this is a safe, drop-in fix, not a
+        # new code path -- and every check this auditor runs is already a simple read-only shell
+        # command with no need for real Ansible module logic in the first place.
+        # Real gap fixed alongside the raw-module fix above, found live on the same host: two
+        # checks (CIS-1.1/1.2, both reading /etc/ssh/sshd_config) need root -- this host's own
+        # sshd_config is properly hardened to 600 root:root (confirmed live: "Permission denied"
+        # for the unprivileged connection user), and `sshd -T` also requires root to read the
+        # host keys it validates against. This function never escalated privilege at all before,
+        # so any correctly-hardened host would show these as "unreachable" (honestly, not
+        # fabricated -- but still an avoidable gap, not a real unknown, since the sudo password is
+        # already available). "--become" is safe to add unconditionally: for a command that
+        # doesn't actually need root, sudo running it as root produces the identical output.
         cmd = [
-            "ansible", "all", "-i", f"{asset_ip},", "-m", "shell", "-a", command,
-            "-u", ansible_user, "--ssh-common-args=-o StrictHostKeyChecking=no",
+            "ansible", "all", "-i", f"{asset_ip},", "-m", "raw", "-a", command,
+            "-u", ansible_user, "--ssh-common-args=-o StrictHostKeyChecking=no -o LogLevel=ERROR",
+            "--become",
         ]
         if ssh_key:
             fd, key_file_path = tempfile.mkstemp(prefix="cis_key_")
@@ -87,13 +111,23 @@ def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: 
                 kf.write(ssh_key if ssh_key.endswith("\n") else ssh_key + "\n")
             os.chmod(key_file_path, stat.S_IRUSR | stat.S_IWUSR)
             cmd += ["--private-key", key_file_path]
+            if sudo_pass:
+                cmd += ["-e", f"ansible_become_pass={sudo_pass}"]
         elif sudo_pass:
-            cmd += ["-e", f"ansible_ssh_pass={sudo_pass}"]
+            cmd += ["-e", f"ansible_ssh_pass={sudo_pass}", "-e", f"ansible_become_pass={sudo_pass}"]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd="/app")
         if result.returncode not in (0,):
             return None
-        # Ansible's shell module output format: "<ip> | CHANGED | rc=0 >>\n<actual output>"
+        # Ansible's raw/shell module output format: "<ip> | CHANGED | rc=0 >>\n<actual output>".
+        # "raw" specifically also appends SSH's own session-teardown notice ("Shared connection
+        # to <ip> closed.") as the LAST captured line -- confirmed live it's not part of the
+        # remote command's real output, just OpenSSH's own stderr chatter about closing the
+        # connection. Left in, it would corrupt every check here that reads output[-1] (the
+        # CIS-2.1/CIS-2.2 permission-bit checks) since the string would end with "closed." instead
+        # of the real last character of the command's output. Stripped as a fixed suffix rather
+        # than filtered by content, since it's OpenSSH's own fixed wording, not something a real
+        # command could coincidentally produce as its actual last line.
         lines = result.stdout.splitlines()
         out_lines = []
         capture = False
@@ -102,6 +136,8 @@ def _run_ssh_command(asset_ip: str, ansible_user: str, ssh_key: str, sudo_pass: 
                 capture = True
                 continue
             if capture:
+                if line.startswith("Shared connection to ") and line.rstrip().endswith("closed."):
+                    continue
                 out_lines.append(line)
         return "\n".join(out_lines).strip()
     except Exception:

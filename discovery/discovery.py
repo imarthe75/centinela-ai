@@ -56,6 +56,54 @@ def discover_core_assets():
 
     print("✅ Discovery complete.")
 
+def classify_asset_type_from_os(os_name: str) -> str:
+    """
+    Real asset-type classification from a genuine OS name string reported by Wazuh, replacing
+    the unconditional "AppServer" default every newly-discovered agent used to get regardless of
+    what it actually runs. Fixed 2026-08-14 in response to a direct live user report: a freshly
+    enrolled workstation (real hardware, a colleague's laptop, confirmed running while the
+    dashboard showed it as infrastructure) was tagged AppServer purely because
+    discover_wazuh_agents() never looked at the OS at all before this. Per explicit user
+    instruction: only Linux or a genuine Windows Server edition counts as SERVER-class
+    infrastructure -- Windows non-Server editions (10/11 Home/Pro/Enterprise) and macOS are
+    institutional endpoints/workstations, not servers, regardless of how capable the hardware is.
+    """
+    os_lower = str(os_name or "").lower()
+    if "windows server" in os_lower:
+        return "SERVER"
+    if "windows" in os_lower:
+        return "WORKSTATION"
+    if "mac" in os_lower or "darwin" in os_lower or "os x" in os_lower:
+        return "WORKSTATION"
+    if any(distro in os_lower for distro in
+           ("linux", "ubuntu", "debian", "centos", "rhel", "red hat", "fedora", "suse", "alpine")):
+        return "SERVER"
+    # Genuinely undetected/unknown OS (e.g. Wazuh hasn't reported syscheck/os data yet for a
+    # brand-new agent) -- keep the prior safe default rather than guess.
+    return "AppServer"
+
+
+def get_agent_os_name(container, agent_id: str) -> str:
+    """Real OS name for a Wazuh agent, via the same agent_control -i <id> -j call
+    main.py's GET /api/wazuh/agent/{agent_id}/info already uses. Returns "" (not a guess) if the
+    agent hasn't reported OS/syscheck data yet -- classify_asset_type_from_os() treats that as
+    genuinely unknown rather than assuming a value."""
+    try:
+        result = container.exec_run(["/var/ossec/bin/agent_control", "-i", agent_id, "-j"])
+        if result.exit_code != 0:
+            return ""
+        import json as _json
+        data = _json.loads(result.output.decode())
+        agent_data = data.get("data", {})
+        os_field = agent_data.get("os")
+        if isinstance(os_field, dict):
+            return str(os_field.get("name") or "")
+        return str(os_field or "").split("|")[0].strip()
+    except Exception as e:
+        print(f"⚠️ [Wazuh-Discovery] Could not fetch OS info for agent {agent_id}: {e}")
+        return ""
+
+
 def discover_wazuh_agents():
     print("🔍 [Centinela-AI] Starting Wazuh Agent Discovery...")
     try:
@@ -136,6 +184,10 @@ def discover_wazuh_agents():
                                 WHERE id = %s
                             """, (agent_id, status.lower(), agent_name, existing[0]))
                         else:
+                            os_name = get_agent_os_name(container, agent_id)
+                            new_asset_type = classify_asset_type_from_os(os_name)
+                            print(f"🖥️ Classifying new agent {agent_name} as {new_asset_type} "
+                                  f"(OS: {os_name or 'unknown'})")
                             cur.execute("""
                                 INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id, hostname)
                                 VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s)
@@ -144,7 +196,7 @@ def discover_wazuh_agents():
                                     last_audit = NOW(),
                                     agent_id = EXCLUDED.agent_id,
                                     hostname = COALESCE(infra_inventory.hostname, EXCLUDED.hostname);
-                            """, (agent_name, "AppServer", agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id, agent_name))
+                            """, (agent_name, new_asset_type, agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id, agent_name))
             
             print("✅ Wazuh discovery complete.")
     except Exception as e:

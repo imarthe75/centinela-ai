@@ -335,9 +335,20 @@ def _persist_issues(cur, asset_id: Optional[int], project_key: str, issues: List
             f"{issue.get('message', 'Sin descripción')}\n"
             f"**Esfuerzo estimado:** {issue.get('effort', 'N/D')}"
         )
+        # Real per-issue category from SonarQube's own API "type" field. Only VULNERABILITY and
+        # SECURITY_HOTSPOT are genuinely security-relevant; CODE_SMELL is maintainability, and
+        # -- real bug fixed 2026-08-21, found live while building a report on 3 new projects --
+        # BUG is a functional-reliability defect (code that will misbehave at runtime), a
+        # different axis of SonarQube's taxonomy entirely, not a security vulnerability either.
+        # The original reasoning here ("VULNERABILITY/BUG/SECURITY_HOTSPOT are real security-
+        # relevant") was wrong -- confirmed live against a real project: 469 of 487 "vulnerabilities"
+        # reported for one Angular frontend were actually type BUG (mostly HTML/accessibility
+        # defects like InputWithoutLabelCheck), not security issues at all; the real count was 18.
+        finding_category = "VULNERABILITY" if issue.get("type") in ("VULNERABILITY", "SECURITY_HOTSPOT") else "INFORMATIONAL"
         deduplication_engine.log_finding_deduplicated(
             cur, asset_id, cve_id, severity, description, "sonarqube",
-            url_path=url_path, open_status="OPEN", preserve_status=True
+            url_path=url_path, open_status="OPEN", preserve_status=True,
+            finding_category=finding_category
         )
         count += 1
     return count

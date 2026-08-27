@@ -240,7 +240,8 @@ valor real que queda registrado junto a cada hallazgo en la base de datos.
 | **BloodHound / Neo4j** | `bloodhound` | Active Directory | Rutas de escalamiento de privilegios hacia Domain Admins |
 | **CIS Benchmarks (propio)** | `cis-benchmark` | Hardening de SO | Subconjunto real de ~11 controles CIS Level 1 Linux vía SSH; automático cada 7 días por activo, o bajo demanda |
 | **Auditor DB Hardening (propio)** | `db-hardening` | Seguridad de bases de datos | TLS en tránsito, TDE, exposición de puertos por defecto |
-| **Auditor CMMI V3.0 (propio)** | `cmmi-audit` | Procesos y calidad | Prevención de defectos (CAR), predictibilidad (MSR), aseguramiento de calidad (PQA) |
+| **Auditor CMMI V3.0 (propio)** | `cmmi-audit` | Procesos y calidad | Realineado 25 ago 2026 a 5 áreas reales del modelo tailored de 19 áreas de C&A: análisis causal (`CAR`), higiene de código (`PQA`), gestión de configuración vía historial Git real (`CM`), monitoreo y control (`MC`), verificación (`VV`) — los códigos `SAM`/`MSR` usados antes no eran reales, ver sección de glosario |
+| **Auditor de Accesibilidad WCAG 2.1 (propio, nuevo)** | `accessibility-wcag` | Accesibilidad — requisito legal sector público | `alt` faltante, formularios sin etiqueta, enlaces/botones vacíos, `<html>` sin idioma, tabindex positivo, divs clickeables sin rol |
 | **Gestor CTI & Threat Feeds (propio)** | `cti-feed` | Inteligencia de amenazas | Correlación de IoCs contra feeds públicos de IPs de comando-y-control activas |
 
 ### Origen de los catálogos de vulnerabilidades
@@ -506,7 +507,8 @@ responder "¿qué controles regulatorios están en riesgo?" sin re-escanear nada
 | **PCI-DSS v4.0** | 2.2 (Hardening), 6.5.1 (Injection Flaws), 8.3 (Autenticación fuerte), 10.2 (Auditoría automatizada) |
 | **SOC 2 Type II** | CC6.1, CC6.8, CC7.2 |
 | **GDPR** | Artículos 30 y 32 |
-| **CMMI® V3.0 (Level 5)** | CAR (Causal Analysis & Resolution), MSR (Measurement & Performance), PQA (Process Quality Assurance), SAM (Supplier Agreement Management), EST, PLAN, VV |
+| **CMMI® V3.0 (modelo tailored de C&A, 5 áreas evaluables por código)** | CAR (Causal Analysis and Resolution), PQA (Process Quality Assurance), CM (Configuration Management), MC (Monitor and Control), VV (Verification and Validation) — realineado 25 ago 2026 contra el modelo real de 19 áreas de C&A; SAM/MSR (usados hasta antes) no eran áreas reales de ese modelo. Las otras 14 áreas del modelo de 19 quedan marcadas "no evaluado" (requieren evidencia organizacional fuera del alcance de un escáner de código) |
+| **ISO 25010 (Usability — Accessibility)** | Nuevo 25 ago 2026, respaldado por el motor `accessibility-wcag` |
 
 ---
 
@@ -519,8 +521,12 @@ siguientes están **verificadas en vivo contra el sistema real**, no son planead
   (AWS, GCP, Azure) bajo CIS Foundations Benchmarks y CIS Kubernetes v1.8.
 - **Kubernetes eBPF Admission Shield** — control de admisión en caliente con verificación de
   firmas de imágenes y validación de SBOM antes del paso a producción.
-- **Auditoría CMMI® v3.0 por activo** — reporte cuantitativo empírico para las 7 áreas de
-  práctica de CMMI, disponible vía API.
+- **Auditoría CMMI® v3.0 por activo** — reporte cuantitativo empírico para las 5 áreas de
+  práctica de CMMI que un escáner de código puede evidenciar honestamente (de las 19 del modelo
+  tailored real de C&A), disponible vía API. Realineado 25 ago 2026 tras cruzar el motor contra
+  el manual de metodología real de la empresa.
+- **Auditoría de accesibilidad WCAG 2.1** — motor nuevo (25 ago 2026), requisito legal para
+  sistemas de sector público, no solo una preferencia de diseño.
 - **Instaladores multi-sistema operativo** — generación desatendida de scripts para Linux,
   Windows y macOS.
 - **Análisis de alcanzabilidad (SCA)** — distingue una dependencia vulnerable realmente usada de
@@ -551,8 +557,11 @@ siguientes están **verificadas en vivo contra el sistema real**, no son planead
 
 - **CMMI (Capability Maturity Model Integration):** modelo internacional de madurez de procesos
   de software. Para un ejecutivo: mide qué tan estructurado y repetible es el proceso de
-  desarrollo de la empresa. Para un desarrollador: evalúa análisis de causa raíz, control de
-  dependencias y calidad de código.
+  desarrollo de la empresa. Para un desarrollador: el motor de Centinela evalúa 5 áreas reales
+  que un escáner de código puede evidenciar honestamente (análisis causal, higiene de código,
+  gestión de configuración, monitoreo, verificación) de las 19 del modelo tailored real de C&A
+  — ver el glosario de acrónimos añadido el 25 ago 2026 al manual de metodología de la empresa
+  para el resto.
 - **ISO/IEC 27001:2022:** norma internacional de Sistemas de Gestión de Seguridad de la
   Información (SGSI).
 - **ISO/IEC 25010 (SQuaRE):** estándar que mide la calidad del software — mantenibilidad,
