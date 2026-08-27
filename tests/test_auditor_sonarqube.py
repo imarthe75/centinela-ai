@@ -139,6 +139,25 @@ class TestSonarQubeLiveIntegration(unittest.TestCase):
     as if it ran) if no live SonarQube server is reachable.
     """
 
+    ASSET_NAME = "pytest-sonarqube-throwaway-asset"
+
+    def setUp(self):
+        with get_db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO public.infra_inventory (asset_name, asset_type, endpoint, criticality, status)
+                VALUES (%s, 'GitLab-Repo', 'pytest://none', 'LOW', 'monitored')
+                ON CONFLICT (asset_name) DO UPDATE SET status = 'monitored'
+                RETURNING id
+            """, (self.ASSET_NAME,))
+            self.asset_id = cur.fetchone()[0]
+
+    def tearDown(self):
+        with get_db_cursor() as cur:
+            cur.execute("DELETE FROM remediation_history WHERE vuln_id IN "
+                        "(SELECT id FROM vulnerability_log WHERE asset_id = %s)", (self.asset_id,))
+            cur.execute("DELETE FROM vulnerability_log WHERE asset_id = %s", (self.asset_id,))
+            cur.execute("DELETE FROM infra_inventory WHERE id = %s", (self.asset_id,))
+
     def test_run_sonarqube_audit_persists_real_row(self):
         tmpdir = tempfile.mkdtemp(prefix="centinela_sonar_test_")
         try:
@@ -149,7 +168,7 @@ class TestSonarQubeLiveIntegration(unittest.TestCase):
                     "    os.system(user_input)  # deliberately unsafe for test detection\n"
                 )
             issues = run_sonarqube_audit(
-                tmpdir, asset_id=None, project_key="centinela-pytest-throwaway",
+                tmpdir, asset_id=self.asset_id, project_key="centinela-pytest-throwaway",
                 repo_display_name="centinela-pytest-throwaway"
             )
             self.assertIsInstance(issues, list)
@@ -158,9 +177,36 @@ class TestSonarQubeLiveIntegration(unittest.TestCase):
                 cur.execute(
                     "SELECT id FROM vulnerability_log "
                     "WHERE scan_engine='sonarqube' AND cve_id='SONARQUBE-QUALITY-GATE' "
-                    "AND asset_id IS NULL ORDER BY id DESC LIMIT 1"
+                    "AND asset_id = %s ORDER BY id DESC LIMIT 1", (self.asset_id,)
                 )
-                self.assertIsNotNone(cur.fetchone(), "Expected a SONARQUBE-QUALITY-GATE marker row")
+                self.assertIsNotNone(cur.fetchone(),
+                                     "Expected a SONARQUBE-QUALITY-GATE marker row for the real asset")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_run_sonarqube_audit_skips_without_asset_id(self):
+        """The 2026-08-27 guard: asset_id=None must NOT create an orphan marker row."""
+        tmpdir = tempfile.mkdtemp(prefix="centinela_sonar_test_")
+        try:
+            with open(os.path.join(tmpdir, "x.py"), "w") as f:
+                f.write("print('hi')\n")
+            with get_db_cursor() as cur:
+                cur.execute("SELECT count(*) FROM vulnerability_log "
+                            "WHERE scan_engine='sonarqube' AND cve_id='SONARQUBE-QUALITY-GATE' "
+                            "AND asset_id IS NULL")
+                before = cur.fetchone()[0]
+
+            result = run_sonarqube_audit(
+                tmpdir, asset_id=None, project_key="centinela-pytest-noasset",
+                repo_display_name="centinela-pytest-noasset"
+            )
+            self.assertEqual(result, [])
+
+            with get_db_cursor() as cur:
+                cur.execute("SELECT count(*) FROM vulnerability_log "
+                            "WHERE scan_engine='sonarqube' AND cve_id='SONARQUBE-QUALITY-GATE' "
+                            "AND asset_id IS NULL")
+                self.assertEqual(cur.fetchone()[0], before, "asset_id=None must not persist an orphan marker")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
