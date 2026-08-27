@@ -25,8 +25,11 @@ _JWT_WEAK_ALG_RE = re.compile(r'jwt\.decode\s*\([^)]*algorithms\s*=\s*\[[^\]]*(H
 # since the "call name, then a sensitive var inside {}/%s" shape is identical across all three;
 # only the call-name alternation differs per language.
 _SENSITIVE_INTERPOLATION_RE = re.compile(
-    r'(print|logger\.\w+|log\.\w+|console\.\w+)\s*\(.*[{%](\s*\w*\.)?(password|jwt|secret_key|auth_token|token|secret)\w*[}%s]', re.IGNORECASE
+    r'(print|logger\.\w+|log\.\w+|console\.\w+)\s*\(.*[{%](\s*\w*\.)?(password|passwd|jwt|secret_key|auth_token|access_token|bearer|token|secret|contraseña)(?![A-Za-z_])', re.IGNORECASE
 )
+# 2026-08-27: added the (?![A-Za-z_]) negative lookahead so the keyword can't just be the
+# prefix of a longer identifier. Confirmed live these were FPs: `${tokensFound}` (design-token
+# counter), `${m.tokenEstimate}` (LLM token count) -- both matched the old `token\w*`.
 # Java string-concatenation form of the same risk (SLF4J/System.out don't require {}/%s --
 # "contraseña: " + password is just as real a disclosure). Deliberately separate from the
 # interpolation regex above rather than one combined pattern: concatenation has no natural analog
@@ -34,7 +37,7 @@ _SENSITIVE_INTERPOLATION_RE = re.compile(
 # rule makes it easy to see (and remove) if it turns out too noisy on real Java code, without
 # touching the already-verified interpolation pattern.
 _SENSITIVE_CONCAT_RE = re.compile(
-    r'(log\.\w+|System\.out\.print\w*|logger\.\w+|console\.\w+)\s*\(.*["\']\s*\+\s*\w*(password|contraseña|secret|token|jwt)\w*\b', re.IGNORECASE
+    r'(log\.\w+|System\.out\.print\w*|logger\.\w+|console\.\w+)\s*\(.*["\']\s*\+\s*\w*(password|contraseña|secret|token|jwt)(?![A-Za-z_])', re.IGNORECASE
 )
 
 # Real Java/Spring equivalent of the FastAPI @app.post(...) route decorator this codebase was
@@ -252,7 +255,7 @@ def run_compliance_standards_audit(target_dir: str = "/app", asset_id: int = Non
     for root, _, files in os.walk(target_dir):
         # "tests" excluded too -- see the identical exclusion (and its reasoning) in
         # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "/test/", "\\test\\", "data/remediation", "data/sonar_scans", "everything-claude-code", ".mvn"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

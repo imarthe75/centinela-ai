@@ -260,7 +260,7 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
         # not Centinela's own code at all -- were being misattributed to Centinela's own
         # self-audit asset (confirmed live: findings under
         # data/sonar_scans/arquitectura-geo-ircep-smart/... on the Centinela-AI (Self-Audit) asset).
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "/test/", "\\test\\", "data/remediation", "data/sonar_scans", "everything-claude-code", ".mvn"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

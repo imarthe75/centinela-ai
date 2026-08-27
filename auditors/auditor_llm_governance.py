@@ -43,12 +43,21 @@ def audit_llm_prompts_and_context(file_path: str, content: str) -> List[Dict[str
     return findings
 
 
-def run_llm_governance_audit(target_dir: str = "/app") -> List[Dict[str, Any]]:
-    """Scans target directory for LLM & AI safety risks."""
+def run_llm_governance_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[str, Any]]:
+    """Scans target directory for LLM & AI safety risks.
+
+    Persistence fixed 2026-08-27: previously did a raw
+    `INSERT ... (cve_id, severity, description, status, detected_at) ON CONFLICT DO NOTHING`
+    with NO asset_id / url_path / scan_engine / fingerprint. Per CLAUDE.md gotcha #3 the
+    `ON CONFLICT DO NOTHING` matched no constraint, so every run re-inserted every finding --
+    confirmed live: 22 identical OWASP-LLM02-PII-PROMPT-LEAK rows, all NULL asset_id, all OPEN.
+    Now routes through the shared log_finding_deduplicated() like every other native engine,
+    with a real file:line url_path, and reconciles findings that stopped being detected.
+    """
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", "everything-claude-code", ".mvn"]):
             continue
         for file in files:
             if file.endswith((".py", ".js", ".ts", ".jsx", ".tsx")):
@@ -60,16 +69,25 @@ def run_llm_governance_audit(target_dir: str = "/app") -> List[Dict[str, Any]]:
                 except Exception as e:
                     print(f"⚠️ [LLM-Auditor] Error reading {full_path}: {e}")
 
-    # Persist findings in DB
     try:
+        from core import deduplication_engine
+        active_fingerprints = set()
         with db_manager.get_db_cursor() as cur:
             for item in all_findings:
-                cur.execute("""
-                    INSERT INTO public.vulnerability_log 
-                    (cve_id, severity, description, status, detected_at)
-                    VALUES (%s, %s, %s, 'OPEN', NOW())
-                    ON CONFLICT DO NOTHING
-                """, (item["cve_id"], item["severity"], item["description"]))
+                rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
+                location = f"{rel_path}:{item.get('line', 0)}"
+                description = f"**Archivo:** `{rel_path}` (Línea {item.get('line', 0)})\n{item['description']}"
+                active_fingerprints.add(
+                    deduplication_engine.calculate_fingerprint(asset_id, item["cve_id"], location))
+                deduplication_engine.log_finding_deduplicated(
+                    cur, asset_id, item["cve_id"], item["severity"], description,
+                    "llm-governance", url_path=location, open_status="OPEN", preserve_status=True
+                )
+            if asset_id is not None:
+                resolved = deduplication_engine.reconcile_resolved_findings(
+                    cur, asset_id, "llm-governance", active_fingerprints)
+                if resolved:
+                    print(f"✅ [LLM-Auditor] Reconciled {resolved} stale llm-governance finding(s) for asset {asset_id}.")
     except Exception as db_err:
         print(f"⚠️ [LLM-Auditor] Could not log findings to DB: {db_err}")
 
@@ -79,4 +97,4 @@ def run_llm_governance_audit(target_dir: str = "/app") -> List[Dict[str, Any]]:
 def run(asset_id: int = None, endpoint: str = "") -> List[Dict[str, Any]]:
     """Wrapper function for auditor_ext compatibility."""
     print(f"🤖 [Auditor-LLM-Governance] Auditing AI/LLM endpoint or codebase: {endpoint}")
-    return run_llm_governance_audit()
+    return run_llm_governance_audit(asset_id=asset_id)

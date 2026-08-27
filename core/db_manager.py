@@ -47,7 +47,17 @@ DB_CONFIG = {
     "host": get_secret("DB_HOST", "10.4.3.23"),
     "database": get_secret("DB_NAME", "centinela_db"),
     "user": get_secret("DB_USER", "centinela_user"),
-    "password": get_secret("DB_PASSWORD", "centinela_sec_db_2026")
+    "password": get_secret("DB_PASSWORD", "centinela_sec_db_2026"),
+    # TCP keepalives so the OS holds idle pooled connections open and the DB server's own
+    # idle timeout / a network blip doesn't silently kill them between checkouts. Real incident
+    # 2026-08-27: "server closed the connection unexpectedly" during an asset-registration
+    # INSERT in gitlab_integration.py was swallowed and the whole repo scan ran with
+    # asset_id=None, producing ~2,560 orphan findings over ~13h.
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+    "connect_timeout": 10,
 }
 
 # Connection Pool Initialization
@@ -83,6 +93,30 @@ def get_db_connection():
         return
 
     conn = db_pool.getconn()
+
+    # Liveness check: getconn() can hand back a connection the server closed while it sat idle
+    # in the pool (keepalives above make this rare, not impossible). conn.closed only catches a
+    # locally-known close; a server-side drop isn't visible until the first real query fails.
+    # A cheap "SELECT 1" here surfaces it now, so we can discard + replace the dead one before
+    # the caller runs a real statement that would otherwise fail and (in gitlab_integration.py)
+    # get swallowed into an unattributed scan.
+    for _attempt in range(2):
+        try:
+            _probe = conn.cursor()
+            _probe.execute("SELECT 1")
+            _probe.fetchone()
+            _probe.close()
+            break
+        except Exception:
+            try:
+                db_pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = db_pool.getconn()
+    else:
+        # both attempts failed -- let the caller see it rather than yield a known-bad connection
+        pass
+
     try:
         yield conn
     finally:
