@@ -1947,3 +1947,71 @@ the final restart. New routes confirmed registered via `/openapi.json`.
    GitLab y la config del webhook lado GitLab) sigue PENDIENTE por decisión del usuario.
 
 Rito de cierre de esta sesión: `.agent/RITO_CIERRE_2026-08-27.md`.
+
+### Continuación 2026-08-27 (misma sesión): auditoría de veracidad de datos y correcciones
+
+Tras pregunta directa del usuario ("¿ya está reflejada toda la nueva funcionalidad en los
+análisis de todos los activos? ¿ya no hay registros erróneos / falsos positivos? ¿SIAT y
+SIDECO como carpetas locales están actualizados?"). Investigación en vivo contra
+`centinela_db` real -> hallazgos y correcciones:
+
+9. **Bug activo de escaneos sin atribuir (causa raíz: caída de conexión del pool).**
+   `gitlab_integration.py` registraba el activo con `INSERT ... ON CONFLICT ... RETURNING id`;
+   un `server closed the connection unexpectedly` transitorio del pool era **tragado por el
+   `except`**, `asset_id` quedaba `None`, y **todo el escaneo del repo continuaba sin
+   atribución**. Confirmado en vivo: **~2,560 hallazgos huérfanos** (2,239 solo de SonarQube,
+   `SONAR-java-S117`/`S2479`/... de `siat-atencion-citas-backend`, `OfficeInterop`, etc.)
+   acumulados en ~13h el 2026-08-27, todos `asset_id IS NULL`, invisibles en toda vista
+   por-activo y nunca correlacionados por IA (la query de correlación hace
+   `JOIN infra_inventory`). Cero antes del 2026-08-27.
+   Correcciones:
+   - `gitlab_integration.py`: reintento x3 del registro; si aún falla, **`continue`** (salta el
+     repo ese ciclo, se recoge limpio en la siguiente pasada) en vez de escanear sin atribuir.
+     Verificado en vivo post-fix: 3 caídas de conexión más en 25 min, **0 filas NULL nuevas**,
+     0 repos saltados (el reintento recuperó siempre).
+   - `core/db_manager.py`: causa raíz -> `keepalives`/`keepalives_idle=30`/`interval=10`/
+     `count=5` + `connect_timeout=10` en `DB_CONFIG`, y un probe `SELECT 1` en
+     `get_db_connection()` que descarta y reemplaza una conexión muerta antes de entregarla.
+   - **Limpieza** (`scratch/cleanup_orphan_findings_2026-08-27.py`, con guarda de que ninguna
+     fila borrada llevaba una decisión real de remediación): 2,560 huérfanos + 8 con `asset_id`
+     inexistente + 1 grupo duplicado (`ZAP-90022`) + 19 filas ZAP sin `fingerprint_hash` (todas
+     duplicados) eliminadas. Estado DB tras limpieza: **0** `asset_id IS NULL`, **0** colgantes,
+     **0** grupos duplicados, **0** `fingerprint_hash` NULL abiertos.
+
+10. **`auditor_llm_governance.py` reinsertaba en cada corrida.** Hacía un `INSERT` crudo
+    `(cve_id, severity, description, status, detected_at)` con `ON CONFLICT DO NOTHING` (no-op
+    sin constraint, gotcha #3), sin `asset_id`/`url_path`/`scan_engine`/`fingerprint`.
+    Confirmado: **22 filas idénticas** de `OWASP-LLM02-PII-PROMPT-LEAK`. Reescrito para pasar
+    por `log_finding_deduplicated()` con `url_path` file:line real, `scan_engine='llm-governance'`,
+    `reconcile_resolved_findings`, y aceptar `asset_id`; `main.py /api/audit/llm-governance`
+    ahora resuelve y pasa el activo self-audit. Guarda añadida: no persiste si el `asset_id`
+    dado no existe en `infra_inventory` (evita filas colgantes desde `auditor_ext.py`).
+    Misma guarda añadida en `auditor_ext.log_vulnerability()` (recibe `asset_id` de un mensaje
+    de discovery de Valkey, visto con ids sintéticos 99xxx).
+
+11. **Falsos positivos verificados en vivo y corregidos.**
+    - `STD-STRIDE-LOG-SENSITIVE-DATA`: los regex casaban `token` como *prefijo* de identificador
+      -> `${tokensFound}` (contador de design-tokens CSS), `${m.tokenEstimate}` (conteo de
+      tokens LLM) marcados como "credencial logueada". Añadido lookahead negativo
+      `(?![A-Za-z_])` a `_SENSITIVE_INTERPOLATION_RE` y `_SENSITIVE_CONCAT_RE`.
+    - Directorio *vendored* `everything-claude-code` (dentro de `arquitectura/geo-ircep-smart`,
+      un framework de agente de terceros incrustado) añadido a las listas de exclusión de 6
+      auditores de sistema de archivos; `/test/` (dir `src/test` de Maven) añadido a 3.
+    - 4 hallazgos FP concretos (`CODE-INJECTION-EVAL` sobre texto de prompt, 3
+      `STD-STRIDE-LOG-SENSITIVE-DATA` sobre design-token/LLM-token/helper de test) marcados
+      `RESOLVED` con nota.
+
+12. **Estado real de "toda la funcionalidad nueva reflejada en todos los activos":**
+    - Item 5 (contexto blast-radius en prompts) SOLO aplica a correlaciones **nuevas** -- los
+      ~32,000 hallazgos ya `CORRELATED` fueron analizados sin ese contexto (no se re-correlacionan;
+      el loop salta `CORRELATED`). No es un bug, es el diseño; un backfill opcional es posible.
+    - Items 1/2/4 son subsistemas nuevos, nada retroactivo.
+    - Mejoras de detectores de sesiones previas (WCAG, langs de Semgrep, CVSS de SCA) SÍ están
+      aplicadas a la flota GitLab (`last_audit` de hoy) pero los 3 activos `Local/siat/*` de
+      carpeta local estaban en `last_audit = 2026-08-21` (6 días). Re-escaneo lanzado por
+      decisión del usuario -- ver `scratch/rescan_local_siat_2026-08-27.py`. Las carpetas
+      `siat/` salieron de ZIPs (sin `.git`), así que reflejan código Aug 20-21; el usuario
+      proveerá código fresco después para otra pasada.
+
+Suite completa: **121/121** tras cada lote de cambios. Servicios reiniciados con `__pycache__`
+limpio; `/api/health` = Healthy. Commits: `7b8a8ab`, `7052902`, + guarda de `auditor_ext`.
