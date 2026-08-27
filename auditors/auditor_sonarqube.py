@@ -383,6 +383,24 @@ def run_sonarqube_audit(target_dir: str, asset_id: int = None,
     safe_key = _sanitize_project_key(project_key or repo_display_name or os.path.basename(target_dir.rstrip("/")))
     project_name = repo_display_name or safe_key
 
+    # Never scan/persist without a real asset: a SONARQUBE-QUALITY-GATE marker (or issues) with
+    # asset_id NULL is invisible in every asset-scoped view and just accumulates as noise. Every
+    # legitimate caller (GitLabIntegrator, the self-audit endpoints, the local re-scan script)
+    # resolves and passes one -- if it's missing or points at a deleted asset, that's a bug in
+    # the caller, not something to paper over with an orphan row. (2026-08-27)
+    if asset_id is None:
+        print(f"⏭️  [SonarQube-Auditor] {safe_key}: no asset_id -- skipping (would create an orphan marker).")
+        return []
+    try:
+        with db_manager.get_db_cursor() as _chk:
+            _chk.execute("SELECT 1 FROM public.infra_inventory WHERE id = %s", (asset_id,))
+            if _chk.fetchone() is None:
+                print(f"⏭️  [SonarQube-Auditor] {safe_key}: asset_id {asset_id} not in infra_inventory -- skipping.")
+                return []
+    except Exception as _e:
+        print(f"⚠️  [SonarQube-Auditor] {safe_key}: could not verify asset_id {asset_id} ({_e}) -- skipping this cycle.")
+        return []
+
     if _recently_scanned(asset_id):
         print(f"⏭️  [SonarQube-Auditor] {safe_key} scanned within the last {MIN_RESCAN_INTERVAL_HOURS}h -- skipping")
         return []
