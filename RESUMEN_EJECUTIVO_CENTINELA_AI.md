@@ -54,7 +54,7 @@ El sistema había estado devolviendo "0 hallazgos" silenciosamente en cuatro end
 Para garantizar una comprensión clara entre la alta dirección y los equipos técnicos, a continuación se definen los términos fundamentales que sustentan a Centinela-AI:
 
 ### 💼 A. Términos de Negocio, Gobierno y Estándares
-* **CMMI v3.0 (Capability Maturity Model Integration):** Modelo internacional de madurez de procesos de software (Benchmark 2024-2026). *Para el ejecutivo:* Mide qué tan estructurado, repetible y maduro es el proceso de desarrollo de la empresa (Niveles 3 a 5). *Para el desarrollador:* Evalúa análisis de causa raíz (`CAR`), control de proveedores/dependencias (`SAM`) y calidad de código (`PQA`).
+* **CMMI v3.0 (Capability Maturity Model Integration):** Modelo internacional de madurez de procesos de software. *Para el ejecutivo:* Mide qué tan estructurado, repetible y maduro es el proceso de desarrollo de la empresa. *Para el desarrollador:* el motor propio de Centinela evalúa 5 áreas reales que un escáner de código puede evidenciar honestamente — análisis de causa raíz (`CAR`), higiene de código (`PQA`), gestión de configuración vía historial Git real (`CM`), monitoreo y control (`MC`) y verificación (`VV`) — de las 19 áreas del modelo tailored real de C&A (realineado 25 ago 2026 cruzando el motor contra el manual de metodología propio de la empresa; los códigos `SAM`/`MSR` usados antes no correspondían a ninguna área real de ese modelo).
 * **ISO/IEC 27001:2022:** Norma internacional de Sistemas de Gestión de Seguridad de la Información (SGSI). Exige controles estrictos de vulnerabilidades (`A.8.8`) y monitoreo de eventos (`A.8.16`).
 * **ISO/IEC 25010 / 25001 (SQuaRE):** Estándar internacional que mide la **Calidad del Software**. *Para el ejecutivo:* Garantiza que el software sea mantenible y eficiente. *Para el desarrollador:* Audita complejidad cognitiva, ausencia de retardos duros (`sleep`) y cero deuda técnica.
 * **Shift Left (Desplazar a la Izquierda):** Filosofía DevSecOps que consiste en detectar fallos de seguridad durante la escritura del código en lugar de esperar a que la aplicación esté publicada en producción.
@@ -255,8 +255,8 @@ Para consolidar la aprobación directiva y avanzar a la fase de desarrollo a pro
 | :--- | :--- | :--- |
 | **ISO/IEC 27001:2022** | Control A.8.8 (Gestión de Vulnerabilidades) | Escaneo automatizado diario con 5 motores SAST/SCA/DAST |
 | **ISO/IEC 27001:2022** | Control A.8.16 (Actividades de Monitoreo) | Telemetría continua con Wazuh EDR, eBPF y Zeek NDR |
-| **CMMI v2.0 Level 3-5** | Causal Analysis & Resolution (CAR) | Análisis de causa raíz asistido por IA y registro de deuda técnica |
-| **CMMI v2.0 Level 3-5** | Supplier Agreement Management (SAM) | Auditoría de dependencias Open Source y parches en Merge Requests |
+| **CMMI v3.0 (modelo tailored C&A)** | Causal Analysis and Resolution (CAR) | Análisis de causa raíz: excepciones silenciadas y fallas de inyección detectadas en código |
+| **CMMI v3.0 (modelo tailored C&A)** | Configuration Management (CM) | Historial de control de versiones Git real, verificado vía `git rev-list` |
 | **NIST CSF 2.0** | PR.PS-01 / DE.CM-01 | Verificación de hardening y detección de anomalías de red |
 
 ---

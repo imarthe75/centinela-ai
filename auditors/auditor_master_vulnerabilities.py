@@ -260,7 +260,7 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
         # not Centinela's own code at all -- were being misattributed to Centinela's own
         # self-audit asset (confirmed live: findings under
         # data/sonar_scans/arquitectura-geo-ircep-smart/... on the Centinela-AI (Self-Audit) asset).
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "data/remediation", "data/sonar_scans", ".mvn"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
@@ -270,7 +270,18 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
 
                 if file == "Dockerfile" or file.startswith("Dockerfile."):
                     all_findings.extend(scan_iac_dockerfile(full_path, content))
-                elif file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sh")):
+                # Real gap found 2026-08-20 while auditing a pure-Java codebase (SIDECO/SIAT):
+                # scan_sast_code() already has Java-aware detectors internally (the frontend
+                # antipattern block at its own line ~160 explicitly checks filename.endswith(...,
+                # ".java"), and SPRINGBOOT-NATIVE-QUERY-RISK/HARDCODED-SECRET/DB-UNENCRYPTED-CONN-
+                # STRING are language-agnostic text patterns genuinely relevant to Java/Spring)
+                # but this outer dispatch never actually sent .java files into it -- every Java
+                # file in every repo this engine has ever scanned was silently skipped, making
+                # "0 SAST findings" indistinguishable from "genuinely clean" for any Java-only
+                # codebase. Confirmed safe to add: every pattern inside scan_sast_code() is
+                # already internally guarded by its own filename check, so .java files simply
+                # exercise the subset of rules that apply to them, same as any other extension.
+                elif file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".java")):
                     all_findings.extend(scan_sast_code(full_path, content))
             except Exception as e:
                 print(f"⚠️ [Master-Auditor] Error reading {full_path}: {e}")

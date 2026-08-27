@@ -2,6 +2,8 @@ data/
 node_modules/
 .venv/
 __pycache__/
+logs/
+siat/
 .env
 id_rsa_centinela
 id_rsa_centinela.pub

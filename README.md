@@ -7,7 +7,8 @@ Centinela-AI es la plataforma **Omni-XDR (Extended Detection and Response) & AI 
 ### 🌐 Transformación Omni-XDR (Arquitectura Integrada)
 - **CSPM Cloud-Native (AWS, GCP, Azure, Kubernetes)**: Escaneo continuo de la postura de seguridad en nubes híbridas bajo normas **CIS AWS Foundations v3.0**, **CIS GCP v2.0**, **CIS Azure v2.1** y **CIS Kubernetes v1.8**. Auditoría automatizada de buckets S3 públicos, políticas IAM con comadines y manifiestos de contenedores.
 - **eBPF Admission Controller Shield**: Control de admisión en caliente para Kubernetes (Kyverno / OPA Gatekeeper eBPF Shield) con verificación de firmas de imágenes y validación de SBOM antes del paso a producción.
-- **Auditoría CMMI® v3.0 por Activo (Benchmark 2024-2026)**: Reporte cuantitativo empírico por activo para las 7 áreas de práctica de CMMI (CAR, SAM, MSR, PQA, EST, PLAN, VV).
+- **Auditoría CMMI® v3.0 por Activo**: Reporte cuantitativo empírico por activo para las 5 áreas de práctica de CMMI evaluables honestamente desde código y historial de escaneo (CAR, PQA, CM, MC, VV) — de las 19 del modelo tailored real de C&A (realineado 25-ago-2026 contra el manual de metodología propio de la empresa, verificado ahí contra la guía real de ISACA; las otras 14 áreas requieren evidencia organizacional fuera del alcance de un escáner y quedan explícitamente marcadas "no evaluado").
+- **Auditoría de Accesibilidad WCAG 2.1**: 6 reglas estáticas (alt faltante, formularios sin etiqueta, enlaces/botones vacíos, idioma de página faltante, tabindex positivo, elementos clickeables sin rol semántico) — requisito legal para sistemas de sector público, no una preferencia de diseño.
 - **ITDR (Identity Threat Detection & Response)**: Webhook en tiempo real con Authentik IdP para la detección de Password Spraying, Fuerza Bruta (≥5 intentos en <60s) y revocación autónoma de sesiones OIDC en <500ms.
 - **eBPF Kernel Tracing**: Ingesta de llamadas al sistema (syscalls `execve`, `ptrace`, `/tmp`) a nivel de kernel en servidores Linux.
 - **Grafo de Ataques Neo4j (Attack Storyline)**: Correlación en grafos Cypher de nodos de Identidad, IPs de Origen, Servidores de Red y Vulnerabilidades CVE.
@@ -92,7 +93,8 @@ Cada hallazgo detectado en el ecosistema es mapeado de forma automática hacia c
 | **PCI-DSS v4.0** | Requerimientos 2.2 (Hardening), 6.5.1 (Injection Flaws), 8.3 (Autenticación Fuerte), 10.2 (Auditoría Automatizada). |
 | **SOC 2 Type II** | Criterios CC6.1 (Seguridad Acceso Lógico), CC6.8 (Hardening de Sistemas), CC7.2 (Monitoreo de Infraestructura). |
 | **GDPR** | Artículos 30 (Registro de Actividades de Tratamiento) y 32 (Seguridad del Tratamiento y Cifrado PII). |
-| **CMMI® V3.0 (Level 5)** | Áreas de Práctica CAR (Causal Analysis & Resolution - Prevención de Defectos), MSR (Measurement & Performance - Predictibilidad) y PQA (Process Quality Assurance). |
+| **CMMI® V3.0 (modelo tailored C&A, 5 áreas evaluables por código)** | CAR (Causal Analysis and Resolution - Prevención de Defectos), PQA (Process Quality Assurance - higiene de código), CM (Configuration Management - historial Git real), MC (Monitor and Control), VV (Verification and Validation). |
+| **ISO 25010 (Usability — Accessibility)** | Respaldado por el motor propio `accessibility-wcag` (nuevo). |
 
 ---
 

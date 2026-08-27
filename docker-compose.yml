@@ -95,7 +95,16 @@ services:
     - CLICKHOUSE_USER=${CLICKHOUSE_USER}
     - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     ports:
-    - 8302:8000
+    # Restricted to loopback 2026-08-14: this port was published on 0.0.0.0, reachable directly
+    # from any network path to this host, bypassing nginx (and every TLS/security-header/rate
+    # limit it provides) entirely. Confirmed live under active exploitation (command injection,
+    # XSLT-SSRF RCE payloads hitting the raw dev server). Safe because centinela.casmart.internal
+    # resolves directly to this host and nginx (host-level, /etc/nginx/sites-available/centinela)
+    # listens on 0.0.0.0:443 and forwards via 127.0.0.1 -- so this does not affect any legitimate
+    # traffic path, VPN included. NOT the same change as the reverted 2026-08-11 attempt below
+    # (that one bound to a specific external interface IP, excluding the VPN's own interface;
+    # loopback has no such exclusion since nginx always reaches it regardless of source interface).
+    - 127.0.0.1:8302:8000
     deploy:
       resources:
         limits:
@@ -111,17 +120,17 @@ services:
     - ./frontend:/app
     - /app/node_modules
     ports:
-    # REVERTED 2026-08-11: an attempt to restrict this to the host's real interface IP
-    # (10.4.3.34) broke real production access -- confirmed live, casmarts-core-gateway returned
-    # 502 Bad Gateway and the user (who accesses via VPN) lost access entirely. The VPN client's
-    # traffic arrives on a different interface/IP than the host's own ens160 address, which a
-    # bind restricted to 10.4.3.34 silently excluded. Real internet-origin scanner probes were
-    # confirmed hitting this port directly (see CLAUDE.md), so the underlying exposure concern is
-    # still real -- but the fix needs to be a host firewall rule (iptables/ufw) that blocks
-    # non-VPN/non-internal source IPs, not a Docker bind-address restriction, which has no way to
-    # distinguish "legitimate VPN client" from "internet scanner" the way a source-IP firewall
-    # rule can. Not re-attempted here without confirming the VPN's real source IP/subnet first.
-    - 8301:5173
+    # REVERTED 2026-08-11, RE-ATTEMPTED DIFFERENTLY 2026-08-14: the 08-11 attempt bound to the
+    # host's specific external interface IP (10.4.3.34), which silently excluded VPN-tunnel
+    # traffic arriving on a different interface -- that failure mode does not apply to loopback,
+    # since nginx (host-level, /etc/nginx/sites-available/centinela) always reaches 127.0.0.1
+    # regardless of which interface a request actually arrived on. Confirmed live 2026-08-14:
+    # centinela.casmart.internal resolves directly to this host, nginx listens on 0.0.0.0:443 and
+    # forwards via 127.0.0.1:8301 -- so this port never needed to be reachable from outside
+    # localhost. Restricted after confirming this port was directly receiving real exploitation
+    # payloads (command injection, XSLT-SSRF RCE) that bypass nginx (and its TLS/security headers)
+    # entirely, invisible in nginx's own access.log because they never touch it.
+    - 127.0.0.1:8301:5173
     depends_on:
     - centinela-backend
     deploy:

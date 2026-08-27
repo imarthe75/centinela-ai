@@ -73,7 +73,7 @@ def _osv_severity(vuln: Dict[str, Any]) -> str:
     return "MEDIUM"
 
 
-def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str) -> str:
+def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str, installed_version: str = "") -> str:
     """
     Real bug fixed 2026-08-13: this only ever filtered `affected` blocks by ecosystem, never by
     package name. A single OSV advisory can legitimately cover MULTIPLE packages in the same
@@ -83,7 +83,26 @@ def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str) -> s
     several axios findings reported "fixed_version" values (6.0.9, 7.1.5, 8.0.5, 8.5.23) that
     don't correspond to any axios release that has ever existed (axios has never reached even
     major version 2) -- a strong signal this was pulling another package's range.
+
+    Second, deeper instance of the same class of bug, found live 2026-08-20 while verifying a
+    post-remediation re-scan: a single advisory can ALSO have multiple `affected` blocks for the
+    SAME package -- axios maintains two parallel release lines (a legacy 0.x line and the current
+    1.x line), and GHSA-42h9-826w-cgv3 lists a separate introduced/fixed range for each. With the
+    package-name filter alone (but no version-range containment check), this returned whichever
+    matching block happened to come first in OSV's array -- for axios 1.16.0 it sometimes
+    returned "0.33.0" (the 0.x line's fix), a version *lower* than what's already installed,
+    which is meaningless as upgrade guidance. Now requires the installed version to actually fall
+    inside a range's [introduced, fixed) bounds before using that range's fix; falls back to the
+    old best-effort "first fixed version found" behavior if the installed version doesn't parse
+    (some npm pre-release formats aren't valid PEP 440), since a rough answer beats a crash.
     """
+    from packaging.version import Version, InvalidVersion
+    try:
+        installed = Version(installed_version) if installed_version else None
+    except InvalidVersion:
+        installed = None
+
+    fallback = ""
     for affected in vuln.get("affected", []) or []:
         pkg = affected.get("package", {})
         if pkg.get("ecosystem") != ecosystem:
@@ -97,10 +116,28 @@ def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str) -> s
             # for "fixed", which is meaningless as a "safe version to upgrade to" -- skip those.
             if rng.get("type") not in ("ECOSYSTEM", "SEMVER"):
                 continue
+            introduced = None
+            fixed = None
             for event in rng.get("events", []) or []:
+                if "introduced" in event and event["introduced"] not in ("", "0"):
+                    try:
+                        introduced = Version(event["introduced"])
+                    except InvalidVersion:
+                        pass
                 if "fixed" in event:
-                    return event["fixed"]
-    return ""
+                    fallback = fallback or event["fixed"]
+                    try:
+                        fixed = Version(event["fixed"])
+                    except InvalidVersion:
+                        pass
+            if fixed is None:
+                continue
+            if installed is None:
+                return fallback  # can't check containment -- best-effort as before
+            lower_ok = introduced is None or installed >= introduced
+            if lower_ok and installed < fixed:
+                return str(fixed)
+    return fallback
 
 
 def _osv_cve_id(vuln: Dict[str, Any]) -> str:
@@ -167,7 +204,7 @@ def query_osv_batch(deps: List[Tuple[str, str]], ecosystem: str):
             out.setdefault(dep, []).append({
                 "cve": cve,
                 "severity": _osv_severity(detail),
-                "fixed_version": _osv_fixed_version(detail, ecosystem, dep[0]) or "ver aviso original",
+                "fixed_version": _osv_fixed_version(detail, ecosystem, dep[0], dep[1]) or "ver aviso original",
                 "desc": (detail.get("summary") or detail.get("details") or "Sin resumen disponible.")[:300],
             })
     return out
@@ -246,13 +283,51 @@ def audit_package_json(file_path: str, content: str) -> List[Dict[str, Any]]:
 
 
 def audit_pom_xml(file_path: str, content: str) -> List[Dict[str, Any]]:
-    """Audits Java pom.xml Maven manifest against OSV.dev (Maven ecosystem)."""
+    """
+    Audits Java pom.xml Maven manifest against OSV.dev (Maven ecosystem).
+
+    Real bug fixed 2026-08-21, found live while writing a plain-language report a non-technical
+    reader would actually trust: most real Spring Boot dependencies declare NO explicit
+    <version> tag at all -- the version is inherited from the <parent> BOM
+    (spring-boot-starter-parent), which is the normal, idiomatic way to write a Spring Boot
+    pom.xml. The old code silently substituted a fake placeholder ("1.0.0") for any such
+    dependency, meaning every OSV query for the *vast majority* of dependencies in a typical
+    Spring Boot project was checking a version number that was never actually installed --
+    confirmed live against a real project where a genuine parent version of 2.3.1.RELEASE was
+    being reported to the user as installed version "1.0.0". This didn't make the underlying
+    findings false (a real, very old parent version like 2.3.1.RELEASE is often *more* exposed
+    than a fabricated 1.0.0 would suggest), but reporting the wrong version number as fact to a
+    reader is exactly the kind of fabrication this project's own rules exist to catch.
+    Now resolves the real parent version and uses it for any dependency in the same Maven groupId
+    family as the parent (the common case: Spring-managed artifacts share the parent's version via
+    its BOM) -- and for anything genuinely unresolvable (a dependency with no version, not in the
+    parent's own groupId family, so no real way to know what's actually installed), skips it
+    entirely rather than guess. A skipped dependency is invisible to this scan, not silently
+    misrepresented -- an honest gap, not a wrong number presented as real.
+    """
     deps_with_lines: Dict[str, Tuple[str, int]] = {}
+
+    parent_match = re.search(
+        r'<parent>[\s\S]*?<groupId>(.*?)</groupId>[\s\S]*?<version>(.*?)</version>[\s\S]*?</parent>',
+        content
+    )
+    parent_group = parent_match.group(1).strip() if parent_match else None
+    parent_version = parent_match.group(2).strip() if parent_match else None
+
     # Simple regex XML parsing for <dependency> blocks
     artifacts = re.findall(r'<dependency>[\s\S]*?<groupId>(.*?)</groupId>[\s\S]*?<artifactId>(.*?)</artifactId>[\s\S]*?(?:<version>(.*?)</version>)?[\s\S]*?</dependency>', content)
     for idx, (group, artifact, version) in enumerate(artifacts, 1):
-        pkg_name = f"{group.strip()}:{artifact.strip()}".lower()
-        clean_version = version.strip() if version else "1.0.0"
+        group = group.strip()
+        pkg_name = f"{group}:{artifact.strip()}".lower()
+        if version and version.strip():
+            clean_version = version.strip()
+        elif parent_group and (group == parent_group or group.startswith(parent_group.rsplit(".", 1)[0])):
+            # Version-managed by the parent BOM -- the parent's own version is a real, honest
+            # best-effort answer here (this is exactly how Maven itself resolves it for the vast
+            # majority of Spring-family artifacts), not a guess pulled from nowhere.
+            clean_version = parent_version
+        else:
+            continue  # genuinely unknown -- skip rather than fabricate a version
         deps_with_lines[pkg_name] = (clean_version, idx)
 
     return _findings_from_osv(deps_with_lines, "Maven", "pom.xml", file_path)
@@ -326,7 +401,7 @@ def check_reachability(target_dir: str, package: str, manifest: str) -> str:
         return "REACHABLE"  # unknown manifest type -- don't claim unreachable without real evidence
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
             continue
         for file in files:
             if not file.endswith(extensions):
@@ -346,7 +421,7 @@ def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[s
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

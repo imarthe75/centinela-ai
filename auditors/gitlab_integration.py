@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import requests
 from typing import List, Dict, Any
-from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards
+from auditors import auditor_master_vulnerabilities, auditor_sca_dependencies, auditor_compliance_standards, auditor_semgrep
 from core import db_manager
 
 
@@ -112,9 +112,21 @@ class GitLabIntegrator:
                 from auditors import auditor_iac_k8s, auditor_cmmi_v3
                 iac_findings = auditor_iac_k8s.run_iac_scan(target_dir, asset_id=asset_id)
                 cmmi_findings = auditor_cmmi_v3.run_cmmi_audit(target_dir, asset_id=asset_id)
-            except Exception:
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [GitLab-Integrator] IaC/CMMI audit error for {path_ns}: {e}")
                 iac_findings = []
                 cmmi_findings = []
+
+            try:
+                from auditors import auditor_accessibility_wcag
+                wcag_findings = auditor_accessibility_wcag.run_wcag_accessibility_audit(target_dir, asset_id=asset_id)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [GitLab-Integrator] WCAG accessibility audit error for {path_ns}: {e}")
+                wcag_findings = []
 
             try:
                 from auditors import auditor_sonarqube
@@ -127,7 +139,23 @@ class GitLabIntegrator:
                 print(f"⚠️ [GitLab-Integrator] SonarQube audit error for {path_ns}: {sonar_err}")
                 sonar_findings = []
 
-            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings) + len(sonar_findings)
+            # Real gap found and fixed 2026-08-25: Semgrep was never actually wired into this
+            # periodic fleet-wide loop -- it was only ever invoked from auditor_ext.py's separate
+            # dispatch path and by manual one-off calls. Every GitLab-Repo asset this loop covers
+            # (71 at last count) had been missing Semgrep's multi-language coverage on every
+            # automatic re-scan since this integration was written; expanding _LANG_RULESETS'
+            # language coverage (same commit) would have been dead weight without this fix, since
+            # nothing periodic would ever call it for these assets.
+            try:
+                semgrep_findings = auditor_semgrep.scan_path(target_dir, asset_id, path_ns)
+                auditor_semgrep.persist_findings(semgrep_findings)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [GitLab-Integrator] Semgrep audit error for {path_ns}: {e}")
+                semgrep_findings = []
+
+            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings) + len(sonar_findings) + len(wcag_findings) + len(semgrep_findings)
             summary["scanned_projects"] += 1
             summary["total_vulnerabilities"] += total_findings
             summary["projects_breakdown"].append({
