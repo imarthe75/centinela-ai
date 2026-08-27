@@ -73,6 +73,17 @@ def run_llm_governance_audit(target_dir: str = "/app", asset_id: int = None) -> 
         from core import deduplication_engine
         active_fingerprints = set()
         with db_manager.get_db_cursor() as cur:
+            # Guard against dangling rows: only persist against an asset that actually exists.
+            # auditor_ext.py dispatches AI-LLM-Endpoint assets here with ids that may be
+            # synthetic/transient (99xxx range) and no matching infra_inventory row -- and this
+            # auditor only ever scans local source (target_dir), never a remote endpoint, so
+            # there is nothing meaningful to attribute to such an asset anyway.
+            if asset_id is not None:
+                cur.execute("SELECT 1 FROM public.infra_inventory WHERE id = %s", (asset_id,))
+                if cur.fetchone() is None:
+                    print(f"⚠️ [LLM-Auditor] asset_id {asset_id} not in infra_inventory -- "
+                          f"returning {len(all_findings)} finding(s) without persisting.")
+                    return all_findings
             for item in all_findings:
                 rel_path = os.path.relpath(item["file"], target_dir) if item.get("file") else "unknown"
                 location = f"{rel_path}:{item.get('line', 0)}"
