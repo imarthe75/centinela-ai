@@ -20,7 +20,7 @@ import requests
 import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone, timedelta
-from core import db_manager, deduplication_engine
+from core import db_manager, deduplication_engine, agent_ledger
 import random
 import string
 
@@ -235,6 +235,11 @@ def reap_orphaned_zap_containers(max_age_minutes: int = 40):
         subprocess.run(["docker", "stop", "-t", "5"] + stale, capture_output=True, timeout=30)
         subprocess.run(["docker", "rm"] + stale, capture_output=True, timeout=15)
         print(f"✅ [ZAP-Auditor] Reaped {len(stale)} stale container(s).")
+        agent_ledger.record_action(
+            agent_ledger.ACTION_ZAP_REAP,
+            f"Reaped {len(stale)} orphaned zap-scan-* container(s) older than {max_age_minutes}min",
+            detail={"containers": stale}, actor="centinela", outcome="success",
+        )
     except Exception as e:
         logger.warn(f"Could not reap orphaned zap-scan-* containers at startup: {e}")
 
@@ -513,6 +518,8 @@ def log_zap_findings(asset_id: int, target_url: str, findings: List[Dict], scan_
                     print(f"  🔄 Updated ZAP finding: [{severity}] {cve_id} on {finding['url']}")
                 elif action == "merged":
                     print(f"  🔗 Merged ZAP finding into existing cross-tool ticket: [{severity}] {cve_id}")
+                elif action == "suppressed":
+                    print(f"  🔇 Suppressed ZAP finding (analyst-recorded false positive / accepted risk): [{severity}] {cve_id}")
                 else:
                     print(f"  📝 Logged ZAP finding: [{severity}] {cve_id}")
 

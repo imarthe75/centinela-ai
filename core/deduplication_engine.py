@@ -60,11 +60,102 @@ def is_sla_breached(sla_due_date: Optional[datetime]) -> bool:
     return datetime.utcnow() > sla_due_date
 
 
+# Real gap fixed 2026-08-14, in response to a direct user challenge ("necesito separar
+# vulnerabilidades reales de las informativas... pareciera que los más de 9000 detectados todos
+# son de infraestructura"). Confirmed live: 92% of all rows (8,298/9,023) actually belong to
+# GitLab-Repo (code) assets, not infrastructure -- the dashboard just never broke the total down
+# by asset type or by whether a row is a real security finding vs. a code-quality/process-debt
+# metric or an aggregate completion marker, so one undifferentiated number looked infrastructure-
+# heavy by default. cve_id/scan_engine values confirmed live against the real DB, not guessed:
+# SCAN-AUDIT/HEURISTIC-SECURITY-DEBT/CIS-BENCHMARK-AUDIT/SONARQUBE-QUALITY-GATE are aggregate
+# "no findings" or audit-completion markers (Severity='Info' already), STD-ISO25010-LONG-METHOD
+# and COGNITIVE-COMPLEXITY-EXCEEDED are ISO 25010 maintainability metrics (already documented in
+# CLAUDE.md as deliberately unmapped in MITRE ATT&CK for the same reason -- not an attack
+# technique), and cmmi-audit's whole engine (CMMI-CAR-SWALLOWED-EXCEPTION/CMMI-MSR-HARDCODED-
+# SLEEP/CMMI-PQA-DEBT-TODO) measures process maturity/technical debt, not a security
+# vulnerability. Centralized here (one classifier every writer funnels through via
+# log_finding_deduplicated(), matching how mitre_attack.map_finding() is already centralized)
+# rather than trusted to ~15 scattered call sites, so it can't silently drift out of sync the way
+# per-engine dedup did before this module existed.
+_INFORMATIONAL_CVE_EXACT = {
+    "SCAN-AUDIT", "HEURISTIC-SECURITY-DEBT", "CIS-BENCHMARK-AUDIT", "SONARQUBE-QUALITY-GATE",
+    "STD-ISO25010-LONG-METHOD", "COGNITIVE-COMPLEXITY-EXCEEDED",
+}
+_INFORMATIONAL_SCAN_ENGINES = {"cmmi-audit"}
+
+
+def classify_finding_category(cve_id: str, scan_engine: Optional[str], description: str = "") -> str:
+    """Returns 'VULNERABILITY' (a real, individually actionable security finding) or
+    'INFORMATIONAL' (an aggregate marker, code-quality metric, or process-debt item -- real and
+    worth showing, but not a vulnerability). Only exact cve_id matches are used (never a prefix
+    match), so a real per-check finding that merely shares an engine with a marker -- e.g. a real
+    CIS-SSH-ROOT-LOGIN failure sharing scan_engine='cis-benchmark' with the CIS-BENCHMARK-AUDIT
+    completion marker -- is never miscategorized alongside it."""
+    cve_u = str(cve_id or "").strip().upper()
+    if cve_u in _INFORMATIONAL_CVE_EXACT:
+        return "INFORMATIONAL"
+    if str(scan_engine or "").strip().lower() in _INFORMATIONAL_SCAN_ENGINES:
+        return "INFORMATIONAL"
+    # SonarQube issues are ingested as a single mixed batch spanning real Sonar "type"s
+    # (VULNERABILITY/SECURITY_HOTSPOT are the only genuinely security-relevant ones; BUG is a
+    # functional-reliability defect, CODE_SMELL is maintainability -- neither is a security
+    # vulnerability) -- auditor_sonarqube.py's own _persist_issues() passes finding_category
+    # explicitly using the real API value for a fresh write, so this text match only matters as
+    # a backfill-time proxy for historical rows written before this column existed.
+    if str(scan_engine or "").strip().lower() == "sonarqube" and (
+        "**SonarQube CODE_SMELL**" in (description or "") or "**SonarQube BUG**" in (description or "")
+    ):
+        return "INFORMATIONAL"
+    return "VULNERABILITY"
+
+
+def find_active_suppression(cur, asset_id: Any, cve_id: str,
+                            fingerprint_hash: Optional[str], url_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Item 3 (2026-08-27): learned false-positive / accepted-risk memory (CodeRabbit-style).
+
+    Returns the matching public.finding_suppressions row (as a dict) if this finding is
+    currently suppressed, else None. A suppression matches when EVERY one of its non-NULL
+    predicates matches the finding, it is active, and it has not expired. The API guarantees at
+    least one predicate is non-NULL, so an all-NULL row can never mute the whole platform.
+
+    This is deliberately a plain read with no side effects -- log_finding_deduplicated() is the
+    only caller and it updates the suppression's own hit counter itself, inside the same
+    transaction as the vulnerability_log write.
+    """
+    try:
+        cur.execute("""
+            SELECT id, reason, scope, created_by
+            FROM public.finding_suppressions
+            WHERE active = TRUE
+              AND (expires_at IS NULL OR expires_at > NOW())
+              AND (asset_id IS NULL OR asset_id IS NOT DISTINCT FROM %s)
+              AND (cve_id IS NULL OR cve_id = %s)
+              AND (fingerprint_hash IS NULL OR fingerprint_hash = %s)
+              AND (url_path_pattern IS NULL OR %s LIKE url_path_pattern)
+            ORDER BY id DESC
+            LIMIT 1
+        """, (asset_id, cve_id, fingerprint_hash, url_path or ""))
+    except Exception:
+        # finding_suppressions is created by core.schema.ensure_core_schema() at startup; if a
+        # deployment somehow hasn't run that yet, a missing table must NOT break finding
+        # ingestion -- treat it as "nothing suppressed" and let the row through.
+        import traceback
+        print("⚠️ [Dedup] finding_suppressions lookup failed -- treating finding as not suppressed:")
+        traceback.print_exc()
+        return None
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "reason": row[1], "scope": row[2], "created_by": row[3]}
+
+
 def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, description: str,
                               scan_engine: str, url_path: Optional[str] = None,
                               open_status: str = "OPEN",
                               reachability_status: Optional[str] = None,
-                              preserve_status: bool = False) -> "tuple[str, int]":
+                              preserve_status: bool = False,
+                              finding_category: Optional[str] = None) -> "tuple[str, int]":
     """
     Central, cross-tool-aware finding logger. calculate_fingerprint() existed since this
     module's original commit but nothing ever called it -- fingerprint_hash was empty on every
@@ -95,9 +186,18 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     other caller's existing tested behavior), Tier 1 only matches non-RESOLVED rows and always
     sets status to open_status on update.
 
+    finding_category: 'VULNERABILITY' (default, auto-classified) or 'INFORMATIONAL' -- see
+    classify_finding_category()'s own docstring. Pass explicitly only when the caller has real
+    data the classifier can't see from cve_id/scan_engine/description alone (e.g. SonarQube's
+    real per-issue API "type"); leave as None everywhere else so the shared classifier stays the
+    single source of truth.
+
     Returns (action, row_id) where action is 'updated' | 'merged' | 'inserted'.
     """
     from core import threat_intel, mitre_attack
+
+    if finding_category is None:
+        finding_category = classify_finding_category(cve_id, scan_engine, description)
 
     # Normalized once, here, rather than trusting every one of the ~10 call sites across the
     # codebase to pass consistent casing. Confirmed live this was a real, not just cosmetic,
@@ -108,6 +208,33 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     severity = str(severity or '').strip().upper()
 
     fingerprint = calculate_fingerprint(asset_id, cve_id, url_path or description)
+
+    # Item 3: if an analyst has recorded this finding as a false positive / accepted risk, do
+    # not keep resurfacing it. An existing row is parked in SUPPRESSED (kept for the audit
+    # trail, excluded from the AI-correlation queue and every "open findings" view); a
+    # genuinely new one is not inserted at all. Either way the scanner's re-detection is
+    # counted on the suppression itself so "this is still being detected" stays visible.
+    suppression = find_active_suppression(cur, asset_id, cve_id, fingerprint, url_path or description)
+    if suppression:
+        cur.execute("""
+            UPDATE public.finding_suppressions
+            SET match_count = match_count + 1, last_matched_at = NOW()
+            WHERE id = %s
+        """, (suppression["id"],))
+        cur.execute("""
+            SELECT id FROM public.vulnerability_log
+            WHERE asset_id IS NOT DISTINCT FROM %s AND fingerprint_hash = %s
+        """, (asset_id, fingerprint))
+        existing_row = cur.fetchone()
+        if existing_row:
+            cur.execute("""
+                UPDATE public.vulnerability_log
+                SET status = 'SUPPRESSED', detected_at = NOW()
+                WHERE id = %s AND status <> 'SUPPRESSED'
+            """, (existing_row[0],))
+            return "suppressed", existing_row[0]
+        return "suppressed", -1
+
     real_cve = threat_intel.extract_cve(cve_id)
 
     mitre = mitre_attack.map_finding(cve_id, description)
@@ -138,17 +265,19 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
                 SET severity = %s, description = %s, detected_at = NOW(),
                     status = CASE WHEN status = 'RESOLVED' THEN 'REOPENED' ELSE status END,
                     reachability_status = COALESCE(%s, reachability_status),
-                    standards = COALESCE(%s, standards)
+                    standards = COALESCE(%s, standards),
+                    finding_category = %s
                 WHERE id = %s
-            """, (severity, description, reachability_status, standards_value, existing[0]))
+            """, (severity, description, reachability_status, standards_value, finding_category, existing[0]))
         else:
             cur.execute("""
                 UPDATE public.vulnerability_log
                 SET severity = %s, description = %s, detected_at = NOW(), status = %s,
                     reachability_status = COALESCE(%s, reachability_status),
-                    standards = COALESCE(%s, standards)
+                    standards = COALESCE(%s, standards),
+                    finding_category = %s
                 WHERE id = %s
-            """, (severity, description, open_status, reachability_status, standards_value, existing[0]))
+            """, (severity, description, open_status, reachability_status, standards_value, finding_category, existing[0]))
         return "updated", existing[0]
 
     # Tier 2: same real CVE, already open, from a genuinely different engine -> cross-tool merge.
@@ -202,31 +331,33 @@ def log_finding_deduplicated(cur, asset_id: int, cve_id: str, severity: str, des
     if preserve_status:
         cur.execute("""
             INSERT INTO public.vulnerability_log
-            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s)
+            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date, finding_category)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s, %s)
             ON CONFLICT (fingerprint_hash) WHERE fingerprint_hash IS NOT NULL DO UPDATE SET
                 severity = EXCLUDED.severity,
                 description = EXCLUDED.description,
                 detected_at = NOW(),
                 status = CASE WHEN public.vulnerability_log.status = 'RESOLVED' THEN 'REOPENED' ELSE public.vulnerability_log.status END,
                 reachability_status = COALESCE(EXCLUDED.reachability_status, public.vulnerability_log.reachability_status),
-                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards)
+                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards),
+                finding_category = EXCLUDED.finding_category
             RETURNING id, (xmax = 0) AS was_inserted
-        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta))
+        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta, finding_category))
     else:
         cur.execute("""
             INSERT INTO public.vulnerability_log
-            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s)
+            (asset_id, cve_id, severity, description, status, scan_engine, detected_at, url_path, fingerprint_hash, reachability_status, standards, sla_due_date, finding_category)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, COALESCE(%s, 'REACHABLE'), %s, NOW() + %s, %s)
             ON CONFLICT (fingerprint_hash) WHERE fingerprint_hash IS NOT NULL DO UPDATE SET
                 severity = EXCLUDED.severity,
                 description = EXCLUDED.description,
                 detected_at = NOW(),
                 status = EXCLUDED.status,
                 reachability_status = COALESCE(EXCLUDED.reachability_status, public.vulnerability_log.reachability_status),
-                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards)
+                standards = COALESCE(EXCLUDED.standards, public.vulnerability_log.standards),
+                finding_category = EXCLUDED.finding_category
             RETURNING id, (xmax = 0) AS was_inserted
-        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta))
+        """, (asset_id, cve_id, severity, description, open_status, scan_engine, url_path, fingerprint, reachability_status, standards_value, sla_delta, finding_category))
     new_id, was_inserted = cur.fetchone()
     return ("inserted" if was_inserted else "updated"), new_id
 

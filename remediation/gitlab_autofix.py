@@ -19,6 +19,7 @@ import tempfile
 from typing import Dict, Any, Optional
 from psycopg2.extras import RealDictCursor
 from core import db_manager
+from core import agent_ledger
 
 # Deterministic patchers: safe, mechanical fixes that don't require an LLM. Each takes the
 # cloned repo dir + the vulnerability row and returns (changed: bool, summary: str).
@@ -356,5 +357,15 @@ class GitLabAutoFixer:
 ---
 *Generated automatically by Centinela-AI SOAR Engine. Review before merging.*
 """,
+        )
+        agent_ledger.record_action(
+            agent_ledger.ACTION_GITLAB_AUTOFIX_MR,
+            f"Auto-fix MR para {cve_id} en {path_with_namespace}: {mr_res.get('status')}"
+            + (f" ({mr_res.get('url')})" if mr_res.get("url") else ""),
+            entity_type="vulnerability", entity_id=vuln_id, asset_id=vuln.get("asset_id"),
+            detail={"cve_id": cve_id, "branch": branch_name, "mr": mr_res, "summary": summary},
+            evidence=mr_res.get("url"),
+            outcome="success" if mr_res.get("status") == "created" else "failed",
+            actor="centinela-sentinel",
         )
         return mr_res

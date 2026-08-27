@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
 from typing import List, Dict, Set
 import asyncio
 from fastapi.middleware.cors import CORSMiddleware
@@ -515,12 +515,54 @@ async def ping_asset(asset_name: str):
     """
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT endpoint, asset_name FROM public.infra_inventory WHERE asset_name = %s LIMIT 1", (asset_name,))
+            cur.execute("SELECT endpoint, asset_name, agent_id FROM public.infra_inventory WHERE asset_name = %s LIMIT 1", (asset_name,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail=f"Activo '{asset_name}' no encontrado")
-            
+
             target = row["endpoint"] or ""
+
+            # Real bug fixed 2026-08-14, found live via a direct user report: "remote-agent" is a
+            # literal placeholder written for agents enrolled via the zero-trust curl one-liner
+            # with no fixed IP known at install time (Wazuh itself registers these with ip="any",
+            # since a roaming/VPN-connected endpoint has no single stable address) -- there was
+            # never a real host here to TCP/ICMP-probe, so every check below was structurally
+            # guaranteed to fail every time, not "sometimes unreachable due to network conditions".
+            # Confirmed live: pinging a real such agent's actual VPN-assigned IP got an explicit
+            # "Destination Host Unreachable" FROM THE GATEWAY ITSELF (not a timeout) -- this
+            # network has no route into that private VPN client range at all, an architectural
+            # fact, not a transient failure. For any asset with a real Wazuh agent_id, use Wazuh's
+            # own live agent_control status instead: the agent calls OUT to the manager (which
+            # always works over VPN/NAT), so it's a strictly more meaningful liveness signal here
+            # than a network probe this host can never deliver.
+            if target.strip().lower() == "remote-agent" and row.get("agent_id"):
+                try:
+                    cmd = ["docker", "exec", "casmarts-core-wazuh-manager",
+                           "/var/ossec/bin/agent_control", "-i", row["agent_id"], "-j"]
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                    agent_data = json.loads(res.stdout).get("data", {}) if res.returncode == 0 else {}
+                    wazuh_status = str(agent_data.get("status", "")).lower()
+                    is_online = wazuh_status == "active"
+                    return {
+                        "asset_name": asset_name,
+                        "endpoint": target,
+                        "status": "ONLINE" if is_online else "OFFLINE",
+                        "ping_ok": is_online,
+                        "latency_ms": None,
+                        "method": "wazuh_agent",
+                        "message": (
+                            f"Verificado por agente Wazuh (ID {row['agent_id']}): {'en línea' if is_online else 'desconectado'}. "
+                            f"Este activo no tiene una IP fija registrada (enrolado remoto/VPN) -- el ping de red no aplica aquí, "
+                            f"se usó el estado real reportado por el propio agente en vez de un sondeo de red imposible de entregar."
+                        )
+                    }
+                except Exception as e:
+                    return {
+                        "asset_name": asset_name, "endpoint": target, "status": "UNKNOWN",
+                        "ping_ok": None, "method": "wazuh_agent",
+                        "message": f"No se pudo consultar el estado del agente Wazuh: {e}"
+                    }
+
             # Strip protocol and path, extract host/IP cleanly
             clean_host = target.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0].strip()
             if not clean_host:
@@ -576,6 +618,7 @@ async def ping_asset(asset_name: str):
                 "status": "ONLINE" if is_online else "OFFLINE",
                 "ping_ok": is_online,
                 "latency_ms": latency,
+                "method": "network",
                 "message": f"Host {clean_host} alcanzable ({latency}ms)" if is_online else f"Host {clean_host} inalcanzable u offline (Intentando sincronización...)"
             }
     except HTTPException:
@@ -922,7 +965,7 @@ async def get_asset_deep_details(asset_name: str):
             # independently-drifting formula computed inline here.
             iso_score = compute_iso_control_coverage(open_vulns)["score"]
 
-            # Real CMMI v3.0 evaluation -- same 7-practice-area engine (CAR/SAM/MSR/PQA/EST/PLAN/VV)
+            # Real CMMI v3.0 evaluation -- same 5-practice-area engine (CAR/PQA/CM/MC/VV)
             # used by the dedicated /api/audit/cmmi-v3-report endpoint, scoped to just this asset.
             # Passes this endpoint's OWN already-open `cur` rather than calling
             # get_cmmi_v3_asset_audit_report() (which opens its own get_db_cursor()) -- doing that
@@ -1383,12 +1426,39 @@ async def get_stats():
             # Críticos y Altos -- UPPER() here because severity casing isn't guaranteed uniform
             # at the DB level (confirmed live: 'Info'/'INFO' split), so a plain exact match can
             # silently undercount rows written with different casing than the literal here.
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'CRITICAL'")
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'CRITICAL' AND status <> 'SUPPRESSED'")
             critical = cur.fetchone()["count"]
 
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'HIGH'")
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(severity) = 'HIGH' AND status <> 'SUPPRESSED'")
             high = cur.fetchone()["count"]
-            
+
+            # Real breakdown by asset category (Infraestructura vs Código) x finding category
+            # (Vulnerabilidad real vs Informativo/Calidad) -- added 2026-08-14 in response to a
+            # direct user report that the single undifferentiated `total` above made it look like
+            # every one of 9,000+ rows was an infrastructure vulnerability. Confirmed live this
+            # was backwards: 92% of all rows belong to GitLab-Repo (code) assets, and of those,
+            # most are code-quality/process-debt metrics (SonarQube CODE_SMELL, ISO 25010 method
+            # length, CMMI process findings), not individually actionable security
+            # vulnerabilities. See core/deduplication_engine.classify_finding_category()'s own
+            # docstring for exactly which cve_id/scan_engine values are INFORMATIONAL and why.
+            cur.execute("""
+                SELECT
+                    CASE WHEN i.asset_type = 'GitLab-Repo' THEN 'CODE' ELSE 'INFRA' END as asset_category,
+                    v.finding_category,
+                    COUNT(*) as count
+                FROM public.vulnerability_log v
+                LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
+                WHERE v.status <> 'SUPPRESSED'
+                GROUP BY asset_category, v.finding_category
+            """)
+            breakdown = {"infra_vulnerabilities": 0, "code_vulnerabilities": 0,
+                         "infra_informational": 0, "code_informational": 0}
+            for row in cur.fetchall():
+                key = f"{'infra' if row['asset_category'] == 'INFRA' else 'code'}_" \
+                      f"{'vulnerabilities' if row['finding_category'] == 'VULNERABILITY' else 'informational'}"
+                breakdown[key] = row["count"]
+            real_vulnerabilities_total = breakdown["infra_vulnerabilities"] + breakdown["code_vulnerabilities"]
+
             # Pendientes de aprobación
             cur.execute("SELECT COUNT(*) as count FROM public.remediation_history WHERE approval_token = 'PENDING_APPROVAL'")
             pending_approval = cur.fetchone()["count"]
@@ -1410,6 +1480,11 @@ async def get_stats():
 
             return {
                 "total": total,
+                "real_vulnerabilities_total": real_vulnerabilities_total,
+                "infra_vulnerabilities": breakdown["infra_vulnerabilities"],
+                "code_vulnerabilities": breakdown["code_vulnerabilities"],
+                "infra_informational": breakdown["infra_informational"],
+                "code_informational": breakdown["code_informational"],
                 "pending_ia": pending_ia,
                 "critical": critical,
                 "high": high,
@@ -1532,6 +1607,38 @@ async def get_risk_distribution():
             cur.execute("SELECT UPPER(severity) as severity, COUNT(id) as value FROM public.vulnerability_log GROUP BY UPPER(severity)")
             results = cur.fetchall()
             return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/stats/severity-by-category")
+async def get_severity_by_category():
+    """
+    Real severity breakdown split by asset category (Infraestructura vs Código), scoped to
+    finding_category='VULNERABILITY' only -- added 2026-08-14 alongside the dashboard's new
+    infra/code KPI split, so severity can be inspected per-category instead of only as one
+    fleet-wide total. Deliberately excludes INFORMATIONAL rows (SonarQube code smells, ISO
+    25010/CMMI quality metrics, audit-completion markers): a "severity" bucket on a
+    maintainability metric doesn't mean the same thing as on a real security finding, and mixing
+    them back in here would undo the point of the categorization work this builds on.
+    """
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    CASE WHEN i.asset_type = 'GitLab-Repo' THEN 'CODE' ELSE 'INFRA' END as asset_category,
+                    UPPER(v.severity) as severity,
+                    COUNT(*) as count
+                FROM public.vulnerability_log v
+                LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
+                WHERE v.finding_category = 'VULNERABILITY'
+                GROUP BY asset_category, UPPER(v.severity)
+            """)
+            infra = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+            code = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+            for row in cur.fetchall():
+                bucket = infra if row["asset_category"] == "INFRA" else code
+                bucket[row["severity"]] = bucket.get(row["severity"], 0) + row["count"]
+            return {"infra": infra, "code": code}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1780,7 +1887,9 @@ async def get_remediation_history(asset: Optional[str] = None):
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             query = """
                 SELECT v.id, r.script_path, r.executed_bool, r.approval_token, r.executed_at, r.can_automate, r.log_output,
-                       v.cve_id, v.severity, i.asset_name,
+                       v.cve_id, v.severity, i.asset_name, i.asset_type,
+                       CASE WHEN i.asset_type = 'GitLab-Repo' THEN 'CODE' ELSE 'INFRA' END as asset_category,
+                       v.finding_category,
                        v.executive_summary, v.business_impact, v.developer_steps, v.status,
                        v.detected_at,
                        COALESCE(v.fingerprint_hash, '') as fingerprint_hash,
@@ -1815,7 +1924,12 @@ async def get_remediation_history(asset: Optional[str] = None):
                 WHERE UPPER(v.cve_id) NOT LIKE 'CTI-IOC-MATCH%%'
                   AND UPPER(v.cve_id) NOT LIKE 'BLOODHOUND-PATH%%'
                   AND UPPER(v.cve_id) NOT IN ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT')
+                  AND v.status <> 'SUPPRESSED'
             """
+            # SUPPRESSED = an analyst recorded this exact finding as a false positive / accepted
+            # risk via /api/suppressions (item 3, 2026-08-27). It stays in the DB for the audit
+            # trail and keeps a re-detection counter on the suppression row, but it must not
+            # reappear in the SOAR approval queue as something to action.
             # Synthetic system markers (see centinela.py's correlate_vulnerability() for the
             # same list, used there to skip the LLM cascade) are informational/aggregate rows,
             # never a real per-asset actionable remediation -- confirmed live they were showing
@@ -2446,6 +2560,15 @@ async def startup_event():
     asyncio.create_task(poll_new_alerts())
     asyncio.create_task(poll_asset_status())
 
+    # Self-heal the tables this codebase owns (finding_suppressions, agent_actions). All
+    # statements are CREATE ... IF NOT EXISTS -- see core/schema.py.
+    try:
+        from core.schema import ensure_core_schema
+        with db_manager.get_db_cursor() as _schema_cur:
+            ensure_core_schema(_schema_cur)
+    except Exception as e:
+        print(f"⚠️ [Centinela-Backend] ensure_core_schema failed (continuing): {e}")
+
     # Same reap as centinela-ai's startup -- this service can also independently launch a ZAP
     # scan (see /api/audit endpoints below), so an ungraceful restart here can orphan a sibling
     # container the same way. Age-gated (see reap_orphaned_zap_containers()'s docstring), so it
@@ -2556,12 +2679,21 @@ async def get_wazuh_agent_info(agent_id: str):
             hostname = agent_data.get("name", "—")
             arch = agent_data.get("os", {}).get("arch", "x86_64")
 
-        # Smart OS display string
+        # Real OS display string -- exactly what Wazuh reported, no invented embellishment.
+        # Real bug fixed 2026-08-14, found live alongside a workstation misclassified as
+        # infrastructure: this used to unconditionally rewrite ANY "windows"-containing os_name
+        # to "Microsoft Windows Server 2022" (and similarly invent fake version fallbacks like
+        # "22.04 LTS"/"12"/"9" for other distros) regardless of what was actually reported --
+        # so a genuine Windows 11 Pro workstation would have been displayed to the user as a
+        # Windows Server 2022 machine, a real fabrication this project's own rules prohibit, not
+        # just a display quirk. Distro suffixes below only ADD a real, standard long-form name to
+        # data Wazuh already reported (e.g. "Debian" -> "Debian GNU/Linux"), never invent a
+        # product edition or version number that wasn't actually in the data.
         full_os_str = f"{os_name} {os_version or ''}".strip()
-        if "ubuntu" in full_os_str.lower(): full_os_str = f"Ubuntu Server {os_version or '22.04 LTS'}"
-        elif "windows" in full_os_str.lower(): full_os_str = f"Microsoft Windows Server {os_version or '2022'}"
-        elif "debian" in full_os_str.lower(): full_os_str = f"Debian GNU/Linux {os_version or '12'}"
-        elif "centos" in full_os_str.lower() or "rhel" in full_os_str.lower(): full_os_str = f"Red Hat Enterprise Linux / CentOS {os_version or '9'}"
+        if "debian" in full_os_str.lower() and "gnu/linux" not in full_os_str.lower():
+            full_os_str = f"Debian GNU/Linux {os_version or ''}".strip()
+        elif ("centos" in full_os_str.lower() or "rhel" in full_os_str.lower()) and "red hat" not in full_os_str.lower():
+            full_os_str = f"{os_name} (Red Hat Enterprise Linux family) {os_version or ''}".strip()
 
         # Convert epoch lastKeepAlive to readable local time
         last_ka_epoch = agent_data.get("lastKeepAlive")
@@ -2813,6 +2945,417 @@ async def create_gitlab_autofix_mr(vuln_id: int, project_id: Optional[int] = 1):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================================================================
+# Item 3 (2026-08-27): finding_suppressions -- learned false-positive / accepted-risk memory.
+# CodeRabbit records "this pattern is not a bug here" from reviewer feedback and stops
+# resurfacing it. The equivalent here: an analyst records a suppression keyed on any
+# combination of asset_id / cve_id / url_path_pattern (LIKE) / fingerprint_hash, and
+# core.deduplication_engine.log_finding_deduplicated() parks every future match in SUPPRESSED
+# instead of reopening it -- while still counting the re-detection on the suppression row so
+# "this is still being flagged by the scanner" stays visible.
+# ========================================================================================
+
+_VALID_SUPPRESSION_SCOPES = {"FALSE_POSITIVE", "ACCEPTED_RISK", "WONT_FIX"}
+
+
+class SuppressionModel(BaseModel):
+    asset_id: Optional[int] = None
+    cve_id: Optional[str] = None
+    url_path_pattern: Optional[str] = None
+    fingerprint_hash: Optional[str] = None
+    reason: Optional[str] = None
+    scope: Optional[str] = "FALSE_POSITIVE"
+    created_by: Optional[str] = "analyst"
+    expires_at: Optional[str] = None  # ISO8601 timestamp; omit/null = permanent
+
+
+@app.get("/api/suppressions")
+async def list_suppressions(active_only: bool = True):
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            q = """
+                SELECT s.*, i.asset_name
+                FROM public.finding_suppressions s
+                LEFT JOIN public.infra_inventory i ON s.asset_id = i.id
+            """
+            if active_only:
+                q += " WHERE s.active = TRUE"
+            q += " ORDER BY s.id DESC LIMIT 1000"
+            cur.execute(q)
+            return {"suppressions": cur.fetchall()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/suppressions")
+async def create_suppression(body: SuppressionModel):
+    if not (body.asset_id or body.cve_id or body.url_path_pattern or body.fingerprint_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of asset_id, cve_id, url_path_pattern, fingerprint_hash is "
+                   "required -- an all-NULL suppression would mute every finding.")
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(status_code=400, detail="reason is required")
+    scope = (body.scope or "FALSE_POSITIVE").upper()
+    if scope not in _VALID_SUPPRESSION_SCOPES:
+        raise HTTPException(status_code=400,
+                            detail=f"scope must be one of {sorted(_VALID_SUPPRESSION_SCOPES)}")
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO public.finding_suppressions
+                (asset_id, cve_id, url_path_pattern, fingerprint_hash, reason, scope, created_by, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (body.asset_id, body.cve_id, body.url_path_pattern, body.fingerprint_hash,
+                  body.reason.strip(), scope, body.created_by or "analyst", body.expires_at))
+            row = cur.fetchone()
+
+            # Retro-suppress rows already in the log that match, so the effect is immediate and
+            # not deferred to the next scan cycle. RESOLVED rows are left alone.
+            cur.execute("""
+                UPDATE public.vulnerability_log v
+                SET status = 'SUPPRESSED'
+                WHERE v.status NOT IN ('SUPPRESSED', 'RESOLVED')
+                  AND (%(asset_id)s IS NULL OR v.asset_id IS NOT DISTINCT FROM %(asset_id)s)
+                  AND (%(cve_id)s IS NULL OR v.cve_id = %(cve_id)s)
+                  AND (%(fp)s IS NULL OR v.fingerprint_hash = %(fp)s)
+                  AND (%(url)s IS NULL OR COALESCE(v.url_path, '') LIKE %(url)s)
+                RETURNING v.id
+            """, {"asset_id": body.asset_id, "cve_id": body.cve_id,
+                  "fp": body.fingerprint_hash, "url": body.url_path_pattern})
+            retro_ids = [r["id"] for r in cur.fetchall()]
+
+        from core import agent_ledger
+        agent_ledger.record_action(
+            agent_ledger.ACTION_SUPPRESSION_CREATED,
+            f"Supresión creada ({scope}) por {row['created_by']}: {body.reason.strip()[:200]}",
+            entity_type="suppression", entity_id=row["id"], asset_id=body.asset_id,
+            detail={"predicates": {"cve_id": body.cve_id,
+                                   "url_path_pattern": body.url_path_pattern,
+                                   "fingerprint_hash": body.fingerprint_hash},
+                    "retro_suppressed": retro_ids},
+            actor=f"analyst:{row['created_by']}", outcome="success",
+        )
+        return {"status": "created", "suppression": row, "retro_suppressed_ids": retro_ids}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/suppressions/{sid}")
+async def deactivate_suppression(sid: int):
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE public.finding_suppressions SET active = FALSE WHERE id = %s RETURNING id",
+                (sid,))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Suppression not found")
+        return {"status": "deactivated", "id": sid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/remediation/{vuln_id}/suppress")
+async def suppress_from_soar(vuln_id: int, body: SuppressionModel):
+    """
+    Convenience path for the SOAR UI: suppress this exact finding. Keys the suppression on the
+    finding's own fingerprint_hash so ONLY this finding is muted (not every finding sharing its
+    cve_id), and parks the row in SUPPRESSED immediately.
+    """
+    scope = (body.scope or "FALSE_POSITIVE").upper()
+    if scope not in _VALID_SUPPRESSION_SCOPES:
+        raise HTTPException(status_code=400,
+                            detail=f"scope must be one of {sorted(_VALID_SUPPRESSION_SCOPES)}")
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT v.id, v.cve_id, v.asset_id, v.fingerprint_hash, v.url_path,
+                       COALESCE(i.asset_name, '(sin activo)') AS asset_name
+                FROM public.vulnerability_log v
+                LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
+                WHERE v.id = %s
+            """, (vuln_id,))
+            vuln = cur.fetchone()
+            if not vuln:
+                raise HTTPException(status_code=404, detail="Vulnerability not found")
+            if not vuln["fingerprint_hash"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Finding has no fingerprint_hash; cannot key a precise suppression on it.")
+            reason = (body.reason or "").strip() or f"Suprimido desde SOAR para {vuln['cve_id']}"
+            cur.execute("""
+                INSERT INTO public.finding_suppressions
+                (asset_id, cve_id, fingerprint_hash, reason, scope, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (vuln["asset_id"], vuln["cve_id"], vuln["fingerprint_hash"],
+                  reason, scope, body.created_by or "analyst"))
+            supp = cur.fetchone()
+            cur.execute("UPDATE public.vulnerability_log SET status = 'SUPPRESSED' WHERE id = %s",
+                        (vuln_id,))
+
+        from core import agent_ledger
+        agent_ledger.record_action(
+            agent_ledger.ACTION_FINDING_SUPPRESSED,
+            f"Hallazgo {vuln['cve_id']} en {vuln['asset_name']} suprimido desde SOAR ({scope}): {reason[:200]}",
+            entity_type="vulnerability", entity_id=vuln_id, asset_id=vuln["asset_id"],
+            detail={"suppression_id": supp["id"], "scope": scope},
+            actor=f"analyst:{body.created_by or 'analyst'}", outcome="success",
+        )
+        return {"status": "suppressed", "vuln_id": vuln_id, "suppression": supp}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================================================================
+# Item 4 (2026-08-27): agent_actions -- unified autonomous-action ledger.
+# "The Rock" (KIO) headlines "30,000+ autonomous actions" as an accountability metric.
+# Every autonomous state change (AI correlation, auto-fix MR, container reap, threat-intel
+# enrichment, CTI block, analyst suppression) records one row via core.agent_ledger.
+# ========================================================================================
+
+@app.get("/api/agent-actions")
+async def list_agent_actions(limit: int = 100, action_type: Optional[str] = None,
+                             outcome: Optional[str] = None, since_hours: Optional[int] = None):
+    limit = max(1, min(limit, 1000))
+    clauses, params = [], []
+    if action_type:
+        clauses.append("a.action_type = %s")
+        params.append(action_type)
+    if outcome:
+        clauses.append("a.outcome = %s")
+        params.append(outcome)
+    if since_hours:
+        clauses.append("a.created_at > NOW() - make_interval(hours => %s)")
+        params.append(int(since_hours))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""SELECT a.*, i.asset_name
+                    FROM public.agent_actions a
+                    LEFT JOIN public.infra_inventory i ON a.asset_id = i.id
+                    {where}
+                    ORDER BY a.id DESC LIMIT %s""",
+                params + [limit])
+            rows = cur.fetchall()
+            cur.execute(
+                f"""SELECT a.action_type, a.outcome, COUNT(*) AS count
+                    FROM public.agent_actions a
+                    {where}
+                    GROUP BY a.action_type, a.outcome
+                    ORDER BY count DESC""",
+                params)
+            summary = cur.fetchall()
+        return {"actions": rows, "summary": summary, "count": len(rows)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================================================================
+# Item 2 (2026-08-27): incident correlation. Read + light-write API over the incidents built
+# by centinela.py::run_incident_correlation_loop(). See DECISIONS/0003.
+# ========================================================================================
+
+_VALID_INCIDENT_STATUS = {"OPEN", "INVESTIGATING", "CONTAINED", "CLOSED", "FALSE_POSITIVE"}
+
+
+class IncidentNoteModel(BaseModel):
+    note: str
+    author: Optional[str] = "analyst"
+
+
+class IncidentStatusModel(BaseModel):
+    status: str
+    author: Optional[str] = "analyst"
+
+
+@app.get("/api/incidents")
+async def list_incidents(status: Optional[str] = None, limit: int = 100):
+    limit = max(1, min(limit, 500))
+    clauses, params = [], []
+    if status:
+        clauses.append("i.status = %s")
+        params.append(status.upper())
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT i.*, inv.asset_name,
+                       EXTRACT(EPOCH FROM (i.detected_at - i.first_event_at)) AS mttd_seconds,
+                       EXTRACT(EPOCH FROM (i.contained_at - i.detected_at)) AS mttc_seconds
+                FROM public.incidents i
+                LEFT JOIN public.infra_inventory inv ON i.asset_id = inv.id
+                {where}
+                ORDER BY
+                    CASE i.status WHEN 'OPEN' THEN 0 WHEN 'INVESTIGATING' THEN 1
+                                  WHEN 'CONTAINED' THEN 2 ELSE 3 END,
+                    i.detected_at DESC
+                LIMIT %s
+            """, params + [limit])
+            return {"incidents": cur.fetchall()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident(incident_id: int):
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT i.*, inv.asset_name,
+                       EXTRACT(EPOCH FROM (i.detected_at - i.first_event_at)) AS mttd_seconds,
+                       EXTRACT(EPOCH FROM (i.contained_at - i.detected_at)) AS mttc_seconds
+                FROM public.incidents i
+                LEFT JOIN public.infra_inventory inv ON i.asset_id = inv.id
+                WHERE i.id = %s
+            """, (incident_id,))
+            inc = cur.fetchone()
+            if not inc:
+                raise HTTPException(status_code=404, detail="Incident not found")
+            cur.execute("""
+                SELECT source, source_id, occurred_at, tactic, severity, summary
+                FROM public.incident_events
+                WHERE incident_id = %s
+                ORDER BY occurred_at
+            """, (incident_id,))
+            inc["events"] = cur.fetchall()
+            return inc
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/incidents/{incident_id}/note")
+async def add_incident_note(incident_id: int, body: IncidentNoteModel):
+    if not body.note or not body.note.strip():
+        raise HTTPException(status_code=400, detail="note is required")
+    stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    line = f"[{stamp}] {body.author or 'analyst'}: {body.note.strip()}"
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                UPDATE public.incidents
+                SET analyst_notes = COALESCE(analyst_notes || E'\n', '') || %s
+                WHERE id = %s
+                RETURNING id, analyst_notes
+            """, (line, incident_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        return {"status": "noted", "incident_id": incident_id, "analyst_notes": row["analyst_notes"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/incidents/{incident_id}/status")
+async def set_incident_status(incident_id: int, body: IncidentStatusModel):
+    new_status = (body.status or "").upper()
+    if new_status not in _VALID_INCIDENT_STATUS:
+        raise HTTPException(status_code=400,
+                            detail=f"status must be one of {sorted(_VALID_INCIDENT_STATUS)}")
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                UPDATE public.incidents SET
+                    status = %s,
+                    contained_at = CASE WHEN %s = 'CONTAINED' AND contained_at IS NULL
+                                        THEN NOW() ELSE contained_at END,
+                    closed_at = CASE WHEN %s IN ('CLOSED', 'FALSE_POSITIVE') AND closed_at IS NULL
+                                     THEN NOW() ELSE closed_at END
+                WHERE id = %s
+                RETURNING id, status, contained_at, closed_at
+            """, (new_status, new_status, new_status, incident_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        from core import agent_ledger
+        agent_ledger.record_action(
+            agent_ledger.ACTION_INCIDENT_CORRELATION,
+            f"Incidente #{incident_id} -> {new_status} por {body.author or 'analyst'}",
+            entity_type="incident", entity_id=incident_id, outcome="success",
+            actor=f"analyst:{body.author or 'analyst'}",
+        )
+        return {"status": "updated", "incident": row}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========================================================================================
+# Item 1 (2026-08-27): shift-left Merge Request review + merge-blocking commit status.
+# GitLab webhook (object_kind=merge_request) -> scan ONLY the changed lines of the MR head
+# -> inline comments + summary note + external commit status `centinela/security`. A project
+# that requires that status check will block the merge until findings are resolved.
+# Configure in GitLab: Settings -> Webhooks -> URL http://<centinela-backend>/api/gitlab/mr-webhook,
+# Secret token = GITLAB_WEBHOOK_TOKEN (env), trigger "Merge request events".
+# ========================================================================================
+
+def _run_mr_review_bg(project_id, mr_iid, blocking):
+    try:
+        from auditors.mr_review import MRReviewer
+        res = MRReviewer().review(project_id, mr_iid, blocking_severity=blocking)
+        print(f"✅ [MR-Review] MR !{mr_iid} (project {project_id}): {res}")
+    except Exception:
+        import traceback
+        print(f"❌ [MR-Review] MR !{mr_iid} (project {project_id}) failed:")
+        traceback.print_exc()
+
+
+@app.post("/api/gitlab/mr-webhook")
+async def gitlab_mr_webhook(request: Request, background_tasks: BackgroundTasks):
+    secret = os.getenv("GITLAB_WEBHOOK_TOKEN", "")
+    if secret and request.headers.get("X-Gitlab-Token") != secret:
+        raise HTTPException(status_code=401, detail="invalid X-Gitlab-Token")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body is not JSON")
+
+    if payload.get("object_kind") != "merge_request":
+        return {"status": "ignored", "reason": f"object_kind={payload.get('object_kind')}"}
+    attrs = payload.get("object_attributes", {}) or {}
+    action = attrs.get("action")
+    if action not in ("open", "reopen", "update"):
+        return {"status": "ignored", "reason": f"action={action}"}
+    # 'update' fires for label/assignee/description edits too -- only re-review on real new commits.
+    if action == "update" and not attrs.get("oldrev"):
+        return {"status": "ignored", "reason": "update without new commits"}
+
+    project_id = (payload.get("project", {}) or {}).get("id") or attrs.get("target_project_id")
+    mr_iid = attrs.get("iid")
+    if not project_id or not mr_iid:
+        raise HTTPException(status_code=400, detail="missing project id or MR iid in payload")
+
+    blocking = os.getenv("MR_REVIEW_BLOCKING_SEVERITY", "HIGH")
+    background_tasks.add_task(_run_mr_review_bg, project_id, mr_iid, blocking)
+    return {"status": "accepted", "project_id": project_id, "mr_iid": mr_iid, "action": action}
+
+
+@app.post("/api/gitlab/mr-review/{project_id}/{mr_iid}")
+async def trigger_mr_review(project_id: str, mr_iid: int, blocking_severity: str = "HIGH"):
+    """Manual / re-run entrypoint for the same MR review the webhook triggers."""
+    try:
+        from auditors.mr_review import MRReviewer
+        return MRReviewer().review(project_id, mr_iid, blocking_severity=blocking_severity)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/audit/shadow-api")
 async def audit_shadow_apis():
@@ -3353,11 +3896,22 @@ def _infer_scan_engine_label(cve_id: str, scan_engine: Optional[str]) -> str:
 
 
 def _render_cmmi_practice_areas_html(practice_areas: list) -> str:
+    # Real bug fixed 2026-08-25: pa["passed"] can now be None (the CM practice area's genuine
+    # N/A state for non-repository assets, see compliance_mapper.py) -- Python treats None as
+    # falsy, so the old ternary rendered an N/A area with the same red "card-crit"/"badge-critical"
+    # styling as a real failure, misrepresenting "doesn't apply" as "failed". card-warn/badge-info
+    # (already-defined neutral styles used elsewhere in this file) render the N/A case correctly.
+    def _card_cls(passed):
+        return "card-ok" if passed is True else "card-crit" if passed is False else "card-warn"
+
+    def _badge_cls(passed):
+        return "badge-low" if passed is True else "badge-critical" if passed is False else "badge-info"
+
     rows = "".join([
-        f"""<div class='card {"card-ok" if pa["passed"] else "card-crit"}' style='margin-bottom:8px;'>
+        f"""<div class='card {_card_cls(pa["passed"])}' style='margin-bottom:8px;'>
               <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>
                 <h3 style='margin:0;'>{pa['area']}</h3>
-                <span class='badge {"badge-low" if pa["passed"] else "badge-critical"}'>{pa['status']}</span>
+                <span class='badge {_badge_cls(pa["passed"])}'>{pa['status']}</span>
               </div>
               <div style='font-size:9px;color:#475569;'>{pa['evidence']}</div>
             </div>"""
@@ -3369,9 +3923,11 @@ def _render_cmmi_practice_areas_html(practice_areas: list) -> str:
 @app.get("/api/reports/cmmi")
 async def download_cmmi_fleet_report():
     """
-    Fleet-wide CMMI v3.0 report PDF: real per-asset compliance across the 7 practice areas
-    (CAR/SAM/MSR/PQA/EST/PLAN/VV), same engine as /api/audit/cmmi-v3-report and the asset
-    detail panel -- one source of truth, not a separate summary.
+    Fleet-wide CMMI v3.0 report PDF: real per-asset compliance across the 5 practice areas this
+    scanner can genuinely evidence from source code and scan history (CAR/PQA/CM/MC/VV -- see
+    compliance_mapper.py's CMMI_V3_PRACTICE_AREAS for why these 5 and not the other 14 of C&A's
+    own 19-area tailored model), same engine as /api/audit/cmmi-v3-report and the asset detail
+    panel -- one source of truth, not a separate summary.
     """
     try:
         from auditors.compliance_mapper import get_cmmi_v3_asset_audit_report

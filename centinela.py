@@ -6,6 +6,7 @@ import psycopg2
 import concurrent.futures
 from psycopg2.extras import RealDictCursor
 from core import db_manager
+from core import agent_ledger
 try:
     from langchain_core.prompts import ChatPromptTemplate
 except Exception:
@@ -92,7 +93,7 @@ VALKEY_CONFIG = {
 # of all) so a request_timeout on either (below) can only ever delay the *last* resorts before
 # the heuristic fallback, not stall every single correlation ahead of the two fast, reliable
 # tiers.
-model_name = get_secret("AI_MODEL", "llama-3.3-70b-versatile")
+model_name = get_secret("AI_MODEL", "openai/gpt-oss-20b")
 google_model_name = get_secret("AI_MODEL_GOOGLE", "gemini-1.5-flash-latest")
 nvidia_model_name = get_secret("AI_MODEL_NVIDIA", "meta/llama-3.1-70b-instruct")
 openrouter_model_name = get_secret("AI_MODEL_OPENROUTER", "nvidia/nemotron-3-super-120b-a12b:free")
@@ -1042,6 +1043,24 @@ def correlate_vulnerability(vuln):
 
     is_repo_finding = str(vuln.get('asset_type', '')).upper() == 'GITLAB-REPO'
 
+    # Item 5 (2026-08-27): blast-radius / enclosing-scope context. For a GitLab-Repo finding we
+    # used to hand the LLM only the one flagged line + the scanner's short description and then
+    # ask for a `git apply`-ready diff. gather_repo_context() reads the enclosing function from
+    # the clone the fleet scanner already left on disk and `git grep`s the flagged symbol, so
+    # the patch is written with real surrounding context and the call sites it might affect.
+    # Best-effort and read-only -- returns an empty prompt_block on any failure.
+    code_context_block = ""
+    if is_repo_finding:
+        try:
+            from core.code_context import gather_repo_context
+            _ctx = gather_repo_context(vuln.get('asset_name', ''), vuln.get('url_path', '') or '')
+            code_context_block = _ctx.get("prompt_block", "") or ""
+            if code_context_block:
+                print(f"   ↳ [Centinela-AI] Code context: {_ctx['rel_path']}:{_ctx['line']} "
+                      f"symbol={_ctx['symbol']!r} callers={_ctx['caller_count']}")
+        except Exception as _ctx_err:
+            print(f"⚠️ [Centinela-AI] gather_repo_context failed (continuing without it): {_ctx_err}")
+
     # These cve_id values are Centinela's own synthetic/system markers, not real
     # scanner-detected vulnerabilities -- there's no real technical substance for a generic
     # security-auditor LLM prompt to reason about, and testing this live surfaced exactly the
@@ -1073,6 +1092,8 @@ def correlate_vulnerability(vuln):
         - Ubicación (archivo:línea): {vuln.get('url_path', 'desconocida')}
         - Severidad: {vuln['severity']}
         - Detalle (incluye el fragmento de código real detectado): {vuln.get('description', 'Sin descripción')}
+
+        {code_context_block}
 
         REGLAS:
         1. Propón el cambio de código MÍNIMO y CORRECTO que soluciona específicamente este hallazgo
@@ -1683,6 +1704,12 @@ def run_threat_intel_enrichment_loop():
     also backfills the large volume of pre-existing rows from before this fix existed.
     """
     from core import threat_intel, deduplication_engine
+    # During a backlog catch-up this loop iterates every ~5s; a ledger row per iteration would
+    # be pure noise (~17k rows/day). Accumulate instead and record ONE summary row when the
+    # backlog drains (the `if not rows` branch), plus an immediate row for any pass that finds
+    # a CISA-KEV hit (that signal shouldn't wait for the backlog to clear).
+    _enriched_since_idle = 0
+    _kev_since_idle = 0
     while True:
         try:
             with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
@@ -1706,6 +1733,16 @@ def run_threat_intel_enrichment_loop():
                 rows = cur.fetchall()
 
             if not rows:
+                if _enriched_since_idle:
+                    agent_ledger.record_action(
+                        agent_ledger.ACTION_THREAT_INTEL_ENRICH,
+                        f"Backlog EPSS/CISA KEV al día: {_enriched_since_idle} hallazgo(s) enriquecidos "
+                        f"en esta ronda; {_kev_since_idle} en KEV (explotación activa confirmada)",
+                        detail={"enriched": _enriched_since_idle, "kev_hits": _kev_since_idle},
+                        outcome="success",
+                    )
+                    _enriched_since_idle = 0
+                    _kev_since_idle = 0
                 time.sleep(300)
                 continue
 
@@ -1744,6 +1781,15 @@ def run_threat_intel_enrichment_loop():
             kev_hits = sum(1 for r in rows if (cve_by_row[r["id"]] in kev_set if cve_by_row[r["id"]] else False))
             if kev_hits:
                 print(f"🚨 [Centinela-AI] {kev_hits} finding(s) in this batch are CISA-confirmed actively exploited (KEV).")
+
+            _enriched_since_idle += len(rows)
+            _kev_since_idle += kev_hits
+            if kev_hits:
+                agent_ledger.record_action(
+                    agent_ledger.ACTION_THREAT_INTEL_ENRICH,
+                    f"{kev_hits} hallazgo(s) marcados CISA-KEV (explotación activa confirmada) en esta tanda de {len(rows)}",
+                    detail={"enriched_batch": len(rows), "kev_hits": kev_hits}, outcome="success",
+                )
 
             # Brief pacing between batches during backlog catch-up so this doesn't hammer
             # FIRST.org/CISA back-to-back with no gap; harmless once the backlog is drained and
@@ -1840,6 +1886,170 @@ def run_wazuh_discovery_loop():
         time.sleep(600)
 
 
+def run_incident_correlation_loop():
+    """
+    Item 2 (2026-08-27): incident correlation. Groups related runtime/CTI/BloodHound/KEV
+    signals that already exist in runtime_alerts / vulnerability_log into one incident with a
+    timeline, an ATT&CK kill chain, and an MTTD/MTTC clock. Deterministic (union-find, no LLM);
+    an optional AI executive summary is layered on the deterministic narrative and never
+    invents events. Fail-safe: with nothing worth grouping it creates nothing. Full design in
+    DECISIONS/0003; noise handling (this deployment's runtime_alerts is ~93% Falco self-noise)
+    lives in core/incident_engine.NOISE_RULES.
+    """
+    from core import incident_engine as ie
+
+    interval = int(os.getenv("INCIDENT_CORRELATION_INTERVAL_S", "120"))
+    window = int(os.getenv("INCIDENT_CORRELATION_WINDOW_MIN", "60"))
+    lookback = int(os.getenv("INCIDENT_LOOKBACK_HOURS", "6"))
+    idle_close = int(os.getenv("INCIDENT_AUTO_CLOSE_IDLE_HOURS", "72"))
+    min_events = int(os.getenv("INCIDENT_MIN_EVENTS", "2"))
+    ai_summary_enabled = os.getenv("INCIDENT_AI_SUMMARY", "1") not in ("0", "false", "False")
+
+    while True:
+        try:
+            signals = []
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT r.id, r.asset_id, r.priority, r.rule_name, r.alert_text,
+                           r.output_fields, r.detected_at
+                    FROM runtime_alerts r
+                    WHERE r.detected_at > NOW() - make_interval(hours => %s)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM incident_events ie
+                          WHERE ie.source = 'runtime_alert' AND ie.source_id = r.id)
+                    ORDER BY r.detected_at
+                    LIMIT 3000
+                """, (lookback,))
+                rt_rows = cur.fetchall()
+
+            fresh_assets = set()
+            for r in rt_rows:
+                if ie.is_noise(r["rule_name"]):
+                    continue
+                inds = ie.extract_indicators(r["rule_name"], r["alert_text"], r["output_fields"])
+                sev = ie.normalize_severity(r["priority"])
+                # plain INFO/LOW runtime noise with no indicators is not incident material
+                if sev in ("INFO", "LOW") and not inds["ips"] and not inds["users"] \
+                   and not ie.is_standalone_worthy(r["rule_name"], r["alert_text"]):
+                    continue
+                if r["asset_id"] is not None:
+                    fresh_assets.add(r["asset_id"])
+                signals.append(ie.Signal(
+                    key=f"runtime_alert:{r['id']}", source="runtime_alert", source_id=r["id"],
+                    asset_id=r["asset_id"], occurred_at=r["detected_at"], severity=sev,
+                    rule_name=r["rule_name"] or "runtime alert",
+                    summary=(r["alert_text"] or r["rule_name"] or "")[:400],
+                    tactic=ie.classify_tactic(r["rule_name"], r["alert_text"]),
+                    ips=inds["ips"], users=inds["users"],
+                    standalone_worthy=ie.is_standalone_worthy(r["rule_name"], r["alert_text"]),
+                ))
+
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT v.id, v.asset_id, v.severity, v.cve_id, v.description, v.detected_at,
+                           v.is_cisa_kev
+                    FROM vulnerability_log v
+                    WHERE v.detected_at > NOW() - make_interval(hours => %s)
+                      AND v.status NOT IN ('RESOLVED', 'SUPPRESSED')
+                      AND (v.cve_id LIKE 'CTI-IOC-MATCH%%' OR v.cve_id LIKE 'BLOODHOUND-PATH%%'
+                           OR v.is_cisa_kev = TRUE)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM incident_events ie
+                          WHERE ie.source = 'vulnerability' AND ie.source_id = v.id)
+                    ORDER BY v.detected_at
+                    LIMIT 500
+                """, (lookback,))
+                vuln_rows = cur.fetchall()
+
+            for v in vuln_rows:
+                cve_u = str(v["cve_id"] or "").upper()
+                is_cti_or_bh = cve_u.startswith("CTI-IOC-MATCH") or cve_u.startswith("BLOODHOUND-PATH")
+                # A KEV finding alone is not an incident -- only if the SAME asset also has a
+                # fresh non-noise runtime signal this pass. CTI/BloodHound rows are worthy alone.
+                if not is_cti_or_bh and v["asset_id"] not in fresh_assets:
+                    continue
+                inds = ie.extract_indicators(v["cve_id"], v["description"], None)
+                signals.append(ie.Signal(
+                    key=f"vulnerability:{v['id']}", source="vulnerability", source_id=v["id"],
+                    asset_id=v["asset_id"], occurred_at=v["detected_at"],
+                    severity=ie.normalize_severity(v["severity"]),
+                    rule_name=v["cve_id"] or "vulnerability",
+                    summary=(v["description"] or v["cve_id"] or "")[:400],
+                    tactic=ie.classify_tactic(v["cve_id"], v["description"]),
+                    ips=inds["ips"], users=inds["users"],
+                    standalone_worthy=is_cti_or_bh,
+                ))
+
+            if not signals:
+                time.sleep(interval)
+                continue
+
+            groups = ie.group_signals(signals, window_minutes=window)
+            with db_manager.get_db_cursor() as cur:
+                stats = ie.attach_or_create_incidents(cur, groups, window_minutes=window,
+                                                      min_events=min_events)
+                closed = ie.reconcile_closed_incidents(cur, idle_hours=idle_close)
+
+            if stats["created"] or stats["attached"] or closed:
+                print(f"🧩 [Centinela-AI] Incident correlation: +{stats['created']} nuevos, "
+                      f"{stats['attached']} ampliados, {stats['events_linked']} eventos, "
+                      f"{closed} cerrados por inactividad.")
+                agent_ledger.record_action(
+                    agent_ledger.ACTION_INCIDENT_CORRELATION,
+                    f"{stats['created']} incidente(s) nuevos, {stats['attached']} ampliados, "
+                    f"{stats['events_linked']} evento(s) vinculados, {closed} cerrados",
+                    detail=stats | {"closed": closed, "signals": len(signals)},
+                    outcome="success",
+                )
+
+            # Optional AI executive summary for HIGH/CRITICAL incidents that don't have one yet.
+            if ai_summary_enabled:
+                _fill_incident_ai_summaries()
+
+            time.sleep(interval)
+        except Exception as e:
+            print(f"❌ [Centinela-AI] Error in incident correlation loop: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(60)
+
+
+def _fill_incident_ai_summaries(limit: int = 3):
+    """Adds a short executive summary (via call_ai_cascade) to HIGH/CRITICAL incidents that
+    don't have one. Built from the already-complete deterministic narrative -- if the cascade
+    doesn't answer, ai_summary stays NULL and the narrative remains the source of truth."""
+    try:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, title, severity, kill_chain, narrative
+                FROM public.incidents
+                WHERE status IN ('OPEN', 'INVESTIGATING')
+                  AND ai_summary IS NULL
+                  AND UPPER(severity) IN ('HIGH', 'CRITICAL')
+                ORDER BY detected_at DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        for r in rows:
+            prompt = f"""Actúa como analista SOC de CASMARTS. Resume este incidente en 3-4 frases
+para un reporte ejecutivo: qué está ocurriendo, por qué importa, y el siguiente paso de
+investigación. NO inventes datos que no estén abajo.
+
+Título: {r['title']}
+Severidad: {r['severity']}
+Cadena ATT&CK observada: {', '.join(r['kill_chain'] or []) or 'n/d'}
+Línea de tiempo:
+{r['narrative']}
+"""
+            summary = call_ai_cascade(prompt, want_json=False)
+            if summary and summary.strip():
+                with db_manager.get_db_cursor() as wcur:
+                    wcur.execute("UPDATE public.incidents SET ai_summary = %s WHERE id = %s",
+                                 (summary.strip()[:4000], r["id"]))
+    except Exception as e:
+        print(f"⚠️ [Centinela-AI] _fill_incident_ai_summaries failed (non-fatal): {e}")
+
+
 def run_cti_correlation_loop():
     """
     Real CTI/IoC correlation against abuse.ch's Feodo Tracker (live, active C2 server IPs).
@@ -1916,6 +2126,17 @@ def run_cti_correlation_loop():
 def main_loop():
     print("🚀 [Centinela-AI] Aura-Guard v2026.4.2 active.")
 
+    # Self-heal the tables this codebase owns (finding_suppressions, agent_actions) -- all
+    # CREATE ... IF NOT EXISTS, cheap no-op once they exist. See core/schema.py for why this
+    # lives in code rather than an untracked one-off script like every prior column add.
+    try:
+        from core.schema import ensure_core_schema
+        with db_manager.get_db_cursor() as _schema_cur:
+            ensure_core_schema(_schema_cur)
+        print("✅ [Centinela-AI] Core schema ensured (finding_suppressions, agent_actions).")
+    except Exception as e:
+        print(f"⚠️ [Centinela-AI] ensure_core_schema failed (continuing): {e}")
+
     # Reap any zap-scan-* sibling containers orphaned by a previous, ungraceful process exit
     # (docker restart mid-scan skips run_zap_scan()'s own finally-block cleanup -- see
     # reap_orphaned_zap_containers()'s own docstring for the real incident this fixes). Age-gated
@@ -1959,6 +2180,11 @@ def main_loop():
     wazuh_discovery_thread = threading.Thread(target=run_wazuh_discovery_loop, daemon=True)
     wazuh_discovery_thread.start()
 
+    # Incident correlation (item 2, 2026-08-27): group related runtime/CTI/BloodHound/KEV
+    # signals into incidents with a kill chain + MTTD/MTTC clock. Fail-safe on no data.
+    incident_thread = threading.Thread(target=run_incident_correlation_loop, daemon=True)
+    incident_thread.start()
+
     # External Auditor Thread
     from auditors import auditor_ext
     threading.Thread(target=auditor_ext.main, daemon=True).start()
@@ -1967,7 +2193,7 @@ def main_loop():
         try:
             with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT v.id, v.cve_id, v.severity, v.description, v.url_path, i.asset_name, i.asset_type, i.endpoint
+                    SELECT v.id, v.cve_id, v.severity, v.description, v.url_path, v.asset_id, i.asset_name, i.asset_type, i.endpoint
                     FROM vulnerability_log v
                     JOIN infra_inventory i ON v.asset_id = i.id
                     LEFT JOIN remediation_history r ON v.id = r.vuln_id
@@ -2069,10 +2295,28 @@ def main_loop():
                                     """, (vuln['id'], script_path, "PENDING_APPROVAL", analysis.get('can_automate', True)))
                                 
                             print(f"✅ Analysis complete for {vuln['cve_id']}. Script saved.")
+                            agent_ledger.record_action(
+                                agent_ledger.ACTION_AI_CORRELATION,
+                                f"Correlación IA completada para {vuln['cve_id']} en {vuln['asset_name']}",
+                                entity_type="vulnerability", entity_id=vuln['id'],
+                                asset_id=vuln.get('asset_id'),
+                                detail={
+                                    "can_automate": analysis.get('can_automate'),
+                                    "has_patch": bool(fix_patch.strip()),
+                                    "asset_type": vuln.get('asset_type'),
+                                },
+                                outcome="success",
+                            )
                             time.sleep(3) # Delay between successful requests to prevent 429
                         else:
                             with db_manager.get_db_cursor() as write_cur:
                                 write_cur.execute("UPDATE vulnerability_log SET status = 'AI_FAILED' WHERE id = %s", (vuln['id'],))
+                            agent_ledger.record_action(
+                                agent_ledger.ACTION_AI_CORRELATION_FAIL,
+                                f"Correlación IA sin resultado utilizable para {vuln['cve_id']} en {vuln['asset_name']}",
+                                entity_type="vulnerability", entity_id=vuln['id'],
+                                asset_id=vuln.get('asset_id'), outcome="failed",
+                            )
                     except Exception as e:
                         print(f"❌ Critical error processing vuln {vuln['id']}: {e}")
                         # If it's a connection error or something transient, don't mark as error

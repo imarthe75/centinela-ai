@@ -1494,3 +1494,456 @@ project-wide via `--legacy-peer-deps`, already the case before today). Forcing t
 (`--force`) risks a broader, less predictable dependency resolution change than can be verified
 in this session -- left as a disclosed, real, low-severity residual rather than risk a
 regression under time pressure.
+
+## Real security incident 2026-08-14: ports 8301/8302 directly exposed to 0.0.0.0, under live attack
+
+Found while investigating a pasted browser console log the user reported -- turned out unrelated
+to any app bug. `docker logs centinela-frontend` showed real, active exploitation traffic hitting
+Vite's dev server directly: a PowerShell blind command-injection probe
+(`?";start-sleep -s 15.0`) and a complete XSLT Server-Side Injection RCE payload using Xalan's
+`runtime:exec()` extension function. `/var/log/nginx/access.log` had zero trace of either --
+confirmed the attacker was reaching port 8301 directly, not through nginx.
+
+Root cause: `docker-compose.yml` published `8301:5173` (frontend/Vite dev server) and
+`8302:8000` (backend/API) with no bind address, which Docker defaults to `0.0.0.0` --
+confirmed live via `ss -tlnp` (both listening on all interfaces, IPv4 and IPv6). This meant the
+raw Vite dev server (no production hardening) and the entire backend API were reachable from any
+network path to this host, completely bypassing nginx and every TLS/security-header protection
+configured earlier in this file.
+
+**Checked against the 2026-08-11 incident (documented below) before touching anything, since that
+one was also about these exact ports and a naive fix could repeat it.** That incident bound
+`centinela-frontend`'s port to the host's specific external interface IP (`10.4.3.34`), which
+silently excluded VPN-tunnel traffic arriving on a different interface. Confirmed live this is a
+different situation: `centinela.casmart.internal` resolves directly to this host, and a host-level
+nginx (`/etc/nginx/sites-available/centinela`, confirmed `active` via systemctl) already listens
+on `0.0.0.0:443` and forwards internally via `proxy_pass http://127.0.0.1:8301` /
+`http://127.0.0.1:8302` -- so nginx always reaches these ports via loopback regardless of which
+interface the original request arrived on. Binding to `127.0.0.1` therefore closes direct
+external access without affecting nginx, and thus without affecting VPN access, which was never
+using ports 8301/8302 directly to begin with.
+
+Fixed by changing both to `127.0.0.1:8302:8000` / `127.0.0.1:8301:5173` and recreating both
+containers (`docker compose up -d centinela-frontend centinela-backend`). Verified live:
+`ss -tlnp` now shows both bound to `127.0.0.1` only (was `0.0.0.0`); `https://localhost/` and
+`https://localhost/api/health` both still return 200 through nginx with real content
+(`"status": "Healthy"`, real service list, real dashboard `<title>`), confirming the legitimate
+path is completely unaffected.
+
+## Session 2026-08-14/20: finding categorization, real compliance bugs, and a real dev-facing audit
+
+**Real vulnerability vs. informational categorization added.** In response to a direct user
+report ("sigo viendo muchas vulnerabilidades... pareciera que los más de 9000 detectados todos
+son de infraestructura"), added a real `finding_category` column (`VULNERABILITY` vs.
+`INFORMATIONAL`) to `vulnerability_log`, classified by a new shared
+`core/deduplication_engine.classify_finding_category()` -- centralized the same way
+`mitre_attack.map_finding()` already is, so ~15 scattered call sites don't each need to know the
+rules. Confirmed live the dashboard's undifferentiated total was structurally misleading: 92% of
+all rows (8,298/9,023) belong to GitLab-Repo (code) assets, not infrastructure, and most of
+those are SonarQube code smells/ISO 25010/CMMI process-debt metrics, not real security findings.
+Backfilled all 9,023 existing rows via the same classifier (5,709 informational / 3,314 real).
+`auditor_sonarqube.py` passes the real per-issue SonarQube API `type` explicitly (VULNERABILITY/
+BUG/SECURITY_HOTSPOT vs CODE_SMELL) rather than relying on the classifier's text-match fallback,
+which only exists for historical rows. `/api/stats` and `/api/remediation` now expose the
+infra/code x real/informational breakdown; the dashboard KPI row and SOAR filters were rebuilt
+around it (see Dashboard.jsx for the full UI).
+
+**Two real, live-found compliance-scoring bugs, both from the same root cause.** A freshly
+Wazuh-enrolled workstation (a colleague's real laptop) showed ISO 27001 and CMMI v3.0 at a
+fabricated 100% within seconds of being added, while the same card honestly showed
+"CIS: No Evaluado" right next to it -- a direct on-screen contradiction the user caught live.
+Root cause: `evaluate_iso27001_for_asset()`/`evaluate_cmmi_v3_for_asset()`'s `is_verified` gate
+treated `bool(asset.get("agent_id"))` as sufficient "this asset was actually audited" evidence,
+but an EDR agent enrolling only proves telemetry connectivity, not that any ISO/CMMI-relevant
+audit (CIS hardening, SAST/SCA) ever ran. Removed `agent_id` from both `is_verified` formulas
+(kept for the narrower, correctly-scoped VV/EST practice-area checks, which is a different
+question). Separately, the inventory grid card was computing `is_verified` correctly all along
+but silently never checking it before rendering the raw percentage -- fixed both the backend
+gate and the frontend display in the same pass.
+
+**A second, related bug found in the SAME live incident**: the dashboard's top-right sync badge
+showed "Sincronizado" (green) for that same workstation using `group.status === 'active' ||
+group.agent_id` -- and a few minutes later, with the machine genuinely disconnected (confirmed
+live via Wazuh's own `agent_control -i <id>`, and the DB's `status` column correctly, freshly
+updated to `'disconnected'`), it STILL showed "Sincronizado", because `agent_id` never gets
+cleared just because a host goes offline. Dropped the `agent_id` fallback in both places it
+appeared (the inventory grid card and the list view); `group.status` (kept genuinely fresh by
+the backend's periodic poller) is now the sole source of truth for that badge.
+
+**ICMP ping is structurally undeliverable for remote/VPN-enrolled assets, not just
+unreliable.** Same live incident: pinging the workstation's real VPN-assigned IP
+(`192.168.3.68`) got an explicit "Destination Host Unreachable" *from the gateway itself*, not a
+timeout -- confirming this network has no route into that private VPN client range at all, an
+architectural fact. Compounding this, the asset's stored `endpoint` was the literal placeholder
+string `"remote-agent"` (written for any agent enrolled via the zero-trust curl one-liner with
+no fixed IP known at install time), so `GET /api/inventory/{name}/ping` was structurally
+guaranteed to fail every time, never a real network attempt. Fixed `ping_asset()` in `main.py`:
+when `endpoint == "remote-agent"` and the asset has a real `agent_id`, it now queries Wazuh's own
+live `agent_control -i <id> -j` status instead of attempting an undeliverable network probe, and
+reports the real reason honestly (`method: "wazuh_agent"`) rather than a generic "sin
+respuesta". Also found and fixed, same investigation: `discover_wazuh_agents()` hardcoded every
+newly-discovered agent to `asset_type="AppServer"` with zero OS awareness (confirmed live: the
+same workstation, running Microsoft Windows 11 Home, got tagged as infrastructure purely because
+nothing ever looked at its real OS) -- now classifies via a real Wazuh OS lookup
+(`get_agent_os_name()` + `classify_asset_type_from_os()`): Linux or genuine Windows Server →
+`SERVER`, everything else (Windows non-Server editions, macOS) → `WORKSTATION`, per explicit user
+instruction. Found and fixed a related fabrication bug in the same code path while there:
+`get_wazuh_agent_info()`'s OS display string used to unconditionally rewrite *any*
+"windows"-containing `os_name` to "Microsoft Windows Server 2022" regardless of the real edition
+reported -- would have shown this exact Windows 11 Home machine as a fake Server. Now shows the
+real reported OS string, only adding a real long-form distro name (e.g. "Debian" →
+"Debian GNU/Linux") when the underlying data already says so, never inventing an edition/version.
+
+**A resource-contention incident I caused, then fixed, mid-session.** Kicked off `docker compose
+build` to install the `cvss` package (declared in `requirements.txt`/`Dockerfile` in an earlier
+session but never actually deployed to the running image) and it hit a real, severe pip
+dependency-resolution loop between `semgrep` and the new `cvss` pin, re-downloading ~69MB
+semgrep wheels dozens of times while backtracking through incompatible versions -- this pegged
+host CPU (load average >12) and caused `/api/stats` to time out through nginx, which is what the
+user was actually seeing when they asked "por qué todo aparece en cero?". Killed the build
+(low-value fix, blocked only 3 pre-existing, unrelated test failures) to restore the live
+dashboard immediately rather than let a background maintenance task degrade production. `cvss`
+remains uninstalled in the running image; a future rebuild should pin compatible `semgrep`/`cvss`
+versions together up front rather than letting pip's resolver discover the conflict live.
+
+**A separate false alarm, corrected the same session**: earlier session notes (now corrected in
+place, see the "Real security incident 2026-08-14" section above) treated a cluster of
+`start-sleep`/XSLT-RCE-shaped payloads found in `centinela-frontend`'s logs as external active
+exploitation. Re-investigated after noticing the *source* IP (`172.18.0.13`) was in the
+project's own Docker bridge subnet: `docker network inspect aura-network` identified it as
+`zap-scan-1786730564-qdyh` -- Centinela's own ZAP DAST scanner, actively fuzzing its own
+dashboard's `?t=` cache-busting query parameter as part of a normal active scan against
+`centinela` (a real, in-scope `SERVER` asset), reaching it via the legitimate nginx path (not the
+exposed dev-server port). The port-binding hardening itself was still correct and worth keeping
+regardless of this correction -- a dev server should never be reachable on `0.0.0.0` -- but the
+specific "active exploitation" framing for this particular payload cluster was wrong and is
+retracted here.
+
+**Real, live-verified deliverable: full multi-engine audit of `arquitectura/consulta-smart`
+for the chat product team.** Requested with explicit "borrar y recrear" authorization. First
+targeted the wrong repo (`chatboot_local`, genuinely stale since April) before the user
+corrected the target; verified `arquitectura/consulta-smart` was right by checking its real
+`last_activity_at` and local commit hash directly (`70cc8eb7`, same-day). Deleted 498 stale rows,
+ran SAST/SCA/Standards/IaC/CMMI/SonarQube/Semgrep/git-secrets-history against the fresh clone:
+120 real vulnerabilities (14 critical/60 high/43 medium/3 low) + 393 informational. Medusa timed
+out on this repo's size (900s limit) -- disclosed honestly in the delivered report rather than
+omitted or faked as clean. Delivered as a published Artifact report, not a terminal dump.
+
+The chat team's own remediation (two real commits, `3fbd7aa` + `283edcf`, independently verified
+live against GitLab -- both real, commit messages match exactly what their own remediation
+report claimed) was cross-checked by re-scanning and reconciling rather than trusted at face
+value: 84 of 120 confirmed genuinely resolved via fresh re-scan; 61 remain open. Caught two real
+discrepancies during this verification, both disclosed rather than silently accepted:
+1. Their report listed `SONAR-docker-S6470 ×3` as "Corregido" alongside the real (and
+   correctly-fixed, verified live in both Dockerfiles) non-root `USER` directive -- but S6470 is
+   a *different* SonarQube rule, about `COPY . .` potentially copying sensitive files into the
+   image, not about running as root. Confirmed both `.dockerignore` files already exclude
+   `.env*`/`.git` (substantially mitigating the real risk), but the rule itself remains open and
+   wasn't actually what got fixed -- the two findings were conflated.
+2. **A second, deeper instance of the `_osv_fixed_version()` name-collision bug class** (see the
+   2026-08-13 entry): axios maintains two parallel release lines (a legacy 0.x line and the
+   current 1.x line), and a single advisory (GHSA-42h9-826w-cgv3) has a *separate*
+   `affected`/range block per line. With only a package-name filter and no version-range
+   containment check, 3 of 10 real axios CVEs on the freshly-bumped `axios@1.16.0` returned
+   `fixed_version: "0.33.0"` -- a version *lower* than what's already installed, meaningless as
+   upgrade guidance. Fixed by requiring the installed version (parsed via `packaging.Version`)
+   to actually fall inside a range's `[introduced, fixed)` bounds before using that range's fix;
+   falls back to the old best-effort behavior only when the installed version doesn't parse.
+   Verified live: all 10 axios CVEs now consistently resolve to the one real correct answer,
+   `1.18.0`. Full pytest suite still 59/62 passing after the fix (3 pre-existing failures
+   unrelated, blocked on the `cvss` package not being installed -- see above).
+
+## Session 2026-08-25/26: CMMI realignment against C&A's real methodology, new WCAG engine,
+## Semgrep language/dispatch fixes, and a documentation-sync pass across the whole project
+
+Started from a request to re-generate the SIAT/SIDECO reports with fresh data, then expanded
+significantly following two direct user asks: (1) evaluate ideas from a third-party SOC launch
+page (`info.kio.tech/the-rock_landing-page`) and from C&A's own internal methodology manual
+(`docs/Manual_Metodologia_CA_v2_COMPLETO.docx`) for ways to strengthen the platform, and (2) once
+three concrete workstreams came out of that evaluation, build all three for real. The KIO page
+turned out to be a marketing event invite with nothing concrete to port (one exception: its "live
+attack visualization" framing maps to the already-built-but-dormant BloodHound/Neo4j capability,
+see item 7 in the Omni-XDR section above). The methodology manual was the real find.
+
+**1. SIAT/SIDECO reports re-verified and republished with a real, live re-scan** (not just
+patched numbers) after the previous session's Java/Standards/CMMI extension: re-ran SCA/SAST/
+Standards/CMMI/Semgrep against all 3 repos. Caught a real bug doing this: the earlier session's
+Maven-version fix was correctly coded but had never actually been re-scanned -- 65 stale rows in
+`siat-develop-2026` alone still cited the fabricated "1.0.0" placeholder version (one of them for
+`org.postgresql:postgresql`, which literally declares `42.0.0` explicitly in its own `pom.xml`).
+`reconcile_resolved_findings()` closed all of them once a fresh scan actually ran. **Lesson
+applied**: a fix correctly written in the code is not evidence the displayed data reflects it --
+re-run and verify against the real database, don't assume.
+
+**2. CMMI auditor realigned against C&A's own real methodology, not a generic interpretation.**
+Read `Manual_Metodologia_CA_v2_COMPLETO.docx` in full (extracted via raw OOXML parsing --
+`python-docx` wasn't installed at first) and found it defines a real, ISACA-verified 19-area
+CMMI V3.0 model tailored specifically for C&A ("La taxonomía se verificó contra la CMMI Model
+Quick Reference Guide V3.0 de ISACA"). Cross-checked against `compliance_mapper.py`'s existing
+7-area model (`CAR/SAM/MSR/PQA/EST/PLAN/VV`) and found two of those area codes don't exist in
+C&A's real tailored model at all: `SAM` (Supplier Agreement Management) isn't one of the 19 areas
+C&A actually uses, and `MSR` isn't a real CMMI V3.0 code under *any* taxonomy -- a fabricated
+label, closest real equivalent being `MPM`. A deeper problem surfaced doing this: even the codes
+that *did* coincidentally match a real letter (`EST`, `PLAN`) were measuring something completely
+different from what the manual defines -- real `EST` evidence is project estimation accuracy,
+real `PLAN` evidence is a Plan de proyecto document; the old code instead checked asset network
+reachability and "was this ever audited," neither of which a source-code scanner can honestly
+claim is either of those two real areas. Relabeling the same checks under the "correct" letters
+would have repeated the exact fake-precision mistake already documented for MITRE ATT&CK (item 5,
+Omni-XDR section) with better-looking labels, not fixed it.
+Fixed by keeping the auditor honest about its real, narrow scope -- it now evaluates only 5 areas
+where source code and scan history are genuine evidence: `CAR` (unchanged), `PQA` (broadened to
+absorb the former fake-`MSR` evidence -- hardcoded sleeps/complexity, since no real CMMI area
+honestly covers a code-level performance antipattern), a **new** `CM` (Configuration Management,
+backed by real `git rev-list --count HEAD` evidence -- `auditor_cmmi_v3.py`'s new
+`check_git_history()`, logged as a `CMMI-GIT-HISTORY-CHECK` info marker matching the
+`CIS-BENCHMARK-AUDIT` pattern), and a **new** `MC` (Monitor and Control, merging the old
+connectivity+last-audit checks into their one honestly-matching real area). The other 14 real
+areas from C&A's 19-area model (`RDM`, `PR`, `TS`, `PI`, `EST`, `PLAN`, `RSK`, `OT`, `DAR`, `GOV`,
+`II`, `MPM`, `PAD`, `PCM`) are explicitly returned as `areas_not_evaluated` with the real reason
+each requires organizational evidence (project plans, peer-review logs, training records, risk
+registers) outside a scanner's reach -- disclosed, not silently omitted. Fixed a related bug
+found while wiring `CM` in: dividing the score by a fixed area count would have fabricated an
+80% ceiling for any SERVER asset (where `CM` is genuinely N/A, not failing) -- the denominator
+now excludes N/A areas. `main.py`'s PDF renderer for practice-area cards also had a latent bug
+here: `"card-ok" if passed else "card-crit"` treats `None` (the new N/A case) as falsy, which
+would have rendered "doesn't apply" with the same red styling as a real failure -- fixed to a
+three-way `card-ok`/`card-crit`/`card-warn` (neutral) mapping before this could ship.
+Verified live end-to-end: SIAT (no real `.git`, loaded as a folder) correctly scores 20% with the
+`CM` gap honestly flagged; the `sideco-siat-genesi` server correctly shows `CM` as N/A without
+that dragging its score down; the fleet-wide report runs clean across all 87 assets with no
+crashes. Added 7 new tests (`tests/test_compliance_mapper_cmmi.py`) covering the N/A handling,
+the git-history marker parsing, and that no fabricated area code survives.
+
+**3. New WCAG 2.1 accessibility auditor** (`auditors/auditor_accessibility_wcag.py`), added
+because the same methodology manual's section 0B-2 lists accessibility as one of three mandatory
+technical-standard families every C&A project inherits, explicitly "requisito legal y no una
+preferencia de diseño" for the Estado de México public-sector projects this platform already
+audits -- a real compliance dimension Centinela had zero dedicated coverage for before this
+(SonarQube's incidental CODE_SMELL hits on the SIDECO frontend were the only prior signal, and
+those were filed as generic code-quality debt, never tracked as their own area). 6 real, static,
+regex-based rules at the same rigor as the existing native SAST engine: missing `alt`, form
+control with no associated `<label>`/`aria-label` (including a genuinely-broken-in-the-DOM case
+where a `<label for="X">` exists but the paired `<input>` uses Angular's `formControlName`
+instead of a matching `id="X"`), empty link/button with no accessible name, `<html>` missing
+`lang`, positive `tabindex` (documented WebAIM/MDN anti-pattern), and a clickable `<div>`/`<span>`
+with neither `role` nor `tabindex`. Wired into `gitlab_integration.py`'s periodic fleet scan loop
+with `reconcile_resolved_findings()` support, matching the established native-engine pattern.
+**Two real false positives found and fixed before trusting the numbers**, both live against
+SIDECO's actual code, both the same underlying mistake in two different templating engines: an
+attribute that injects real visible text into a tag at *server render time*, invisible to a
+scanner that only ever sees the static source. PrimeNG's `label="..."` attribute (301 real
+occurrences in the SIDECO frontend alone) accounted for 109 of an initial 154 "empty button"
+hits; Thymeleaf's `th:text="${expr}"` (SIDECO backend's email templates) accounted for another 3.
+Both fixed by accepting those attributes as valid accessible-name/text evidence. Final, confirmed
+count: 224 real accessibility findings across the 3 SIAT/SIDECO repos (217 Frontend -- almost all
+in the `catalogos/*` module family, a real systemic pattern, not scattered noise -- 6 SIAT, 1
+Backend). 16 new tests (`tests/test_auditor_accessibility_wcag.py`), including regression tests
+for both false-positive classes.
+
+**4. Semgrep language coverage expanded, and a real dispatch gap fixed alongside it.**
+`auditor_semgrep.py`'s `_LANG_RULESETS` extended with Rust, Terraform, Ruby, C#, C, Kotlin,
+Swift, Scala, and Elixir -- every single ruleset name verified live against Semgrep's real
+registry API (`https://semgrep.dev/api/registry/rulesets`) before being added, not guessed; C++,
+HTML, Bash, and Dart were deliberately left out after confirming live (real `HTTP 404`s) that
+Semgrep has no official `p/` ruleset for any of them -- adding a guessed name would have been a
+silent, permanent 0-coverage gap indistinguishable from "clean code," exactly the class of fake
+precision this project's rules exist to prevent. Motivated by a real, concrete discovery made
+while answering the user's question about other languages in the fleet: querying
+`vulnerability_log.url_path` extensions across all 71 GitLab-Repo assets found genuine Rust (39
+SonarQube findings, `geo-ircep-smart`'s vendored `everything-claude-code` Rust codebase) and
+Terraform (2 findings) already present, with zero language-specific Semgrep coverage for either.
+Separately found and fixed a real, more consequential gap while wiring this in:
+`gitlab_integration.py`'s periodic fleet-wide scan loop **never actually called Semgrep at all**
+-- it was only ever reachable via a separate manual dispatch path (`auditor_ext.py`) and one-off
+calls, so every one of the ~71 GitLab-Repo assets had been silently missing Semgrep's multi-
+language coverage on every automatic re-scan since this integration was written; the language
+expansion above would have been dead weight without this fix. Also fixed a pre-existing silent-
+exception-swallow in the same function (the IaC/CMMI `except Exception: ... = []` block had no
+logging at all) while touching this code, per this project's own rule #6.
+
+**5. New "Glosario de acrónimos" added to `Manual_Metodologia_CA_v2_COMPLETO.docx` itself**, in
+response to a direct user request. 5-column table (Acrónimo | Inglés | Español | Descripción
+técnica | Descripción entendible) inserted right after the manual's existing "Glosario general"
+H1 heading, before its original jargon table (Tailoring/Handover/Runbook/etc., left untouched).
+Three groups: reference frameworks (CMMI, ISACA, PMBOK, TOGAF, WCAG -- every one confirmed to
+actually appear in the manual's own text via grep before inclusion; ISO was deliberately *not*
+added despite being central to Centinela's own compliance code, because it genuinely never
+appears anywhere in this particular document), process acronyms (SIPOC, RACI, UAT, CI/CD, SLA),
+and the full 19 CMMI V3.0 practice areas with English/Spanish names, category, and capability
+area taken verbatim from the manual's own trazabilidad table. Disclosed an honest limit rather
+than overclaiming precision: the English long-form names for the 19 areas follow the well-
+documented public CMMI V2.0/V3.0 restructuring, not a fresh verification against ISACA's own
+licensed Quick Reference Guide (which isn't available in this environment) -- flagged with a
+visible note in the document itself, matching the caution the manual already exercises elsewhere
+for its own CMMI mapping. Required installing `python-docx` (not present); built the table via
+direct OOXML manipulation to match the document's exact existing style (header shading `#1F3A5F`,
+border color `#C9D2DD`, cell margins) since this document has a real, pre-existing duplicate
+Heading1/2/3 style-definition quirk that makes python-docx's normal by-name style assignment
+raise a spurious `KeyError` -- worked around by setting `pStyle` by raw style ID instead. Verified
+by converting to PDF and visually inspecting every affected page (LibreOffice headless + pdftoppm,
+not just re-opening the docx) before touching the real file; original backed up first
+(`Manual_Metodologia_CA_v2_COMPLETO.docx.bak-2026-08-25`).
+
+**6. Documentation-sync pass across the whole project**, triggered by a direct user question
+("¿este documento refleja el estatus actual del sistema?") about `/api/manual`
+(`docs-public/manual-tecnico.html`, Centinela's own self-documentation -- confirmed, by reading
+it, to be a completely different document from the C&A methodology `.docx` above, easy to
+conflate since both are called "manual"). Found it was genuinely stale (`Actualizado: 2026-08-13`
+in its own footer, predating everything above) and contained the same fabricated `SAM`/`MSR`
+CMMI codes as the code did before item 2's fix -- and grepping confirmed the *identical* stale
+CMMI reference had propagated into `RESUMEN_EJECUTIVO_CENTINELA_AI.md`, `README.md`, and
+`docs-public/BASE_CONOCIMIENTO_CHATBOT.md` (the chatbot's own knowledge base) as well, all four
+independently. Updated all four with the real 5-area model, the new WCAG engine, and the
+Semgrep language/dispatch fixes; refreshed `manual-tecnico.html`'s "Estado técnico actual" table
+with live-queried current numbers (87 assets, 4,916 real `VULNERABILITY`-category findings vs.
+23,129 `INFORMATIONAL` -- deliberately reporting the differentiated pair rather than the old
+undifferentiated 28,045 combined figure, which is exactly the kind of infrastructure-looking-
+heavy misrepresentation the finding_category split was built to prevent in the first place, see
+the 2026-08-14/20 session above; 285 real critical; 24 CISA KEV; 898 real-finding SLA breaches;
+85/85 tests passing, up from 62/62). `.agents/AGENTS.md` checked and left alone -- it's a pure
+process-rules document with no project-status content to go stale. The `.agent/` (singular)
+directory was deliberately left untouched: its own file dates (last modified 2026-08-11, one day
+before this file's own oldest still-referenced content) and internal structure suggest a legacy
+agent-memory system predating this file's adoption as the project's actual running log --
+touching it without understanding whether anything still reads it risked more than it was worth
+in this pass.
+
+## Session 2026-08-27: CodeRabbit + "The Rock" robustness pass (items 1, 3, 4, 5; plans for 2 and 6)
+
+Started from a user request to evaluate CodeRabbit (AI code review) and KIO's "The Rock"
+agentic SOC for capabilities worth adding to Centinela, then to implement four of them (1, 3,
+4, 5), plan a fifth (2), and document a sixth (6) for a later decision. Full design + status
+in `DECISIONS/0002` (shipped: items 1/3/4/5), `DECISIONS/0003` (plan: incident correlation),
+`DECISIONS/0004` (pending decision: autonomous response). All of the below is verified live
+against the real `centinela_db` and the running containers unless marked otherwise; full
+pytest suite 108/108 (was 85/85).
+
+1. **Item 3 -- `finding_suppressions` (learned false-positive / accepted-risk memory).** New
+   table (`core/schema.py`), `core.deduplication_engine.find_active_suppression()` checked
+   inside `log_finding_deduplicated()` right after the fingerprint is computed. A finding
+   matching an active, unexpired suppression is parked in `status='SUPPRESSED'` (existing row)
+   or not inserted (new), and the suppression's `match_count`/`last_matched_at` is bumped so a
+   still-firing scanner stays visible. Predicates: any combination of `asset_id` / `cve_id` /
+   `url_path_pattern` (LIKE) / `fingerprint_hash`; the API rejects an all-NULL suppression.
+   Endpoints `GET/POST /api/suppressions`, `DELETE /api/suppressions/{id}`,
+   `POST /api/remediation/{vuln_id}/suppress` (SOAR shortcut -- keys on the finding's own
+   fingerprint so only that one finding is muted). `SUPPRESSED` treated as terminal wherever
+   `RESOLVED` already was: `/api/remediation` queue and `/api/stats` critical/high/breakdown
+   now exclude it. Verified live: pytest `tests/test_finding_suppressions.py` (4 cases against
+   the real DB), plus a live SOAR-suppress round-trip (row -> SUPPRESSED, suppression keyed on
+   fingerprint, ledger row written), cleaned up after.
+
+2. **Item 4 -- `agent_actions` unified autonomous-action ledger.** New table + `core/agent_ledger.py`
+   with a single `record_action()` that NEVER raises (Rule #6: logs a full traceback instead)
+   and accepts an external cursor to join the caller's transaction. Wired into: AI correlation
+   ok/failed (`centinela.py::main_loop`, added `v.asset_id` to that query), GitLab auto-fix MR
+   (`remediation/gitlab_autofix.py`), ZAP orphan reap (`auditors/auditor_zap.py`), threat-intel
+   enrichment (accumulated across the ~5s backlog-catch-up iterations, one ledger row per
+   "backlog drained" transition + an immediate row on any CISA-KEV hit -- a naive per-iteration
+   record would have been ~17k rows/day), and analyst suppressions. `GET /api/agent-actions`
+   (list + aggregate summary). Verified live: `threat_intel_enrichment` and `zap_container_reap`
+   rows appearing on their own during normal operation; `tests/test_agent_ledger.py` (4 cases,
+   incl. "never raises even when the write itself fails"). ~19 pre-refactor `threat_intel_enrichment`
+   rows (one-per-iteration, from the first version) left in place -- accurate, just verbose.
+
+3. **Item 5 -- `core/code_context.py` blast-radius context for repo remediation prompts.**
+   `gather_repo_context(asset_name, url_path)` reads the enclosing function block from the clone
+   the fleet scanner already left at `/tmp/centinela_gitlab_scans/<namespace>` (and maps the
+   `Centinela-AI (Self-Audit)` asset to `/app`, a real git work tree in every Python container),
+   picks the callable symbol, and `git grep -w`s its other references. Injected as
+   `CONTEXTO DE CÓDIGO` + `BLAST RADIUS` into `correlate_vulnerability()`'s repo-finding prompt.
+   Strictly best-effort/read-only -- any failure returns an empty block, never raises. Rejects
+   absolute / `..` `url_path` (os.path.join escape). Suppresses the caller list when the symbol
+   isn't distinctive (`>40` grep hits, or a primitive type name via a multi-language stopword
+   list) so it can't emit misleading noise -- a real bug caught during live verification, where
+   a Java method header was yielding `symbol='boolean' callers=15`. Verified live against ~20
+   random real GitLab-Repo findings (real symbols like `validaUsoLineasPago`, `_assistant_scope_answer`,
+   `ngOnInit`, sane hit counts) and end-to-end through `correlate_vulnerability()` on a real
+   self-audit finding (`_is_real_dangerous_call`, 3 callers, enclosing snippet present).
+   `tests/test_code_context.py` (7 cases, tmp git repo).
+
+4. **Item 1 -- `auditors/mr_review.py` shift-left MR review + merge-blocking commit status
+   (PARCIAL).** GitLab webhook `POST /api/gitlab/mr-webhook` (validates `X-Gitlab-Token` vs
+   `GITLAB_WEBHOOK_TOKEN`) -> background task: fetch MR changes, `parse_added_lines()` from the
+   unified diff, clone `--filter=blob:none --no-checkout` + checkout `refs/merge-requests/:iid/head`,
+   run the no-DB native detectors (`scan_sast_code`, `scan_iac_dockerfile`, secret patterns) on
+   only the changed files, `findings_on_changed_lines()` keeps only findings on lines the MR
+   added (±2 fuzz), post idempotent inline discussions (marker-keyed) + a summary note + a
+   `centinela/security` external commit status (`failed` at/above `MR_REVIEW_BLOCKING_SEVERITY`,
+   default HIGH), record an `agent_actions` row. Manual entry: `POST /api/gitlab/mr-review/{project_id}/{mr_iid}`.
+   **Verified live (read-only path only) against a real open MR** (`rpp-2.0/ms-rpp-administracion !57`):
+   MR fetch, changes, diff parse, clone+checkout (resulting HEAD == `head_sha` exactly),
+   scan_changed_files, filter, decide_state. **NOT exercised live:** the 3 GitLab *write* calls
+   (`post_inline`/`upsert_summary_note`/`set_status`) -- posting to another team's MR is an
+   outward-facing action needing a disposable test project or explicit approval; covered by
+   unit tests of the pure logic only (`tests/test_mr_review.py`, 8 cases). **Pending GitLab-side:**
+   configuring the webhook + requiring the status check on target projects.
+
+5. **`core/schema.py` -- first schema object in this repo that lives in code**, not an untracked
+   `scratch/` script. `ensure_core_schema()` (all `CREATE ... IF NOT EXISTS`) runs at
+   `centinela.py::main_loop()` and `main.py::startup_event()`. Applied live via
+   `scratch/apply_core_schema_2026-08-27.py` before the restart; confirmed the
+   `✅ Core schema ensured` line in `centinela-ai`'s startup log after.
+
+6. **Items 2 and 6 -- not implemented, by request.** `DECISIONS/0003` is a full implementation
+   plan for the incident-correlation engine (new `incidents`/`incident_events` tables,
+   deterministic union-find grouping of `runtime_alerts`/CTI/BloodHound signals by
+   asset+time-window+shared-indicator, ATT&CK kill-chain, MTTD/MTTC clock, optional AI summary,
+   fail-safe on no data, REST endpoints, acceptance criteria). `DECISIONS/0004` documents the
+   autonomous-response proposal (a policy layer over the existing SOAR pipeline, `dry_run` by
+   default, `proxy_ip_block` on CTI-confirmed IPs with a 24h TTL as the only defensible
+   auto-action, `host_isolate` recommended to stay manual) and lists the open questions for the
+   user -- deliberately frozen pending an explicit decision, since automating containment
+   contradicts a standing project rule adopted after real incidents.
+
+Deploy: `__pycache__` cleared and `centinela-ai`/`centinela-backend`/`centinela-sentinel`
+restarted after each batch; `/api/health` re-confirmed `Healthy` (all services Online) after
+the final restart. New routes confirmed registered via `/openapi.json`.
+
+### Continuación 2026-08-27 (misma sesión): item 2 implementado + Semgrep/SCA en MR review
+
+7. **Item 2 -- motor de correlación de incidentes: IMPLEMENTADO y verificado en vivo.**
+   `core/incident_engine.py` (lógica pura: `extract_indicators` / `classify_tactic` /
+   `group_signals` union-find / `incident_fingerprint` / `summarize_group` / `build_narrative`
+   + helpers de DB `attach_or_create_incidents` / `reconcile_closed_incidents`),
+   `run_incident_correlation_loop()` en `centinela.py` (hilo daemon, intervalo 120s, misma
+   familia que los demás loops), tablas `incidents` + `incident_events` en `core/schema.py`,
+   endpoints `GET /api/incidents`, `GET /api/incidents/{id}`, `POST /api/incidents/{id}/note`,
+   `POST /api/incidents/{id}/status`, `agent_ledger.ACTION_INCIDENT_CORRELATION`.
+   **Realidad de datos confirmada en vivo antes de diseñar:** `runtime_alerts` tiene 12.851
+   filas pero ~93% es ruido propio (`ZEEK-CONN-HEARTBEAT` 4.289, y reglas Falco que disparan
+   sin parar contra los propios contenedores de escaneo de Centinela: "Drop and execute new
+   binary in container" 4.916, "Read sensitive file untrusted" 3.489, casi todas con
+   `asset_id` NULL). Denylist en `incident_engine.NOISE_RULES`. En la ventana real de 6h solo
+   había señales denylisted -> el motor crea 0 incidentes = fail-safe, verificado en vivo.
+   **Prueba end-to-end contra el loop real en ejecución:** inserté 4 alertas sintéticas
+   `ITDR-AUTHENTIK-BRUTE-FORCE` (mismo activo real, misma IP `198.51.100.23`, mismo usuario
+   `live_test_user`, dentro de 3 min) -> el loop las agrupó en **1 incidente** (no 4),
+   `event_count=4`, `severity=CRITICAL`, `kill_chain=['Credential Access']`, indicadores
+   extraídos (IP+usuario), narrativa ordenada, `recommended_containment` real (bloquear IP +
+   rotar credenciales), 4 filas en `incident_events`. Re-ejecuciones del loop: sigue 1
+   incidente (fingerprint estable). `GET /api/incidents` lo devolvió con `asset_name` resuelto
+   y `mttd_seconds` calculado; `POST .../note` y `POST .../status` (-> CONTAINED, `contained_at`
+   fijado, `mttc_seconds=38.5`) verificados. Todo (alertas sintéticas + incidente + eventos +
+   filas de ledger) limpiado después. Tests: `tests/test_incident_correlation.py` (12 casos: 8
+   de lógica pura + 4 de persistencia contra DB real, incluyendo "sin señales -> nada creado" e
+   idempotencia). Suite completa: **121 passed** (era 108).
+   Resumen ejecutivo IA opcional (`_fill_incident_ai_summaries`) sobre la narrativa
+   determinista para incidentes HIGH/CRITICAL; si la cascada no responde, `ai_summary` queda
+   NULL y la narrativa es la fuente de verdad. `DECISIONS/0003` actualizado a IMPLEMENTADO.
+
+8. **`scan_changed_files` (item 1) ampliado a Semgrep + SCA.** `auditors/mr_review.py` ahora
+   también corre: los `audit_requirements_txt` / `audit_package_json` / `audit_pom_xml` /
+   `audit_go_mod` / `audit_composer_json` de `auditor_sca_dependencies` (sin escritura a DB)
+   cuando un manifiesto está entre los archivos cambiados -- cada hallazgo lleva la línea real
+   de la dependencia en el manifiesto, así el filtro `findings_on_changed_lines` solo muestra
+   la dependencia que el MR realmente tocó -- y una invocación Semgrep acotada a los archivos
+   fuente cambiados (`_semgrep_changed`, mismos rulesets que `auditor_semgrep`). Verificado en
+   vivo: `requirements.txt` con pins viejos (flask 0.12.2 / requests 2.19.1 / urllib3 1.24.1)
+   -> 21 CVEs reales de OSV.dev con línea correcta (1/2/3); `handler.py` con `eval`+`os.system`
+   -> 2 hallazgos SAST. Test `test_sca_manifest_findings_are_line_anchored` añadido (se
+   auto-skipea si OSV.dev no responde). El resto de item 1 (las 3 llamadas de *escritura* a
+   GitLab y la config del webhook lado GitLab) sigue PENDIENTE por decisión del usuario.
+
+Rito de cierre de esta sesión: `.agent/RITO_CIERRE_2026-08-27.md`.
