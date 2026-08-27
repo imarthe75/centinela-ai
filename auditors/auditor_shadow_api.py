@@ -59,6 +59,16 @@ def run_shadow_api_audit(main_app_file: str = "/app/main.py", asset_id: int = No
     try:
         from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
+            # Don't create dangling rows: auditor_ext.py dispatches API-Gateway assets here with
+            # ids from a Valkey discovery message (observed as synthetic 99xxx with no
+            # infra_inventory row), and this auditor only ever inspects local /app/main.py, not
+            # the remote endpoint -- nothing to attribute to such an asset. (2026-08-27)
+            if asset_id is not None:
+                cur.execute("SELECT 1 FROM public.infra_inventory WHERE id = %s", (asset_id,))
+                if cur.fetchone() is None:
+                    print(f"⚠️ [ShadowAPI-Auditor] asset_id {asset_id} not in infra_inventory -- "
+                          f"returning {len(findings)} finding(s) without persisting.")
+                    return findings
             for item in findings:
                 deduplication_engine.log_finding_deduplicated(
                     cur, asset_id, item["cve_id"], item["severity"], item["description"],
