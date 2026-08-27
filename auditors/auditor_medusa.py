@@ -23,6 +23,8 @@ def log_vulnerability(asset_id, cve_id, severity, description):
                 print(f"  🔄 Updated Medusa finding in DB: [{severity}] {cve_id}")
             elif action == "merged":
                 print(f"  🔗 Merged Medusa finding into existing cross-tool ticket: [{severity}] {cve_id}")
+            elif action == "suppressed":
+                print(f"  🔇 Suppressed Medusa finding (analyst-recorded): [{severity}] {cve_id}")
             else:
                 print(f"  📝 Logged Medusa finding in DB: [{severity}] {cve_id}")
     except Exception as e:

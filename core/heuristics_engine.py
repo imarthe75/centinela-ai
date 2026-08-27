@@ -79,6 +79,8 @@ def log_heuristic_alert(asset_id, heuristic_cve, severity, description):
                 print(f"  🔄 Updated Heuristic Alert in DB: [{severity}] {heuristic_cve}")
             elif action == "merged":
                 print(f"  🔗 Merged Heuristic Alert into existing cross-tool ticket: [{severity}] {heuristic_cve}")
+            elif action == "suppressed":
+                print(f"  🔇 Suppressed Heuristic Alert (analyst-recorded): [{severity}] {heuristic_cve}")
             else:
                 print(f"  📝 Logged Heuristic Alert in DB: [{severity}] {heuristic_cve}")
     except Exception as e:

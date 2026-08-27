@@ -257,6 +257,8 @@ def log_secrets(asset_id: int, repo_path: str, findings: List[Dict], scan_phase:
                     print(f"  🔄 Updated secrets finding: [{severity}] {cve_id} @ {location}")
                 elif action == "merged":
                     print(f"  🔗 Merged secrets finding into existing cross-tool ticket: [{severity}] {cve_id}")
+                elif action == "suppressed":
+                    print(f"  🔇 Suppressed secrets finding (analyst-recorded): [{severity}] {cve_id} @ {location}")
                 else:
                     print(f"  📝 Logged secret: [{severity}] {cve_id} @ {location}")
 

@@ -28,6 +28,24 @@
 4. **Reportes:** `/api/reports/executive` genera el PDF bajo demanda, en memoria — no hay
    archivo/repositorio externo.
 
+## 🧩 Capas añadidas 2026-08-27 (CodeRabbit + "The Rock" — ver `DECISIONS/0002`-`0004`)
+- **Supresiones (`finding_suppressions`):** memoria de falsos positivos / riesgo aceptado;
+  `core/deduplication_engine.find_active_suppression()` aparca en `SUPPRESSED` en
+  `log_finding_deduplicated()`. API `/api/suppressions`.
+- **Ledger (`agent_actions`):** registro único de toda acción autónoma (correlación IA,
+  auto-fix MR, reap ZAP, enriquecimiento CTI/EPSS, supresiones, incidentes).
+  `core/agent_ledger.record_action()`. API `GET /api/agent-actions`.
+- **Contexto de código (`core/code_context.py`):** función envolvente + `git grep` del símbolo
+  inyectado en el prompt de remediación de hallazgos GitLab-Repo.
+- **Revisión de MR (`auditors/mr_review.py`):** webhook GitLab → escaneo del diff (SAST/
+  Dockerfile/secretos/SCA/Semgrep) → comentarios inline + commit status `centinela/security`.
+  PARCIAL: escritura a GitLab pendiente.
+- **Incidentes (`incidents` / `incident_events`, `core/incident_engine.py`):**
+  `run_incident_correlation_loop()` agrupa señales de `runtime_alerts`/CTI/BloodHound/KEV en
+  incidentes con cadena ATT&CK y reloj MTTD/MTTC. API `/api/incidents`.
+- **Esquema en código:** `core/schema.py::ensure_core_schema()` (todo `IF NOT EXISTS`) aplicado
+  en el arranque de `centinela.py` y `main.py` — primer objeto de esquema versionado del repo.
+
 ## 📂 Mapeo de Directorios Reales (Host)
 - `/opt/centinela-ai/` es la raíz del repo, montada como `.:/app` en los 3 contenedores Python.
 - `/opt/centinela-ai/remediation/playbooks/`: playbooks Ansible reales.
