@@ -297,6 +297,16 @@ def log_vulnerability(asset_id, cve_id, severity, description):
     try:
         from core import deduplication_engine
         with db_manager.get_db_cursor() as cur:
+            # Don't create dangling rows: handle_asset_discovered() takes asset_id straight from
+            # a Valkey discovery message ("id"), which has been observed carrying synthetic/
+            # transient ids (99xxx range) with no infra_inventory row. A finding attributed to a
+            # non-existent asset is invisible everywhere and never correlated -- skip it.
+            if asset_id is not None:
+                cur.execute("SELECT 1 FROM public.infra_inventory WHERE id = %s", (asset_id,))
+                if cur.fetchone() is None:
+                    print(f"⚠️ [Auditor-Ext] Skipping finding {cve_id} -- asset_id {asset_id} "
+                          f"not in infra_inventory.")
+                    return
             # Dedup key here is deliberately just (asset_id, cve_id), matching the original
             # behavior -- description is NOT usable as a fingerprint location component for
             # this engine (many call sites embed raw, run-to-run-variable tool output, e.g. the
