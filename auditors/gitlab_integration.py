@@ -89,19 +89,39 @@ class GitLabIntegrator:
 
             # Register (or refresh) the asset for this project first, so every finding
             # below can be attributed to its own asset_id instead of landing unassigned.
+            #
+            # Real incident 2026-08-27: a transient "server closed the connection unexpectedly"
+            # from the pool during this registration was caught here, `asset_id` stayed None,
+            # and the ENTIRE repo scan below then ran unattributed -- ~2,560 orphan findings
+            # (2,239 SonarQube alone) piled up over ~13h, invisible to every asset-scoped view
+            # and never AI-correlated (the correlation query JOINs infra_inventory). Retry the
+            # registration a couple of times (a dead pooled connection is discarded on the next
+            # getconn), and if it still fails, SKIP this repo for this cycle rather than scan it
+            # with asset_id=None -- it will be picked up cleanly on the next pass. Rule #6: never
+            # proceed on a swallowed error with a false "success" state.
             asset_id = None
-            try:
-                with db_manager.get_db_cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO public.infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status)
-                        VALUES (%s, 'GitLab-Repo', %s, 'MEDIUM', NOW(), 'monitored')
-                        ON CONFLICT (asset_name) DO UPDATE SET last_audit = NOW(), status = 'monitored'
-                        RETURNING id
-                    """, (f"GitLab/{path_ns}", proj.get("web_url", repo_url)))
-                    row = cur.fetchone()
-                    asset_id = row[0] if row else None
-            except Exception as db_err:
-                print(f"⚠️ [GitLab-Integrator] Error registering asset in DB: {db_err}")
+            last_err = None
+            for attempt in range(3):
+                try:
+                    with db_manager.get_db_cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO public.infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status)
+                            VALUES (%s, 'GitLab-Repo', %s, 'MEDIUM', NOW(), 'monitored')
+                            ON CONFLICT (asset_name) DO UPDATE SET last_audit = NOW(), status = 'monitored'
+                            RETURNING id
+                        """, (f"GitLab/{path_ns}", proj.get("web_url", repo_url)))
+                        row = cur.fetchone()
+                        asset_id = row[0] if row else None
+                    if asset_id is not None:
+                        break
+                except Exception as db_err:
+                    last_err = db_err
+                    print(f"⚠️ [GitLab-Integrator] Asset registration attempt {attempt + 1}/3 failed for {path_ns}: {db_err}")
+
+            if asset_id is None:
+                print(f"⏭️ [GitLab-Integrator] SKIPPING {path_ns} this cycle -- could not register "
+                      f"its asset ({last_err}); will retry next pass. NOT scanning unattributed.")
+                continue
 
             print(f"🔍 [GitLab-Integrator] Auditing GitLab Project: {path_ns} (asset_id={asset_id})...")
             sast_findings = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir, asset_id=asset_id)

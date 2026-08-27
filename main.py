@@ -3396,7 +3396,8 @@ async def audit_llm_governance(target_dir: Optional[str] = "/app"):
     """Runs OWASP LLM & AI Governance Auditor."""
     try:
         from auditors.auditor_llm_governance import run_llm_governance_audit
-        findings = run_llm_governance_audit(target_dir)
+        asset_id = resolve_self_audit_asset_id(target_dir)
+        findings = run_llm_governance_audit(target_dir, asset_id=asset_id)
         return {"status": "success", "count": len(findings), "findings": findings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
