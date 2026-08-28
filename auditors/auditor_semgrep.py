@@ -74,7 +74,7 @@ def detect_language_rulesets(path: str) -> list[str]:
     """
     found_exts = set()
     for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv", ".mvn")]
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv", ".mvn", "target", "dist")]
         for f in files:
             ext = os.path.splitext(f)[1].lower()
             if ext in _LANG_RULESETS:

@@ -23,29 +23,49 @@
 
 Antes de Centinela-AI, esa vigilancia dependía de más de una decena de herramientas desconectadas entre sí, sin nadie con tiempo de revisarlas todas juntas. Hoy es un solo sistema, con un solo panel, que convierte alertas técnicas en explicaciones claras y en correcciones listas para aprobar.
 
-> **Nota de transparencia (13 de agosto de 2026):** las cifras de este documento reflejan el estado real y verificado del sistema en producción, no estimaciones. Ver la sección 1.1 para el detalle — incluyendo lo que todavía está pendiente.
+> **Nota de transparencia (28 de agosto de 2026):** las cifras de este documento reflejan el estado real y verificado del sistema en producción, no estimaciones. Ver la sección 1.1 para el detalle — incluyendo lo que todavía está pendiente.
 
 ---
 
-## 1.1 📊 Estado Real Verificado (13 de agosto de 2026)
+## 1.1 📊 Estado Real Verificado (28 de agosto de 2026)
 
 Cifras confirmadas en vivo contra el sistema en producción, no estimaciones:
 
 | Indicador | Valor real | Nota |
 | :--- | :--- | :--- |
-| Activos monitoreados | **82** | servidores, bases de datos y repositorios de código |
-| Hallazgos reales activos | **8,799** | sube frente al 11 de agosto (3,448) porque esta sesión corrigió varios auditores que llevaban semanas escaneando una ruta inexistente dentro del contenedor y devolviendo "0 hallazgos" en silencio — al arreglarlos aparecieron cientos de hallazgos reales, previamente invisibles, del propio código de Centinela-AI |
-| Hallazgos críticos | **1,285** | requieren atención prioritaria |
-| Vulnerabilidades con explotación activa confirmada | **17** | según el catálogo oficial CISA KEV (EE.UU.) |
-| Incumplimientos de plazo de corrección (SLA) | **46 críticos** | |
-| Proveedores de IA en cadena de respaldo | **4** | Groq, Gemini, NVIDIA, OpenRouter — si uno falla, el siguiente responde automáticamente |
-| Cobertura de pruebas automatizadas | **62/62 pasan** | sube de 30/30 (más suite de pruebas) — incluye una falla real encontrada y corregida en esta misma sesión (ver Sección 1.2) |
+| Activos monitoreados | **95** | 79 repositorios de código (GitLab), 9 servidores, 4 bases de datos, 1 servidor de aplicaciones, 1 estación de trabajo |
+| Hallazgos de **seguridad reales** (categoría VULNERABILITY) | **7,545** | separados desde el 14–20 de agosto de **26,175** hallazgos **informativos** (calidad de código, deuda técnica de proceso, marcadores de auditoría). El número combinado sobrerrepresenta el riesgo real: el 92 % de los hallazgos pertenece a repositorios de código, no a infraestructura |
+| Hallazgos de seguridad reales **abiertos** | **6,661** | el resto ya está resuelto o suprimido como falso positivo / riesgo aceptado |
+| Hallazgos críticos reales abiertos | **280** | requieren atención prioritaria |
+| Vulnerabilidades con explotación activa confirmada (abiertas) | **24** | según el catálogo oficial CISA KEV (EE.UU.) |
+| Incumplimientos de plazo de corrección (SLA) — reales abiertos | **869** | de ellos **271 críticos** |
+| Acciones autónomas registradas en bitácora | **1,399** | correlación IA, apertura de Merge Requests de auto-fix, limpieza de contenedores, enriquecimiento de *threat intel* — todo auditable |
+| Proveedores de IA en cadena de respaldo | **4** | Groq, Gemini, NVIDIA, OpenRouter — si uno falla o agota su cuota, el siguiente responde automáticamente |
+| Cobertura de pruebas automatizadas | **122/122 pasan** | sube de 62/62 (13 ago); pruebas nuevas para el motor WCAG, el realineamiento CMMI y los 5 subsistemas de detección avanzada |
 
-### 1.2 🔧 Qué se corrigió en esta sesión (13 de agosto de 2026)
+### 1.2 🔧 Evolución desde el 13 de agosto de 2026
 
-El sistema había estado devolviendo "0 hallazgos" silenciosamente en cuatro endpoints de auditoría bajo demanda desde que existen, porque su configuración por defecto apuntaba a una ruta de carpeta que existe en el servidor físico pero no dentro de los contenedores donde el código realmente corre — el equivalente a pedirle a alguien que revise un archivero que no está en el edificio: no hay error, simplemente no encuentra nada. Corregido, junto con: un endpoint de auditoría de Kubernetes/Terraform que fallaba con un error técnico en el 100% de sus llamadas desde que fue escrito; dos módulos (auditoría de APIs y de vigilancia OSINT pasiva) cuyos hallazgos se generaban pero nunca lograban guardarse en la base de datos por un error de configuración de la base de datos; una función de vigilancia OSINT pasiva que, al no tener configurada una llave de API de terceros (Shodan), inventaba silenciosamente datos de geolocalización y puertos de red en vez de decir honestamente "no disponible" — corregido antes de que esos datos inventados llegaran a guardarse en el sistema real; una ruta de identificación de agentes de vigilancia (Wazuh) que existía duplicada en el código sin usarse; y un mecanismo que vincula automáticamente cada servidor recién dado de alta con su identidad real en el sistema de vigilancia de endpoints, que nunca se había programado para ejecutarse solo. Todo verificado en vivo contra el sistema real, no en un entorno de prueba aparte.
+**Clasificación real vs. informativo (14–20 ago).** Se añadió una clasificación automática que separa los hallazgos de seguridad reales (algo que un atacante podría aprovechar) de los informativos (calidad de código, métricas de proceso, marcadores). El tablero mostraba antes un solo total sin diferenciar que exageraba el riesgo; ahora ambos se ven por separado y las notificaciones y filtros del centro de operaciones respetan esa distinción.
 
-**Por qué esto importa:** un sistema de seguridad que reporta cifras poco confiables es tan riesgoso como no tener sistema — puede dar una falsa sensación de control. Mantener estas cifras verificadas y actualizadas evita que se convierta en un problema de confianza con clientes o reguladores.
+**Nuevo motor de accesibilidad WCAG 2.1 (25 ago).** El manual de metodología propio de C&A exige accesibilidad como requisito legal en los proyectos de gobierno del Estado de México. Centinela no tenía cobertura dedicada; ahora audita 6 reglas estáticas (texto alternativo faltante, controles de formulario sin etiqueta, enlaces/botones sin nombre accesible, `lang` faltante, `tabindex` positivo, elementos clicables sin rol) e integra los hallazgos al ciclo periódico. 224 hallazgos reales verificados en vivo contra SIAT/SIDECO tras corregir dos clases de falso positivo.
+
+**Realineamiento del motor CMMI contra la metodología real de C&A (25 ago).** Se cruzó el motor contra el manual `Manual_Metodologia_CA_v2_COMPLETO.docx` y se encontraron dos códigos de área fabricados (`SAM`, `MSR`) que no existen en el modelo de 19 áreas tailored de la empresa. Reemplazados por 5 áreas que un escáner de código puede evidenciar honestamente: causa raíz (`CAR`), higiene de código (`PQA`), gestión de configuración vía historial Git real (`CM`), monitoreo y control (`MC`) y verificación (`VV`). Las otras 14 áreas quedan explícitamente marcadas "no evaluado" en vez de asumidas.
+
+**Cinco subsistemas de detección avanzada (27 ago).** Incorporados tras evaluar dos referencias del mercado (CodeRabbit para revisión de código asistida por IA, y el SOC agéntico "The Rock" de KIO):
+
+| Subsistema | Qué aporta |
+| :--- | :--- |
+| **Memoria de falsos positivos** | Un analista puede silenciar un hallazgo o una familia de hallazgos ya revisados; dejan de generar ruido pero se sigue contando cuántas veces reaparecen |
+| **Bitácora de acciones autónomas** | Registro único y auditable de toda acción que el sistema toma por su cuenta (1,399 a la fecha) |
+| **Contexto de radio de impacto** | Antes de pedir un parche a la IA, Centinela lee la función completa afectada y busca dónde más se usa ese código, para un diagnóstico más preciso |
+| **Revisión de Merge Request "shift-left"** | Al abrir un cambio en GitLab, se escanean solo las líneas nuevas y se marca el cambio como bloqueante si introduce algo de severidad alta *(la ruta de lectura está verificada; la escritura de comentarios en GitLab queda pendiente por decisión de dirección)* |
+| **Motor de correlación de incidentes** | Agrupa automáticamente varias alertas relacionadas (mismo activo, misma ventana de tiempo, mismo indicador) en un solo caso investigable, con cadena de ataque MITRE ATT&CK y relojes de tiempo de detección/contención |
+
+**Limpieza del registro de amenazas en tiempo real (28 ago).** El "Log Maestro" estaba 99.9 % lleno de ruido de los propios contenedores de escaneo de Centinela y del latido del sensor de red. Se filtró ese ruido en el origen, se depuraron ~16,175 filas acumuladas y se normalizó la severidad a una escala única. También se corrigió que el tablero se quedaba "Cargando…" varios segundos porque un verificador de conectividad bloqueaba el servidor; ahora responde en milisegundos.
+
+**Re-escaneo de SIAT y SIDECO con código fresco (28 ago).** Se recibieron los repositorios actualizados de SIAT y SIDECO y se re-auditaron con los detectores actuales (severidad CVSS real en dependencias, motor WCAG, CMMI realineado), reconciliando automáticamente como "resuelto" todo hallazgo que el código nuevo ya no reproduce.
+
+**Por qué esto importa:** un sistema de seguridad que reporta cifras poco confiables es tan riesgoso como no tener sistema — puede dar una falsa sensación de control. Separar lo real de lo informativo, mantener las cifras verificadas y dejar bitácora de cada acción autónoma es lo que sostiene la confianza con clientes y auditores.
 
 ---
 
@@ -69,7 +89,12 @@ Para garantizar una comprensión clara entre la alta dirección y los equipos t�
 * **NDR (Network Detection and Response):** Monitoreo continuo del tráfico de red (vía Zeek) para detectar anomalías y transferencias sospechosas de datos.
 * **ITDR (Identity Threat Detection and Response):** Protección de la capa de identidad (Authentik / Active Directory) ante ataques de fuerza bruta, robo de credenciales o suplantación.
 * **XDR (Extended Detection and Response):** Plataforma de última generación (como Centinela-AI) que **unifica EDR + NDR + SAST + ITDR** en una sola consola para ver la película completa de un ataque.
-* **SOAR (Security Orchestration, Automation and Response):** Motor que ejecuta respuestas automáticas ante incidentes (aislar un servidor, revocar un usuario o enviar un parche de código a GitLab).
+* **SOAR (Security Orchestration, Automation and Response):** Motor que ejecuta respuestas automáticas ante incidentes (aislar un servidor, revocar un usuario o enviar un parche de código a GitLab). En Centinela, **ninguna acción se ejecuta sin aprobación humana previa**.
+* **WCAG 2.1 (Web Content Accessibility Guidelines):** Pautas internacionales de accesibilidad web. *Para el ejecutivo:* en los proyectos de gobierno del Estado de México es un **requisito legal**, no una preferencia de diseño. *Para el desarrollador:* motor estático nativo con 6 reglas (alt faltante, controles sin etiqueta, enlaces/botones sin nombre accesible, `lang` faltante, `tabindex` positivo, elementos clicables sin rol).
+* **Correlación de Incidentes:** Motor que agrupa automáticamente varias alertas relacionadas (mismo activo, misma ventana de tiempo, mismo indicador de compromiso) en un solo caso investigable, con cadena de ataque MITRE ATT&CK y relojes MTTD/MTTC (tiempo medio hasta detectar / hasta contener).
+* **Bitácora de Acciones Autónomas:** Registro único y auditable de toda acción que el sistema toma por su cuenta (analizar un hallazgo, abrir un Merge Request de corrección, limpiar un contenedor huérfano), para poder revisarla después.
+* **Memoria de Falsos Positivos:** Mecanismo por el que un analista silencia un hallazgo ya revisado (falso positivo o riesgo aceptado); deja de aparecer en la cola de trabajo pero se sigue contando cuántas veces vuelve a dispararse.
+* **Revisión de Merge Request (Shift-Left):** Al abrir un cambio de código en GitLab, Centinela escanea únicamente las líneas nuevas y puede marcar el cambio como bloqueante si introduce una vulnerabilidad de severidad alta, antes de que se integre.
 
 ---
 
@@ -109,12 +134,12 @@ Centinela-AI se estructura sobre **6 Pilares de Auditoría e Integración**:
 
 | Pilar / Módulo | Funcionalidades Principales | Herramientas & Motores Integrados |
 | :--- | :--- | :--- |
-| **1. Auditoría SAST & Clean Code** | Detección de SQLi, Command Injection, SSRF, BOLA, Secretos Hardcodeados, Complejidad Cognitiva (<15) e ISO 25010. | Motor AST nativo, Semgrep |
-| **2. Auditoría SCA & Dependencias** | Análisis de dependencias (npm, pip), vulnerabilidades conocidas y reached/unreachable reachability analysis. | Motor SCA nativo ([OSV.dev](https://osv.dev)) |
+| **1. Auditoría SAST, Clean Code & Accesibilidad** | Detección de SQLi, Command Injection, SSRF, BOLA, Secretos Hardcodeados, Complejidad Cognitiva (<15), ISO 25010 y accesibilidad WCAG 2.1 (requisito legal en proyectos de gobierno). | Motor AST nativo, Semgrep (multi-lenguaje), SonarQube, motor WCAG nativo |
+| **2. Auditoría SCA & Dependencias** | Análisis de dependencias (npm, pip, Maven, Go, Composer), vulnerabilidades conocidas con severidad CVSS real, y análisis de alcanzabilidad (reachable / unreachable). | Motor SCA nativo ([OSV.dev](https://osv.dev)) |
 | **3. Hardening e Infraestructura (IaC)** | Análisis de Dockerfiles (antipatrón `root`), manifiestos Kubernetes, Terraform y CIS Benchmarks Linux Level 1 (SSH). | Checkov, Auditor CIS SSH nativo |
 | **4. Gobernanza de IA & LLMs** | Inyección de prompts (OWASP LLM01), fuga de datos/PII (LLM02), ejecución de código inseguro (LLM06). | `medusa-security`, OWASP LLM Engine |
-| **5. Monitoreo Runtime (EDR / NDR / ITDR)** | Detección de amenazas de identidad Authentik, telemetría de red, ingesta de syscalls kernel e integración con agentes de host. | Wazuh EDR, Zeek NDR, eBPF Tracing |
-| **6. Auto-Fix DevSecOps & SOAR 2.0** | Generación autónoma de parches determinísticos y vía LLM con creación de Merge Requests en GitLab. | GitLab REST API, Groq/LLM Engine |
+| **5. Monitoreo Runtime & Correlación de Incidentes (EDR / NDR / ITDR)** | Detección de amenazas de identidad Authentik, telemetría de red, ingesta de syscalls kernel, agentes de host, y agrupación automática de alertas relacionadas en incidentes con cadena de ataque MITRE ATT&CK y relojes MTTD/MTTC. | Wazuh EDR, Zeek NDR, eBPF Tracing, motor de incidentes nativo |
+| **6. Auto-Fix DevSecOps, SOAR 2.0 & Revisión de MR** | Parches determinísticos y vía LLM con Merge Requests en GitLab; revisión "shift-left" de cambios sobre las líneas nuevas de cada MR; memoria de falsos positivos / riesgo aceptado. | GitLab REST API, cadena de 4 proveedores de IA |
 
 ---
 
@@ -214,8 +239,10 @@ Para consolidar la aprobación directiva y avanzar a la fase de desarrollo a pro
   Integración de motores SAST/SCA nativos, EDR/NDR, reglas ISO/NIST y motor de parches GitLab.
 - [x] **Fase 2: Estrategia Híbrida & Multi-OS EDR (Completado)**  
   Instaladores desatendidos para Linux, Windows y macOS; soporte IPv6, monitoreo Agentless y matriz CMMI / ISO 27001.
+- [x] **Fase 2.5: Precisión, Accesibilidad y Detección Avanzada (Completado, ago 2026)**  
+  Clasificación real vs. informativo; motor de accesibilidad WCAG 2.1; realineamiento del motor CMMI contra la metodología propia de C&A; cobertura Semgrep multi-lenguaje; y cinco subsistemas nuevos: memoria de falsos positivos, bitácora de acciones autónomas, contexto de radio de impacto, revisión de Merge Request "shift-left" y motor de correlación de incidentes.
 - [ ] **Fase 3: Expansión Cloud-Native & CSPM**  
-  Ampliación de conectores para AWS, GCP y Azure; integración con Prowler y Kubernetes Admission Controllers en caliente.
+  El motor CSPM nativo ya audita configuraciones de nube (buckets, IAM, security groups) bajo demanda; falta ampliarlo a conectores continuos AWS/GCP/Azure con Prowler y a un Admission Controller de Kubernetes en caliente.
 - [ ] **Fase 4: Certificación de Cumplimiento Oficial**  
   Certificación del producto bajo esquemas SOC 2 Type II e ISO 27001 para comercialización internacional.
 

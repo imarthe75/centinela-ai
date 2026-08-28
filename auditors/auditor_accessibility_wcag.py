@@ -180,6 +180,7 @@ def run_wcag_accessibility_audit(target_dir: str = "/app", asset_id: int = None)
         if any(ignored in root for ignored in [
             ".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests",
             "data/remediation", "data/sonar_scans", ".mvn", "dist", "build",
+            "/target/", "\\target\\",
         ]):
             continue
         for file in files:

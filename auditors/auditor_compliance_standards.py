@@ -255,7 +255,7 @@ def run_compliance_standards_audit(target_dir: str = "/app", asset_id: int = Non
     for root, _, files in os.walk(target_dir):
         # "tests" excluded too -- see the identical exclusion (and its reasoning) in
         # auditor_master_vulnerabilities.py's run_master_vulnerability_scan().
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "/test/", "\\test\\", "data/remediation", "data/sonar_scans", "everything-claude-code", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "/tests", "\\tests", "/test/", "\\test\\", "data/remediation", "data/sonar_scans", "everything-claude-code", ".mvn", "/target/", "\\target\\"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)

@@ -401,7 +401,7 @@ def check_reachability(target_dir: str, package: str, manifest: str) -> str:
         return "REACHABLE"  # unknown manifest type -- don't claim unreachable without real evidence
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn", "/target/", "\\target\\"]):
             continue
         for file in files:
             if not file.endswith(extensions):
@@ -421,7 +421,7 @@ def run_sca_audit(target_dir: str = "/app", asset_id: int = None) -> List[Dict[s
     all_findings = []
 
     for root, _, files in os.walk(target_dir):
-        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn"]):
+        if any(ignored in root for ignored in [".git", "node_modules", "__pycache__", ".venv", "data/remediation", "data/sonar_scans", ".mvn", "/target/", "\\target\\"]):
             continue
         for file in files:
             full_path = os.path.join(root, file)
