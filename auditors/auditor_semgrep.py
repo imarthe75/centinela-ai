@@ -108,6 +108,15 @@ def scan_path(path: str, asset_id: int, asset_name: str) -> list[dict]:
         check_id  = r.get("check_id", "semgrep-finding")
         severity  = _severity_from_semgrep(r.get("extra", {}).get("severity"))
         file_path = r.get("path", "unknown")
+        # semgrep echoes whatever path form it was given; scan_path passes an absolute temp
+        # dir, so `path` came back absolute -> the fingerprint (built from url_path) changed
+        # every time the clone workspace moved, silently re-inserting every finding as new.
+        # Normalize to a repo-relative path so re-scans dedupe correctly.
+        try:
+            if os.path.isabs(file_path):
+                file_path = os.path.relpath(file_path, path)
+        except ValueError:
+            pass
         start_line = r.get("start", {}).get("line", 0)
         message   = r.get("extra", {}).get("message", "Sin descripción")
         findings.append({
