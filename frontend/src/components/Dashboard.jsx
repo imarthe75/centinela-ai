@@ -2436,7 +2436,7 @@ export default function Dashboard() {
                                             // still set (agent_id is never cleared just because a host went offline).
                                             // Dropped the agent_id fallback entirely -- group.status alone decides.
                                             <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title="Activo sincronizado y monitoreado por agente o sondeo">
-                                                <CheckCircle size={10} /> Sincronizado{pingResults[group.name]?.ping_ok ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
+                                                <CheckCircle size={10} /> Sincronizado{Number.isFinite(pingResults[group.name]?.latency_ms) ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
                                             </p>
                                         ) : pingResults[group.name] ? (
                                             pingResults[group.name].loading ? (
@@ -2445,7 +2445,7 @@ export default function Dashboard() {
                                                 </p>
                                             ) : pingResults[group.name].ping_ok ? (
                                                 <p className="text-[12px] font-black text-emerald-400 uppercase tracking-tighter flex items-center gap-1" title={pingResults[group.name].message || "Host responde"}>
-                                                    <CheckCircle size={10} /> En línea{pingResults[group.name].latency_ms ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
+                                                    <CheckCircle size={10} /> En línea{Number.isFinite(pingResults[group.name].latency_ms) ? ` (${pingResults[group.name].latency_ms}ms)` : ''}
                                                 </p>
                                             ) : pingResults[group.name].method === 'wazuh_agent' ? (
                                                 // Real gap fixed 2026-08-14, per direct user question: assets enrolled

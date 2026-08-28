@@ -2516,17 +2516,21 @@ async def poll_asset_status():
                 agent_id = asset["agent_id"]
                 prev_last_seen = asset["last_seen"]
 
-                # 1. Ping check
+                # 1. Ping check -- measure the real TCP-connect RTT so the broadcast carries a
+                # genuine latency instead of always None (which the dashboard was rendering as
+                # the literal string "nullms" in the "Sincronizado" badge).
                 is_online = False
                 latency_ms = None
                 if endpoint:
                     clean_host = endpoint.split("://")[-1].split("/")[0].split(":")[0]
                     try:
+                        _t0 = time.time()
                         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         s.settimeout(1.0)
                         s.connect((clean_host, 80 if "http" in endpoint else 22))
                         s.close()
                         is_online = True
+                        latency_ms = round((time.time() - _t0) * 1000, 1)
                     except Exception:
                         pass
 
