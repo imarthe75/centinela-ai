@@ -54,8 +54,47 @@ class GitLabIntegrator:
             print(f"❌ [GitLab-Integrator] Failed to query GitLab API at {self.gitlab_url}: {e}")
             return projects
 
-    def clone_or_pull(self, http_url_to_repo: str, path_with_namespace: str) -> str:
-        """Clones or pulls the GitLab repository into the scan workspace."""
+    # Branch names (case-insensitive, exact match) that hold the real integration code when a
+    # project keeps its default branch as a near-empty release/stub branch. Real case, this
+    # instance's `edomex-casmart` group: every project's `main` is just a README (or a lone
+    # .gitlab-ci.yml) while all the actual source lives on `develop` -- a `--depth 1` clone of
+    # the default branch was scanning empty repos and reporting "audited, ~0 findings".
+    _PREFERRED_BRANCHES = ("develop", "development", "desarrollo", "dev")
+
+    def pick_branch(self, project_id) -> str:
+        """
+        Returns the branch most likely to contain the real code: a develop-style branch if the
+        project has one, otherwise the project's own default branch. Best-effort -- any API
+        failure returns "" and the caller falls back to a plain default-branch clone.
+        """
+        if not project_id:
+            return ""
+        headers = {"PRIVATE-TOKEN": self.token} if self.token else {}
+        # Retry a couple of times -- a transient API hiccup here used to return "", which made
+        # clone_or_pull fall back to the default branch and (via its pull-fails-> re-clone path)
+        # destroy a good develop-branch clone from a prior run.
+        for attempt in range(3):
+            try:
+                br = requests.get(f"{self.gitlab_url}/api/v4/projects/{project_id}/repository/branches",
+                                  headers=headers, params={"per_page": 100}, timeout=15)
+                if br.status_code != 200:
+                    continue
+                names = [b["name"] for b in br.json()]
+                lower = {n.lower(): n for n in names}
+                for pref in self._PREFERRED_BRANCHES:
+                    if pref in lower:
+                        return lower[pref]
+                proj = requests.get(f"{self.gitlab_url}/api/v4/projects/{project_id}",
+                                    headers=headers, timeout=15)
+                if proj.status_code == 200:
+                    return proj.json().get("default_branch", "") or ""
+                return ""
+            except Exception as e:
+                print(f"⚠️ [GitLab-Integrator] Branch resolve attempt {attempt + 1}/3 failed for project {project_id}: {e}")
+        return ""
+
+    def clone_or_pull(self, http_url_to_repo: str, path_with_namespace: str, branch: str = "") -> str:
+        """Clones or pulls the GitLab repository (a specific branch if given) into the scan workspace."""
         safe_folder = path_with_namespace.replace("/", "_")
         target_dir = os.path.join(self.scan_workspace, safe_folder)
         os.makedirs(self.scan_workspace, exist_ok=True)
@@ -65,18 +104,47 @@ class GitLabIntegrator:
         if self.token and "@" not in clone_url:
             clone_url = clone_url.replace("http://", f"http://oauth2:{self.token}@").replace("https://", f"https://oauth2:{self.token}@")
 
+        clone_cmd = ["git", "clone", "--depth", "1"]
+        if branch:
+            clone_cmd += ["--branch", branch]
+        clone_cmd += [clone_url, target_dir]
+
+        def _current_branch():
+            r = subprocess.run(["git", "-C", target_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+                               capture_output=True, text=True, timeout=30)
+            return r.stdout.strip()
+
         if os.path.exists(target_dir):
-            try:
-                subprocess.run(["git", "-C", target_dir, "pull"], capture_output=True, timeout=60)
-                print(f"🔄 [GitLab-Integrator] Pulled latest changes for {path_with_namespace}")
-            except Exception as e:
-                print(f"⚠️ [GitLab-Integrator] Pull failed for {path_with_namespace}, re-cloning: {e}")
+            cur = _current_branch()
+            # If a previous run cloned a different branch (e.g. the old code always took the
+            # default branch), the checked-out tree is stale/wrong -- re-clone rather than try
+            # to switch a shallow clone in place.
+            if branch and cur and cur != branch:
+                print(f"🔀 [GitLab-Integrator] {path_with_namespace}: switching branch "
+                      f"{cur!r} -> {branch!r}, re-cloning.")
                 shutil.rmtree(target_dir, ignore_errors=True)
-                subprocess.run(["git", "clone", "--depth", "1", clone_url, target_dir], capture_output=True, timeout=120)
+                subprocess.run(clone_cmd, capture_output=True, timeout=120)
+            else:
+                # When branch couldn't be resolved (transient API failure -> branch=""), keep
+                # whatever branch this clone is already on -- pulling it, and re-cloning that
+                # SAME branch on failure -- instead of silently falling back to the default
+                # branch and destroying a good non-default clone.
+                effective_branch = branch or cur
+                recl = ["git", "clone", "--depth", "1"]
+                if effective_branch:
+                    recl += ["--branch", effective_branch]
+                recl += [clone_url, target_dir]
+                try:
+                    subprocess.run(["git", "-C", target_dir, "pull"], capture_output=True, timeout=60)
+                    print(f"🔄 [GitLab-Integrator] Pulled latest changes for {path_with_namespace} ({effective_branch or 'default'})")
+                except Exception as e:
+                    print(f"⚠️ [GitLab-Integrator] Pull failed for {path_with_namespace}, re-cloning ({effective_branch or 'default'}): {e}")
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    subprocess.run(recl, capture_output=True, timeout=120)
         else:
             try:
-                subprocess.run(["git", "clone", "--depth", "1", clone_url, target_dir], capture_output=True, timeout=120)
-                print(f"📥 [GitLab-Integrator] Cloned repository {path_with_namespace}")
+                subprocess.run(clone_cmd, capture_output=True, timeout=120)
+                print(f"📥 [GitLab-Integrator] Cloned repository {path_with_namespace} ({branch or 'default'})")
             except Exception as e:
                 print(f"❌ [GitLab-Integrator] Failed to clone {path_with_namespace}: {e}")
                 return ""
@@ -99,7 +167,8 @@ class GitLabIntegrator:
             if not repo_url:
                 continue
 
-            target_dir = self.clone_or_pull(repo_url, path_ns)
+            branch = self.pick_branch(proj.get("id"))
+            target_dir = self.clone_or_pull(repo_url, path_ns, branch=branch)
             if not target_dir or not os.path.exists(target_dir):
                 continue
 
