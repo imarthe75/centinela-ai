@@ -2542,11 +2542,32 @@ async def poll_new_alerts():
             print(f"⚠️ [WS-Poller] Error polling alerts: {e}")
         await asyncio.sleep(2)
 
+def _tcp_ping_asset(endpoint):
+    """Blocking TCP-connect probe. Returns (is_online, latency_ms). Runs in a worker thread."""
+    if not endpoint:
+        return False, None
+    clean_host = endpoint.split("://")[-1].split("/")[0].split(":")[0]
+    try:
+        _t0 = time.time()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect((clean_host, 80 if "http" in endpoint else 22))
+        s.close()
+        return True, round((time.time() - _t0) * 1000, 1)
+    except Exception:
+        return False, None
+
+
 async def poll_asset_status():
     """
-    Background worker that continuously verifies asset connectivity (ICMP ping & Wazuh status),
+    Background worker that continuously verifies asset connectivity (TCP probe & Wazuh status),
     updates last_seen timestamp in the DB whenever an asset is online/active, and broadcasts
     asset status updates to connected WebSocket clients in real-time.
+
+    The per-asset TCP probe is blocking with a 1s timeout; with ~95 assets (many unreachable)
+    running them one-by-one on the event loop froze *every* HTTP request for up to ~95s every
+    cycle -- that's what left the ITDR / health / alerts views stuck on "Cargando...". The
+    probes now run concurrently in a thread pool so the event loop stays responsive.
     """
     while True:
         try:
@@ -2554,53 +2575,38 @@ async def poll_asset_status():
                 cur.execute("SELECT id, asset_name, endpoint, status, agent_id, last_seen FROM public.infra_inventory")
                 assets = cur.fetchall()
 
-            for asset in assets:
-                asset_id = asset["id"]
-                asset_name = asset["asset_name"]
-                endpoint = asset["endpoint"]
+            ping_results = await asyncio.gather(
+                *[asyncio.to_thread(_tcp_ping_asset, a["endpoint"]) for a in assets]
+            )
+
+            online_ids = []
+            for asset, (is_online, latency_ms) in zip(assets, ping_results):
                 current_status = asset["status"]
                 agent_id = asset["agent_id"]
                 prev_last_seen = asset["last_seen"]
+                seen_now = is_online or current_status == "active" or bool(agent_id)
+                if seen_now:
+                    online_ids.append(asset["id"])
 
-                # 1. Ping check -- measure the real TCP-connect RTT so the broadcast carries a
-                # genuine latency instead of always None (which the dashboard was rendering as
-                # the literal string "nullms" in the "Sincronizado" badge).
-                is_online = False
-                latency_ms = None
-                if endpoint:
-                    clean_host = endpoint.split("://")[-1].split("/")[0].split(":")[0]
-                    try:
-                        _t0 = time.time()
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.settimeout(1.0)
-                        s.connect((clean_host, 80 if "http" in endpoint else 22))
-                        s.close()
-                        is_online = True
-                        latency_ms = round((time.time() - _t0) * 1000, 1)
-                    except Exception:
-                        pass
-
-                # 2. If online or agent active, update last_seen to now
-                new_status = current_status
-                if is_online or current_status == "active" or agent_id:
-                    with db_manager.get_db_cursor() as cur_up:
-                        cur_up.execute(
-                            "UPDATE public.infra_inventory SET last_seen = NOW() WHERE id = %s",
-                            (asset_id,)
-                        )
-
-                # Broadcast status update if ping checked
                 await manager_ws.broadcast({
                     "type": "asset_status_update",
                     "data": {
-                        "asset_name": asset_name,
-                        "endpoint": endpoint,
+                        "asset_name": asset["asset_name"],
+                        "endpoint": asset["endpoint"],
                         "status": current_status,
                         "ping_ok": is_online,
                         "latency_ms": latency_ms,
-                        "last_seen": datetime.now().isoformat() if (is_online or current_status == "active" or agent_id) else (prev_last_seen.isoformat() if prev_last_seen and isinstance(prev_last_seen, datetime) else None)
+                        "last_seen": datetime.now().isoformat() if seen_now else (prev_last_seen.isoformat() if prev_last_seen and isinstance(prev_last_seen, datetime) else None)
                     }
                 })
+
+            # One batched UPDATE instead of one round-trip per online asset.
+            if online_ids:
+                with db_manager.get_db_cursor() as cur_up:
+                    cur_up.execute(
+                        "UPDATE public.infra_inventory SET last_seen = NOW() WHERE id = ANY(%s)",
+                        (online_ids,)
+                    )
         except Exception as e:
             print(f"⚠️ [Asset-Verifier] Error verifying asset statuses: {e}")
         await asyncio.sleep(10)
@@ -2838,7 +2844,7 @@ async def get_recent_itdr_telemetry(minutes: int = 15):
     """
     Queries high-throughput identity & EDR telemetry events from ClickHouse.
     """
-    events = clickhouse_manager.query_recent_events(minutes=minutes)
+    events = await asyncio.to_thread(clickhouse_manager.query_recent_events, minutes)
     return {"events": events, "count": len(events)}
 
 @app.get("/api/xdr/attack-storyline")
