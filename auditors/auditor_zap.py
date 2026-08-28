@@ -138,8 +138,15 @@ def launch_zap_container(container_id: str, db_cache_path: str = "/tmp/zap-cache
         # header regardless of api.disablekey — without this every request from another
         # container (Host: <container-name>, not localhost) gets rejected as "not permitted"
         # even once the network-level connection succeeds.
-        "zap.sh", "-config", "api.disablekey=true", "-host", "0.0.0.0",
+        # -silent: skip the "check for newer add-ons" phase on startup. Confirmed live that a
+        # cold start without it spends ~48s downloading 24 add-on updates before the API comes
+        # up (total ~75s), which blew past the readiness timeout below and made *every* scan
+        # fail with "ZAP API did not respond in time". The image already ships spider + ascan,
+        # which is all this auditor uses. start.checkForUpdates=false belt-and-suspenders.
+        "zap.sh", "-silent",
+        "-config", "api.disablekey=true", "-host", "0.0.0.0",
         "-config", "api.addrs.addr.name=.*", "-config", "api.addrs.addr.regex=true",
+        "-config", "start.checkForUpdates=false",
         "-daemon"
     ]
 
@@ -155,8 +162,10 @@ def launch_zap_container(container_id: str, db_cache_path: str = "/tmp/zap-cache
 
         # Wait for ZAP API to be ready. ZAP is a JVM app — a cold start reliably takes well
         # over the old 10s budget (20 retries * 0.5s), which is why every launch used to fail
-        # here even once the -d/networking issues above were fixed. 60 retries * 1s = 60s.
-        max_retries = 60
+        # here even once the -d/networking issues above were fixed. Even with -silent (no add-on
+        # download) a cold JVM + config init + root-CA generation runs ~30-45s; 60s was still
+        # occasionally too tight under host load. 150 retries * 1s = 150s.
+        max_retries = 150
         for i in range(max_retries):
             try:
                 # "version" is a read-only lookup — it's a "view" in ZAP's API, not an "action"
