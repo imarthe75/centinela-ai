@@ -18,25 +18,41 @@ class GitLabIntegrator:
         self.scan_workspace = "/tmp/centinela_gitlab_scans"
 
     def fetch_projects(self) -> List[Dict[str, Any]]:
-        """Queries GitLab REST API v4 to fetch all accessible projects."""
+        """
+        Queries GitLab REST API v4 for every accessible project, following pagination.
+
+        The previous version issued a single `per_page=100` request with no page loop -- so on
+        an instance with more than 100 visible projects, every project past the first page was
+        silently never scanned (no error, just missing coverage). Now walks `X-Next-Page` until
+        exhausted.
+        """
         url = f"{self.gitlab_url}/api/v4/projects"
         headers = {}
         if self.token:
             headers["PRIVATE-TOKEN"] = self.token
-            
-        params = {"per_page": 100, "simple": True, "archived": False}
+
+        projects: List[Dict[str, Any]] = []
+        page = 1
         try:
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            if res.status_code == 200:
-                projects = res.json()
-                print(f"🦊 [GitLab-Integrator] Discovered {len(projects)} projects on {self.gitlab_url}.")
-                return projects
-            else:
-                print(f"⚠️ [GitLab-Integrator] API return status {res.status_code}: {res.text}")
-                return []
+            while True:
+                params = {"per_page": 100, "page": page, "simple": True, "archived": False}
+                res = requests.get(url, headers=headers, params=params, timeout=15)
+                if res.status_code != 200:
+                    print(f"⚠️ [GitLab-Integrator] API return status {res.status_code} on page {page}: {res.text[:200]}")
+                    break
+                batch = res.json()
+                if not batch:
+                    break
+                projects.extend(batch)
+                next_page = res.headers.get("X-Next-Page")
+                if not next_page:
+                    break
+                page = int(next_page)
+            print(f"🦊 [GitLab-Integrator] Discovered {len(projects)} projects on {self.gitlab_url} (across {page} page(s)).")
+            return projects
         except Exception as e:
             print(f"❌ [GitLab-Integrator] Failed to query GitLab API at {self.gitlab_url}: {e}")
-            return []
+            return projects
 
     def clone_or_pull(self, http_url_to_repo: str, path_with_namespace: str) -> str:
         """Clones or pulls the GitLab repository into the scan workspace."""
