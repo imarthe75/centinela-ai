@@ -2828,10 +2828,26 @@ async def wazuh_agent_action(agent_id: str, action: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/itdr/authentik/webhook")
-async def authentik_itdr_webhook(payload: dict):
+async def authentik_itdr_webhook(payload: dict, request: Request):
     """
     Ingests and processes real-time authentication events from Authentik IdP for Identity Threat Detection (ITDR).
+
+    If ITDR_WEBHOOK_TOKEN is set, the caller must present it as a bearer token or an
+    X-Centinela-Token header -- otherwise this is an unauthenticated ingestion point anyone on
+    the network could push fake identity alerts into. When the var is unset the endpoint stays
+    open (backwards-compatible), but a warning is logged so it doesn't silently stay that way.
     """
+    expected = os.getenv("ITDR_WEBHOOK_TOKEN", "").strip()
+    if expected:
+        presented = (
+            request.headers.get("x-centinela-token", "").strip()
+            or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        )
+        if presented != expected:
+            raise HTTPException(status_code=401, detail="Invalid or missing ITDR webhook token")
+    else:
+        print("⚠️ [ITDR-Webhook] ITDR_WEBHOOK_TOKEN not set -- webhook is accepting unauthenticated events.")
+
     try:
         res = itdr_engine.process_authentik_event(payload)
         return res
