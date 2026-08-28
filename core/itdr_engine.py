@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 from core import db_manager, clickhouse_manager
 
 AUTHENTIK_URL = os.getenv("AUTHENTIK_INTERNAL_URL", os.getenv("AUTHENTIK_URL", "https://auth.casmart.internal"))
-AUTHENTIK_TOKEN = os.getenv("AUTHENTIK_CLIENT_SECRET", "")
+# Authentik's REST API (used for autonomous session revocation) needs a real API token from a
+# service account or user token -- NOT the OAuth2 client secret. Prefer the dedicated var;
+# fall back to the client secret only so older deployments don't hard-break (it will get a
+# 403 "Token invalid/expired" and the revocation step logs that honestly instead of claiming
+# success).
+AUTHENTIK_TOKEN = os.getenv("AUTHENTIK_API_TOKEN") or os.getenv("AUTHENTIK_CLIENT_SECRET", "")
 
 # Bitácora en memoria para análisis de frecuencia de intentos fallidos
 FAILED_LOGINS = {} # { (username, client_ip): [timestamps] }
@@ -24,9 +29,50 @@ def process_authentik_event(payload: dict):
     - Eliminación / Alteración de Dispositivos MFA
     - Escalamiento de Privilegios no autorizado
     """
-    event_type = payload.get("action", payload.get("event", "desconocido"))
-    username = payload.get("user", {}).get("username") or payload.get("username", "desconocido")
-    client_ip = payload.get("client_ip") or payload.get("ip_address") or "0.0.0.0"
+    # Normalize across the several shapes Authentik can send:
+    #  - a raw Event ({"action": "login_failed", "user": {...}, "client_ip": "...", "context": {...}})
+    #  - a generic-webhook Notification ({"body": "...", "severity": "...",
+    #    "event_user_username": "...", ...})
+    #  - a hand-crafted test payload ({"action"/"event", "username", "ip_address"})
+    context = payload.get("context") or {}
+    http_request = context.get("http_request") or {}
+
+    event_type = (
+        payload.get("action")
+        or payload.get("event")
+        or payload.get("event_action")
+        or context.get("action")
+        or ""
+    )
+    # Fall back to sniffing the rendered notification body when no structured action is present.
+    if not event_type:
+        body_txt = str(payload.get("body", "")).lower()
+        if "login failed" in body_txt or "failed login" in body_txt or "invalid credentials" in body_txt:
+            event_type = "login_failed"
+        elif "mfa" in body_txt and ("remove" in body_txt or "delete" in body_txt):
+            event_type = "mfa_device_delete"
+        elif ("added to group" in body_txt or "group membership" in body_txt) and "admin" in body_txt:
+            event_type = "group_add_admin"
+        else:
+            event_type = "desconocido"
+
+    username = (
+        (payload.get("user") or {}).get("username")
+        or payload.get("username")
+        or payload.get("event_user_username")
+        or context.get("username")
+        or (context.get("user") or {}).get("username")
+        or "desconocido"
+    )
+
+    client_ip = (
+        payload.get("client_ip")
+        or payload.get("ip_address")
+        or context.get("client_ip")
+        or http_request.get("client_ip")
+        or (context.get("geo") or {}).get("ip")
+        or "0.0.0.0"
+    )
     timestamp = datetime.utcnow()
 
     alerts_generated = []
