@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Integración Authentik–Centinela ITDR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #eef1f0;
+    --surface: #ffffff;
+    --surface-2: #e6ebe9;
+    --border: #d3dbd9;
+    --text: #18211e;
+    --text-dim: #55635e;
+    --text-faint: #7f8c87;
+    --accent: #1f7a6c;
+    --accent-ink: #0e4c44;
+    --accent-soft: #dceae6;
+    --warn: #9a5f1c;
+    --warn-soft: #f2e6d2;
+    --ok: #1f7a6c;
+    --code-bg: #f1f5f4;
+    --code-border: #dde4e2;
+
+    --font-display: "Spectral", Georgia, "Times New Roman", serif;
+    --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", "Consolas", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10161b;
+      --surface: #182129;
+      --surface-2: #1e2830;
+      --border: #2a3640;
+      --text: #dce4e8;
+      --text-dim: #8f9ea8;
+      --text-faint: #5b6870;
+      --accent: #4bb3a3;
+      --accent-ink: #7fd4c6;
+      --accent-soft: #15302c;
+      --warn: #e0a34e;
+      --warn-soft: #2c2417;
+      --ok: #4bb3a3;
+      --code-bg: #0c1116;
+      --code-border: #232f38;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #10161b;
+    --surface: #182129;
+    --surface-2: #1e2830;
+    --border: #2a3640;
+    --text: #dce4e8;
+    --text-dim: #8f9ea8;
+    --text-faint: #5b6870;
+    --accent: #4bb3a3;
+    --accent-ink: #7fd4c6;
+    --accent-soft: #15302c;
+    --warn: #e0a34e;
+    --warn-soft: #2c2417;
+    --ok: #4bb3a3;
+    --code-bg: #0c1116;
+    --code-border: #232f38;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 47rem;
+    margin: 0 auto;
+    padding: clamp(1.75rem, 4vw, 4rem) clamp(1.1rem, 4vw, 2rem) 5rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { border-bottom: 1px solid var(--border); padding-bottom: 1.75rem; margin-bottom: 2.5rem; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: clamp(1.85rem, 5vw, 2.6rem);
+    line-height: 1.12;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 0.7rem;
+  }
+  .lede { color: var(--text-dim); font-size: 1.02rem; margin: 0 0 1.4rem; max-width: 40rem; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.4rem;
+    font-size: 12.5px;
+    font-family: var(--font-mono);
+    color: var(--text-faint);
+  }
+  .meta b { color: var(--text-dim); font-weight: 500; }
+
+  /* ---- summary / TOC ---- */
+  .summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.4rem 1.5rem;
+    margin-bottom: 3rem;
+  }
+  .summary h2 { margin: 0 0 0.9rem; }
+  .summary ol { margin: 0; padding: 0; list-style: none; counter-reset: toc; }
+  .summary li {
+    counter-increment: toc;
+    display: flex;
+    gap: 0.8rem;
+    padding: 0.4rem 0;
+    font-size: 0.94rem;
+    border-top: 1px solid var(--border);
+  }
+  .summary li:first-child { border-top: none; }
+  .summary li::before {
+    content: counter(toc);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    flex: none;
+    width: 1.4rem;
+    text-align: right;
+    padding-top: 0.15rem;
+  }
+  .summary a { color: var(--text); text-decoration: none; }
+  .summary a:hover { color: var(--accent-ink); }
+  .summary .opt { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 0.4rem; }
+
+  h2 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: 0.01em;
+    margin: 0;
+  }
+
+  /* ---- steps ---- */
+  .step { display: grid; grid-template-columns: 2.4rem 1fr; gap: 0 1.1rem; margin-bottom: 2.75rem; scroll-margin-top: 1.5rem; }
+  .step-num {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 0.95rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 8px;
+    width: 2.4rem;
+    height: 2.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step-head { padding-top: 0.15rem; }
+  .step-title { font-family: var(--font-display); font-weight: 600; font-size: 1.28rem; line-height: 1.25; margin: 0; text-wrap: balance; }
+  .step-what { color: var(--text-dim); font-size: 0.95rem; margin: 0.3rem 0 0; }
+  .step-body { grid-column: 2; margin-top: 1rem; }
+  .step-body > :first-child { margin-top: 0; }
+  .step-body p { margin: 0.9rem 0; }
+  .step-body p:first-child { margin-top: 0; }
+
+  @media (max-width: 33rem) {
+    .step { grid-template-columns: 1fr; gap: 0.7rem; }
+    .step-body { grid-column: 1; }
+  }
+
+  /* ---- field table ---- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; margin: 1.1rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th { background: var(--surface-2); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); font-weight: 500; }
+  tbody tr:last-child td { border-bottom: none; }
+  td b { font-weight: 600; }
+  td .hint { display: block; color: var(--text-faint); font-size: 0.82rem; margin-top: 0.15rem; }
+
+  /* ---- code ---- */
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 4px;
+    padding: 0.1em 0.38em;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 9px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    margin: 1.1rem 0;
+    font-size: 0.83rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+  .pre-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 1.4rem 0 -0.5rem;
+  }
+
+  /* ---- notes ---- */
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    border-radius: 0 8px 8px 0;
+    padding: 0.85rem 1.1rem;
+    margin: 1.2rem 0;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+  }
+  .note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note .tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+  .note.warn .tag { color: var(--warn); }
+  .note p { margin: 0.4rem 0 0; }
+  .note :first-child { margin-top: 0; }
+
+  a { color: var(--accent-ink); }
+
+  ul.plain { margin: 0.9rem 0; padding-left: 1.15rem; }
+  ul.plain li { margin: 0.35rem 0; }
+
+  section.block { margin-bottom: 3rem; }
+  section.block > h2 { padding-bottom: 0.6rem; border-bottom: 1px solid var(--border); margin-bottom: 1.2rem; }
+
+  hr.div { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding-top: 1.3rem;
+    margin-top: 3.5rem;
+    font-size: 0.8rem;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Runbook · Configuración del lado de Authentik</p>
+    <h1>Integración Authentik&ndash;Centinela ITDR</h1>
+    <p class="lede">Conecta los eventos de autenticación de Authentik al motor de Detección y Respuesta ante Amenazas de Identidad (ITDR) de Centinela, para que un ataque de fuerza bruta o <em>password spraying</em> aparezca en el tablero en tiempo real.</p>
+    <div class="meta">
+      <span><b>Sistema a configurar</b> Authentik (10.4.3.208)</span>
+      <span><b>Destino</b> Centinela ITDR (10.4.3.34)</span>
+      <span><b>Tiempo</b> ~15 min</span>
+      <span><b>Perfil</b> Administrador de Authentik</span>
+    </div>
+  </header>
+
+  <div class="summary">
+    <h2>En resumen</h2>
+    <ol>
+      <li><a href="#p0">Definir un token compartido en Centinela</a><span class="opt">opcional pero recomendado</span></li>
+      <li><a href="#p1">Crear la asignación de <em>cuerpo</em> del webhook</a></li>
+      <li><a href="#p2">Crear la asignación de <em>encabezado</em> del webhook</a><span class="opt">si hiciste el paso 1 del token</span></li>
+      <li><a href="#p3">Crear el Medio de Notificación (transporte webhook)</a></li>
+      <li><a href="#p4">Crear la política que selecciona qué eventos disparan</a></li>
+      <li><a href="#p5">Crear la Regla de Notificación y vincular la política</a></li>
+      <li><a href="#p6">Crear un token de API para la respuesta autónoma</a><span class="opt">opcional</span></li>
+      <li><a href="#p7">Verificar de extremo a extremo</a></li>
+    </ol>
+  </div>
+
+  <section class="block">
+    <h2>Antes de empezar</h2>
+    <ul class="plain">
+      <li>El servidor de Authentik (10.4.3.208) debe tener ruta de red hacia Centinela (10.4.3.34) en el puerto <code>443</code>.</li>
+      <li>Necesitas acceso de administrador a la interfaz de Authentik.</li>
+      <li>Para el paso&nbsp;1 y el paso&nbsp;6 necesitas una sesión de terminal en el host de Centinela con permiso para editar <code>/opt/centinela-ai/.env</code> y correr <code>docker&nbsp;compose</code>.</li>
+      <li><b>URL del webhook de Centinela:</b> <code>https://centinela.casmart.internal/api/itdr/authentik/webhook</code></li>
+    </ul>
+  </section>
+
+  <hr class="div">
+
+  <div class="step" id="p0">
+    <div class="step-num">1</div>
+    <div class="step-head">
+      <p class="step-title">Definir un token compartido en Centinela</p>
+      <p class="step-what">Evita que cualquiera con acceso a la red pueda inyectar alertas de identidad falsas en el tablero.</p>
+    </div>
+    <div class="step-body">
+      <p>En el host de Centinela (10.4.3.34):</p>
+      <pre><code>openssl rand -hex 24                     # genera un token
+echo 'ITDR_WEBHOOK_TOKEN=&lt;el-token&gt;' &gt;&gt; /opt/centinela-ai/.env
+cd /opt/centinela-ai &amp;&amp; docker compose up -d centinela-backend</code></pre>
+      <p>Guarda el token: lo usas en el paso&nbsp;3. Si omites este paso, el webhook queda abierto y Centinela lo registra con una advertencia en su bitácora.</p>
+    </div>
+  </div>
+
+  <div class="step" id="p1">
+    <div class="step-num">2</div>
+    <div class="step-head">
+      <p class="step-title">Crear la asignación de cuerpo del webhook</p>
+      <p class="step-what">Hace que Centinela reciba la IP de origen y la acción reales, no solo el texto de la notificación.</p>
+    </div>
+    <div class="step-body">
+      <p>En Authentik: <b>Personalización → Property Mappings → Crear → Notification Webhook Mapping</b> (Asignación de webhook de notificaciones).</p>
+      <div class="table-wrap"><table>
+        <tbody>
+          <tr><td><b>Nombre</b></td><td><code>Centinela ITDR - cuerpo</code></td></tr>
+          <tr><td><b>Expresión</b></td><td>La de abajo</td></tr>
+        </tbody>
+      </table></div>
+      <p class="pre-label">Expresión</p>
+      <pre><code>event = notification.event
+ctx = (event.context or {}) if event else {}
+return {
+    "action": str(event.action) if event else "login_failed",
+    "username": ((event.user or {}).get("username") if event else "") or ctx.get("username", ""),
+    "client_ip": event.client_ip if event and event.client_ip else "0.0.0.0",
+    "context": ctx,
+}</code></pre>
+      <div class="note">
+        <span class="tag">Por qué</span>
+        <p>En un inicio de sesión fallido, el nombre de usuario tecleado suele venir en <code>event.context["username"]</code> aunque la cuenta no exista. La expresión lo toma de ahí como respaldo, y Centinela hace lo mismo.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" id="p2">
+    <div class="step-num">3</div>
+    <div class="step-head">
+      <p class="step-title">Crear la asignación de encabezado del webhook</p>
+      <p class="step-what">Envía el token compartido en cada llamada. Sáltate este paso si omitiste el paso&nbsp;1.</p>
+    </div>
+    <div class="step-body">
+      <p><b>Personalización → Property Mappings → Crear → Notification Webhook Mapping</b>.</p>
+      <div class="table-wrap"><table>
+        <tbody>
+          <tr><td><b>Nombre</b></td><td><code>Centinela ITDR - encabezado</code></td></tr>
+        </tbody>
+      </table></div>
+      <p class="pre-label">Expresión</p>
+      <pre><code>return {"X-Centinela-Token": "&lt;pega-aqui-el-token-del-paso-1&gt;"}</code></pre>
+    </div>
+  </div>
+
+  <div class="step" id="p3">
+    <div class="step-num">4</div>
+    <div class="step-head">
+      <p class="step-title">Crear el Medio de Notificación</p>
+      <p class="step-what">El transporte tipo webhook que llama a Centinela.</p>
+    </div>
+    <div class="step-body">
+      <p><b>Eventos → Medios de Notificación → Crear.</b></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td><b>Nombre</b></td><td><code>Centinela ITDR</code></td></tr>
+          <tr><td><b>Enviar una vez</b></td><td>Activado <span class="hint">una notificación = una llamada al webhook</span></td></tr>
+          <tr><td><b>Modo</b></td><td>Webhook (genérico)</td></tr>
+          <tr><td><b>URL de webhook</b></td><td><code>https://centinela.casmart.internal/api/itdr/authentik/webhook</code></td></tr>
+          <tr><td><b>Mapeo de Cuerpo de Webhook</b></td><td><code>Centinela ITDR - cuerpo</code> <span class="hint">del paso 2</span></td></tr>
+          <tr><td><b>Mapeo de Encabezado de Webhook</b></td><td><code>Centinela ITDR - encabezado</code> <span class="hint">del paso 3, o vacío si omitiste el token</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="step" id="p4">
+    <div class="step-num">5</div>
+    <div class="step-head">
+      <p class="step-title">Crear la política que selecciona qué eventos disparan</p>
+      <p class="step-what">Sin esto, la regla se dispararía con cualquier evento. Queremos solo los inicios de sesión fallidos.</p>
+    </div>
+    <div class="step-body">
+      <p><b>Personalización → Políticas → Crear → Event Matcher Policy</b> (Política de coincidencia de eventos).</p>
+      <div class="table-wrap"><table>
+        <tbody>
+          <tr><td><b>Nombre</b></td><td><code>Centinela ITDR - Login Fallido</code></td></tr>
+          <tr><td><b>Acción</b></td><td><code>login_failed</code></td></tr>
+          <tr><td colspan="2" class="hint">Deja el resto de campos vacíos.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="note">
+        <span class="tag">Ampliar más adelante</span>
+        <p>Para cubrir también borrado de dispositivos MFA y cambios de privilegios, crea políticas adicionales con Acción <code>model_deleted</code> y <code>user_write</code>, y vincúlalas en el paso&nbsp;6. Centinela ya tiene las reglas de detección para esos casos.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" id="p5">
+    <div class="step-num">6</div>
+    <div class="step-head">
+      <p class="step-title">Crear la Regla de Notificación y vincular la política</p>
+      <p class="step-what">Une "qué eventos" (política) con "a dónde se manda" (transporte).</p>
+    </div>
+    <div class="step-body">
+      <p><b>Eventos → Reglas de notificación → Crear.</b></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td><b>Nombre</b></td><td><code>Centinela ITDR</code></td></tr>
+          <tr><td><b>Grupo</b></td><td>Un grupo que tenga <b>al menos un miembro</b> (por ejemplo <code>authentik Admins</code>).</td></tr>
+          <tr><td><b>Transportes</b></td><td><code>Centinela ITDR</code> <span class="hint">del paso 4</span></td></tr>
+          <tr><td><b>Severidad</b></td><td><code>alert</code></td></tr>
+        </tbody>
+      </table></div>
+      <div class="note warn">
+        <span class="tag">Obligatorio</span>
+        <p>Si el grupo está vacío, Authentik no genera la notificación y el webhook <b>nunca se llama</b>. Usa un grupo con miembros reales.</p>
+      </div>
+      <p>Luego abre la regla recién creada → pestaña de <b>vinculaciones de políticas</b> (Policy Bindings) → <b>Vincular política existente</b> → <code>Centinela ITDR - Login Fallido</code>.</p>
+    </div>
+  </div>
+
+  <div class="step" id="p6">
+    <div class="step-num">7</div>
+    <div class="step-head">
+      <p class="step-title">Crear un token de API para la respuesta autónoma</p>
+      <p class="step-what">Opcional. Permite que Centinela desactive automáticamente al usuario bajo ataque de fuerza bruta.</p>
+    </div>
+    <div class="step-body">
+      <ul class="plain">
+        <li><b>Directorio → Usuarios → Crear cuenta de servicio</b> (Service account), o <b>Directorio → Tokens → Crear</b> → genera un <b>API token</b>.</li>
+        <li>Otórgale permiso sobre <code>authentik_core.view_user</code> y <code>authentik_core.change_user</code> (o un rol de administrador acotado).</li>
+        <li>En el host de Centinela:</li>
+      </ul>
+      <pre><code>echo 'AUTHENTIK_API_TOKEN=&lt;el-api-token&gt;' &gt;&gt; /opt/centinela-ai/.env
+cd /opt/centinela-ai &amp;&amp; docker compose up -d centinela-ai centinela-backend</code></pre>
+      <div class="note warn">
+        <span class="tag">No reutilizar</span>
+        <p>El <code>AUTHENTIK_CLIENT_SECRET</code> ya configurado <b>no sirve</b> para esto: es un secreto de OAuth, no un token de API. Centinela lo probó en vivo y Authentik responde <code>403 Token invalid/expired</code>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" id="p7">
+    <div class="step-num">8</div>
+    <div class="step-head">
+      <p class="step-title">Verificar de extremo a extremo</p>
+      <p class="step-what">Confirma que el evento llega, dispara la regla y aparece en el tablero.</p>
+    </div>
+    <div class="step-body">
+      <p>Desde cualquier equipo con red hacia Centinela:</p>
+      <pre><code>for i in $(seq 1 6); do
+  curl -sk -X POST https://centinela.casmart.internal/api/itdr/authentik/webhook \
+    -H 'Content-Type: application/json' \
+    -H 'X-Centinela-Token: &lt;token del paso 1, si aplica&gt;' \
+    -d '{"action":"login_failed","username":"prueba_itdr","client_ip":"198.51.100.7"}'
+done</code></pre>
+      <ul class="plain">
+        <li>La 5.ª o 6.ª respuesta debe incluir <code>"rule_name":"ITDR-AUTHENTIK-BRUTE-FORCE"</code>.</li>
+        <li>En el tablero, <b>Identidad &amp; ITDR</b> muestra el evento (ventana de 15&nbsp;min) y <b>Búsqueda de Amenazas</b> también.</li>
+        <li>Prueba real: falla 5 inicios de sesión seguidos en Authentik con cualquier usuario, dentro de 1 minuto.</li>
+      </ul>
+      <p class="pre-label">Limpieza después de probar</p>
+      <pre><code>docker exec centinela-backend python3 -c "import sys;sys.path.insert(0,'/app');from core import db_manager
+with db_manager.get_db_cursor() as c:
+ c.execute(\"DELETE FROM runtime_alerts WHERE alert_text LIKE '%prueba_itdr%' OR alert_text LIKE '%198.51.100.7%'\")
+ print('ok')"
+
+docker exec centinela-clickhouse clickhouse-client -q \
+  "ALTER TABLE centinela_telemetry.telemetry_events DELETE WHERE username='prueba_itdr' OR client_ip='198.51.100.7'"</code></pre>
+    </div>
+  </div>
+
+  <hr class="div">
+
+  <section class="block">
+    <h2>Qué detecta Centinela con estos eventos</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Regla</th><th>Se dispara cuando</th><th>Acción autónoma</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>ITDR-AUTHENTIK-BRUTE-FORCE</code></td>
+          <td>≥ 5 <code>login_failed</code> del mismo usuario + IP en 60&nbsp;segundos</td>
+          <td>Intenta desactivar la sesión del usuario <span class="hint">requiere el paso 7</span></td>
+        </tr>
+        <tr>
+          <td><code>ITDR-AUTHENTIK-MFA-BYPASS</code></td>
+          <td>Evento de MFA con <code>remove</code> o <code>delete</code></td>
+          <td>Solo alerta</td>
+        </tr>
+        <tr>
+          <td><code>ITDR-AUTHENTIK-PRIVILEGE-ESCALATION</code></td>
+          <td>Evento de grupo con <code>add</code> o <code>admin</code></td>
+          <td>Intenta desactivar la sesión del usuario</td>
+        </tr>
+      </tbody>
+    </table></div>
+    <p>Cada evento se escribe en dos lugares: ClickHouse (lo que consume la pantalla <b>Identidad &amp; ITDR</b>, ventana de 15&nbsp;min) y PostgreSQL <code>runtime_alerts</code> (lo que consume <b>Búsqueda de Amenazas</b>, sin límite de tiempo).</p>
+  </section>
+
+  <section class="block">
+    <h2>Si algo no aparece</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Síntoma</th><th>Causa probable</th></tr></thead>
+      <tbody>
+        <tr><td>El <code>curl</code> de prueba responde pero no pasa nada en el tablero</td><td>Menos de 5 intentos en la ventana de 60&nbsp;s, o distinto usuario/IP en cada intento.</td></tr>
+        <tr><td>El <code>curl</code> responde <code>401</code></td><td>El encabezado <code>X-Centinela-Token</code> no coincide con <code>ITDR_WEBHOOK_TOKEN</code> del <code>.env</code>.</td></tr>
+        <tr><td>Fallas reales en Authentik no llegan, pero el <code>curl</code> sí</td><td>El grupo de la Regla de Notificación está vacío, o la política no quedó vinculada a la regla.</td></tr>
+        <tr><td>Llega el evento pero <code>client_ip</code> es <code>0.0.0.0</code></td><td>La asignación de cuerpo (paso&nbsp;2) no está seleccionada en el transporte, o el evento no traía IP.</td></tr>
+        <tr><td>Aparece en <b>Búsqueda de Amenazas</b> pero no en <b>Identidad &amp; ITDR</b></td><td>El evento tiene más de 15&nbsp;minutos; esa pantalla solo muestra la ventana reciente.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <footer>
+    Centinela-AI · Runbook de integración ITDR · Actualizado 2026-08-28
+  </footer>
+
+</div>
+</body>
+</html>
