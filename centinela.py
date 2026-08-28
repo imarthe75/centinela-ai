@@ -33,6 +33,41 @@ import urllib.request
 import urllib.error
 import ssl
 
+# Falco/Zeek runtime-alert noise. A rule_name here is pure background chatter in this
+# deployment -- Falco firing non-stop against Centinela's own ephemeral scanner containers
+# (ZAP, trivy, etc.) or Zeek's own liveness heartbeat -- and is not persisted to
+# runtime_alerts at all. Kept in sync with core.incident_engine.NOISE_RULES (imported lazily
+# to avoid a heavy import at module load).
+_RUNTIME_ALERT_NOISE_RULES = {
+    "ZEEK-CONN-HEARTBEAT",
+    "Drop and execute new binary in container",
+    "Read sensitive file untrusted",
+    "Falco internal: syscall event drop",
+    "PTRACE attached to process",
+}
+
+# Falco's own priority vocabulary (syslog-style, mixed case) mapped onto Centinela's
+# canonical CRITICAL/HIGH/MEDIUM/LOW/INFO scale so runtime_alerts.priority is consistent
+# regardless of which sensor produced the row. Anything unrecognised falls back to INFO.
+_FALCO_PRIORITY_MAP = {
+    "emergency": "CRITICAL", "alert": "CRITICAL", "critical": "CRITICAL",
+    "error": "HIGH",
+    "warning": "MEDIUM",
+    "notice": "LOW",
+    "informational": "INFO", "info": "INFO", "debug": "INFO",
+}
+
+
+def normalize_alert_priority(raw):
+    """Map any sensor's priority string onto CRITICAL/HIGH/MEDIUM/LOW/INFO."""
+    s = str(raw or "").strip().lower()
+    if s in _FALCO_PRIORITY_MAP:
+        return _FALCO_PRIORITY_MAP[s]
+    if s in ("critical", "high", "medium", "low", "info"):
+        return s.upper()
+    return "INFO"
+
+
 def get_vault_secrets():
     """Fetch secrets from Vault if configured"""
     vault_addr = os.getenv("VAULT_ADDR")
@@ -1378,8 +1413,17 @@ def process_falco_alerts():
             alert_raw = r.lpop("falco")
             if alert_raw:
                 alert = json.loads(alert_raw)
-                print(f"🚨 [Centinela-AI] Falco Alert: {alert.get('rule')}")
-                
+                rule_name = alert.get('rule')
+
+                # Drop pure background noise (Falco firing against Centinela's own ephemeral
+                # scanner containers, etc.) before it ever reaches the DB -- it was drowning
+                # real signal ~1000:1 in the threat-hunting view.
+                if rule_name in _RUNTIME_ALERT_NOISE_RULES:
+                    time.sleep(1)
+                    continue
+
+                print(f"🚨 [Centinela-AI] Falco Alert: {rule_name}")
+
                 with db_manager.get_db_cursor() as cur:
                     container_name = alert.get('output_fields', {}).get('container.name')
                     asset_id = None
@@ -1388,14 +1432,14 @@ def process_falco_alerts():
                         res = cur.fetchone()
                         if res:
                             asset_id = res[0]
-                    
+
                     cur.execute("""
                         INSERT INTO runtime_alerts (asset_id, priority, rule_name, alert_text, output_fields)
                         VALUES (%s, %s, %s, %s, %s)
                     """, (
                         asset_id,
-                        alert.get('priority'),
-                        alert.get('rule'),
+                        normalize_alert_priority(alert.get('priority')),
+                        rule_name,
                         alert.get('output'),
                         json.dumps(alert.get('output_fields', {}))
                     ))
@@ -1524,6 +1568,11 @@ def process_zeek_conn_log():
                 # count of connections observed since the last one.
                 if time.time() - last_heartbeat > 300:
                     with db_manager.get_db_cursor() as cur:
+                        # Keep exactly ONE heartbeat row (replace, don't append). /api/health's
+                        # Zeek-ingestion check only cares that a recent one exists; appending a
+                        # new row every 5 min was silently piling up thousands of INFO rows that
+                        # cluttered the threat-hunting log for no added signal.
+                        cur.execute("DELETE FROM runtime_alerts WHERE rule_name = 'ZEEK-CONN-HEARTBEAT'")
                         cur.execute("""
                             INSERT INTO runtime_alerts (asset_id, priority, rule_name, alert_text, output_fields)
                             VALUES (NULL, 'INFO', 'ZEEK-CONN-HEARTBEAT', %s, %s)

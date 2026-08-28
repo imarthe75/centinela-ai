@@ -80,6 +80,30 @@ import MapChart from './MapChart'
 // Using relative path to utilize the Nginx proxy at /centinela/api/
 const API_BASE = "/api"
 
+// Runtime alerts arrive from several sensors with different priority vocabularies -- Falco
+// uses syslog-style mixed case ('Critical', 'Warning', 'Notice', 'Debug'), Zeek writes
+// 'MEDIUM'/'INFO', Centinela's own ITDR rules write 'CRITICAL'. The backend now normalises
+// on read, but this keeps the UI correct regardless of what any row actually stores.
+const normSev = (p) => {
+  const s = String(p || '').trim().toUpperCase()
+  const map = {
+    EMERGENCY: 'CRITICAL', ALERT: 'CRITICAL', CRITICAL: 'CRITICAL',
+    ERROR: 'HIGH', HIGH: 'HIGH',
+    WARNING: 'MEDIUM', MEDIUM: 'MEDIUM',
+    NOTICE: 'LOW', LOW: 'LOW',
+    INFORMATIONAL: 'INFO', INFO: 'INFO', DEBUG: 'INFO',
+  }
+  return map[s] || 'INFO'
+}
+const SEV_LABEL_ES = { CRITICAL: 'CRÍTICA', HIGH: 'ALTA', MEDIUM: 'MEDIA', LOW: 'BAJA', INFO: 'INFORMATIVA' }
+const SEV_BADGE_CLS = {
+  CRITICAL: 'bg-red-500/20 text-red-400',
+  HIGH: 'bg-orange-500/20 text-orange-400',
+  MEDIUM: 'bg-amber-500/20 text-amber-400',
+  LOW: 'bg-blue-500/20 text-blue-400',
+  INFO: 'bg-slate-500/20 text-slate-400',
+}
+
 // /api/health reports honest intermediate states for on-demand/idle capabilities (e.g.
 // "Available (On-Demand, Not Yet Run)", "No Data Yet") instead of faking "Online" -- these
 // are not failures and must not render as red alongside genuine outages ("Unreachable",
@@ -337,7 +361,12 @@ export default function Dashboard() {
           const payload = JSON.parse(event.data);
           if (payload.type === 'new_alert') {
             setAlerts(prev => [payload.data, ...prev].slice(0, 100));
-            showNotification(payload.data);
+            // Only raise a toast for genuinely critical runtime alerts. Informational/low
+            // sensor chatter still lands in the alerts feed and the threat-hunting log, it
+            // just doesn't interrupt with a notification (explicit user request).
+            if (normSev(payload.data?.priority) === 'CRITICAL') {
+              showNotification(payload.data);
+            }
           } else if (payload.type === 'asset_status_update') {
             const update = payload.data;
             if (update && update.asset_name) {
@@ -820,7 +849,7 @@ export default function Dashboard() {
   }
 
   const filteredAlerts = Array.isArray(alerts) ? alerts.filter(a => {
-    const matchSeverity = severityFilter ? a.priority === severityFilter : true;
+    const matchSeverity = severityFilter ? normSev(a.priority) === severityFilter : true;
     const matchAsset = assetFilter ? a.asset_name === assetFilter : true;
     return matchSeverity && matchAsset;
   }) : [];
@@ -828,7 +857,7 @@ export default function Dashboard() {
   // Derived from filteredAlerts (severity/asset filters, also used by the Dashboard's compact
   // "recent alerts" widget) rather than replacing it outright, so free-text search/sort scoped
   // to the Búsqueda de Amenazas panel doesn't leak into that other, unrelated widget.
-  const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+  const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 }
   const threatHuntingAlerts = (() => {
     const term = threatSearch.trim().toLowerCase()
     const searched = term ? filteredAlerts.filter(a => (
@@ -840,7 +869,7 @@ export default function Dashboard() {
     if (threatSortBy === 'oldest') {
       sorted.sort((a, b) => new Date(a.detected_at) - new Date(b.detected_at))
     } else if (threatSortBy === 'severity') {
-      sorted.sort((a, b) => (SEVERITY_RANK[a.priority] ?? 9) - (SEVERITY_RANK[b.priority] ?? 9))
+      sorted.sort((a, b) => (SEVERITY_RANK[normSev(a.priority)] ?? 9) - (SEVERITY_RANK[normSev(b.priority)] ?? 9))
     } else {
       sorted.sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at))
     }
@@ -1297,13 +1326,10 @@ export default function Dashboard() {
                             filteredAlerts.slice(0, 5).map((alert) => (
                                 <tr key={alert.id} className="group hover:bg-white/5 transition-all">
                                   <td className="py-4">
-                                    <span 
-                                      title={alert.priority === 'CRITICAL' ? 'CRÍTICA: Requiere acción inmediata, impacto severo' : alert.priority === 'HIGH' ? 'ALTA: Acción urgente requerida en menos de 4 horas' : alert.priority === 'MEDIUM' ? 'MEDIA: Gestionar en las próximas 24 horas' : 'INFORMATIVA: Sin impacto crítico, requiere monitoreo'}
-                                      className={`px-2 py-1 rounded text-[11px] font-black ${
-                                      alert.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 
-                                      alert.priority === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
-                                    }`}>
-                                      {alert.priority === 'CRITICAL' ? 'CRÍTICA' : alert.priority === 'HIGH' ? 'ALTA' : alert.priority === 'MEDIUM' ? 'MEDIA' : 'INFO'}
+                                    <span
+                                      title={{ CRITICAL: 'CRÍTICA: Requiere acción inmediata, impacto severo', HIGH: 'ALTA: Acción urgente requerida en menos de 4 horas', MEDIUM: 'MEDIA: Gestionar en las próximas 24 horas', LOW: 'BAJA: Sin impacto crítico, requiere monitoreo', INFO: 'INFORMATIVA: Sin impacto de seguridad, sólo visibilidad' }[normSev(alert.priority)]}
+                                      className={`px-2 py-1 rounded text-[11px] font-black ${SEV_BADGE_CLS[normSev(alert.priority)]}`}>
+                                      {SEV_LABEL_ES[normSev(alert.priority)]}
                                     </span>
                                   </td>
                                   <td className="py-4 text-[12px] font-bold text-slate-500">{new Date(alert.detected_at).toLocaleString()}</td>
@@ -2233,6 +2259,7 @@ export default function Dashboard() {
                                     <option value="HIGH" className="bg-[#0F172A] text-orange-400">ALTA</option>
                                     <option value="MEDIUM" className="bg-[#0F172A] text-amber-400">MEDIA</option>
                                     <option value="LOW" className="bg-[#0F172A] text-blue-400">BAJA</option>
+                                    <option value="INFO" className="bg-[#0F172A] text-slate-400">INFORMATIVA</option>
                                 </select>
                                 <ChevronDown size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
@@ -2268,15 +2295,8 @@ export default function Dashboard() {
                                 threatHuntingAlerts.map((alert) => (
                                     <tr key={alert.id} className="group hover:bg-white/5 transition-all">
                                         <td className="py-6">
-                                            <span className={`px-2 py-1 rounded text-[11px] font-black ${
-                                                alert.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : 
-                                                alert.priority === 'HIGH' ? 'bg-orange-500/20 text-orange-400' : 
-                                                alert.priority === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'
-                                            }`}>
-                                                {alert.priority === 'CRITICAL' ? 'CRÍTICA' :
-                                                 alert.priority === 'HIGH' ? 'ALTA' :
-                                                 alert.priority === 'MEDIUM' ? 'MEDIA' :
-                                                 alert.priority === 'LOW' ? 'BAJA' : 'INFORMATIVA'}
+                                            <span className={`px-2 py-1 rounded text-[11px] font-black ${SEV_BADGE_CLS[normSev(alert.priority)]}`}>
+                                                {SEV_LABEL_ES[normSev(alert.priority)]}
                                             </span>
                                         </td>
                                         <td className="py-6 text-[13px] font-bold text-slate-500">{new Date(alert.detected_at).toLocaleString()}</td>

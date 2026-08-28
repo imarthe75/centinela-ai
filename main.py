@@ -1573,10 +1573,25 @@ async def get_runtime_alerts():
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT r.id, r.priority, r.rule_name, r.alert_text, r.detected_at, 
+                SELECT r.id,
+                       CASE UPPER(r.priority)
+                           WHEN 'EMERGENCY' THEN 'CRITICAL'
+                           WHEN 'ALERT' THEN 'CRITICAL'
+                           WHEN 'ERROR' THEN 'HIGH'
+                           WHEN 'WARNING' THEN 'MEDIUM'
+                           WHEN 'NOTICE' THEN 'LOW'
+                           WHEN 'INFORMATIONAL' THEN 'INFO'
+                           WHEN 'DEBUG' THEN 'INFO'
+                           WHEN 'CRITICAL' THEN 'CRITICAL'
+                           WHEN 'HIGH' THEN 'HIGH'
+                           WHEN 'MEDIUM' THEN 'MEDIUM'
+                           WHEN 'LOW' THEN 'LOW'
+                           ELSE 'INFO'
+                       END as priority,
+                       r.rule_name, r.alert_text, r.detected_at,
                        COALESCE(
-                           i.asset_name, 
-                           CASE 
+                           i.asset_name,
+                           CASE
                                WHEN r.rule_name LIKE 'ZEEK%' THEN 'Red CASMARTS / Sensor Zeek (10.4.3.34)'
                                WHEN r.rule_name LIKE 'ITDR%' THEN 'casmart_authentik (10.4.3.208)'
                                WHEN r.rule_name LIKE 'EBPF%' THEN 'Kernel Servidor Centinela (10.4.3.34)'
@@ -1586,7 +1601,11 @@ async def get_runtime_alerts():
                        COALESCE(i.endpoint, '10.4.3.34') as endpoint
                 FROM public.runtime_alerts r
                 LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
-                WHERE r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access', 'ZEEK-CONN-HEARTBEAT')
+                WHERE r.rule_name NOT IN (
+                    'Terminal shell in container', 'Unauthorized file access', 'ZEEK-CONN-HEARTBEAT',
+                    'Drop and execute new binary in container', 'Read sensitive file untrusted',
+                    'Falco internal: syscall event drop', 'PTRACE attached to process'
+                )
                 ORDER BY r.detected_at DESC
                 LIMIT 50
             """)
@@ -2209,38 +2228,33 @@ async def investigate_alert(data: dict):
         NOTA OBLIGATORIA: Si el activo no es un contenedor (ej. servidor o máquina virtual), DEBES incluir explícitamente en el último paso de 'accion_inmediata' la siguiente instrucción de instalación del agente Wazuh: "Para habilitar remediación automática, ejecute: curl -sO https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.x_amd64.deb && sudo dpkg -i wazuh-agent*.deb"
         """
         
-        # Primary: Gemini
-        try:
-            from google import genai
-            from google.genai import types
-            
-            api_key = os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                raise Exception("Missing GOOGLE_API_KEY")
-                
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-1.5-flash-latest",
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            return json.loads(response.text)
-        except Exception as gem_e:
-            print(f"Gemini failed, trying Groq fallback: {gem_e}")
-            
-            # Fallback: Groq
-            groq_key = os.getenv("GROQ_API_KEY")
-            if groq_key:
-                from groq import Groq
-                client = Groq(api_key=groq_key)
-                chat_completion = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model="llama-3.3-70b-versatile",
-                    response_format={"type": "json_object"}
-                )
-                return json.loads(chat_completion.choices[0].message.content)
-            else:
-                raise gem_e
+        # Use the shared 4-provider cascade (Groq -> Gemini -> NVIDIA -> OpenRouter) instead of
+        # two hardcoded model names that have both been retired upstream (gemini-1.5-flash-latest
+        # 404s, llama-3.3-70b-versatile 404s) -- that was the "The model ... does not exist"
+        # error the user reported. call_ai_cascade returns the raw text of the first provider
+        # that answers, or None if all are down.
+        import centinela
+        raw = centinela.call_ai_cascade(prompt, want_json=True)
+        if raw:
+            txt = raw.strip()
+            if txt.startswith("```"):
+                txt = txt.split("```", 2)[1]
+                if txt.lstrip().lower().startswith("json"):
+                    txt = txt.lstrip()[4:]
+            start, end = txt.find("{"), txt.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(txt[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+            # Provider answered but not with parseable JSON -- hand the prose back rather than
+            # pretend it failed.
+            return {
+                "contexto": txt,
+                "riesgo": alert["priority"],
+                "accion_inmediata": ["Revisar el detalle del análisis anterior", "Triaje manual del activo afectado"],
+            }
+        raise Exception("Todos los proveedores de IA no disponibles (cuota/clave/timeout)")
 
     except Exception as e:
         print(f"Critical error in investigation: {e}")
@@ -2495,10 +2509,24 @@ async def poll_new_alerts():
                     last_seen_id = res["max_id"] or 0
                 
                 cur.execute("""
-                    SELECT r.id, r.priority, r.rule_name, r.alert_text, r.detected_at, i.asset_name
+                    SELECT r.id,
+                           CASE UPPER(r.priority)
+                               WHEN 'EMERGENCY' THEN 'CRITICAL' WHEN 'ALERT' THEN 'CRITICAL'
+                               WHEN 'ERROR' THEN 'HIGH' WHEN 'WARNING' THEN 'MEDIUM'
+                               WHEN 'NOTICE' THEN 'LOW' WHEN 'INFORMATIONAL' THEN 'INFO'
+                               WHEN 'DEBUG' THEN 'INFO'
+                               WHEN 'CRITICAL' THEN 'CRITICAL' WHEN 'HIGH' THEN 'HIGH'
+                               WHEN 'MEDIUM' THEN 'MEDIUM' WHEN 'LOW' THEN 'LOW'
+                               ELSE 'INFO'
+                           END as priority,
+                           r.rule_name, r.alert_text, r.detected_at, i.asset_name
                     FROM public.runtime_alerts r
                     LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
-                    WHERE r.id > %s AND r.rule_name NOT IN ('Terminal shell in container', 'Unauthorized file access')
+                    WHERE r.id > %s AND r.rule_name NOT IN (
+                        'Terminal shell in container', 'Unauthorized file access', 'ZEEK-CONN-HEARTBEAT',
+                        'Drop and execute new binary in container', 'Read sensitive file untrusted',
+                        'Falco internal: syscall event drop', 'PTRACE attached to process'
+                    )
                     ORDER BY r.id ASC
                 """, (last_seen_id,))
                 new_alerts = cur.fetchall()

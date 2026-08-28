@@ -384,6 +384,7 @@
       <li><a href="#wazuh">Wazuh EDR</a></li>
       <li><a href="#cumplimiento">Cumplimiento normativo</a></li>
       <li><a href="#omni-xdr">Visión Omni-XDR 2.0</a></li>
+      <li><a href="#deteccion-avanzada">Detección avanzada y automatización</a></li>
       <li><a href="#otros">Otros componentes</a></li>
       <li><a href="#salud">Salud del ecosistema y reportes</a></li>
       <li><a href="#estado-actual">Estado técnico actual</a></li>
@@ -849,6 +850,44 @@
       </ul>
     </section>
 
+    <section id="deteccion-avanzada">
+      <h2>Detección avanzada y automatización</h2>
+      <p>Cinco subsistemas incorporados el 27 de agosto de 2026 a partir de la evaluación de dos referencias externas — <b>CodeRabbit</b> (revisión de código asistida por IA, "shift-left") y el SOC agéntico <b>"The Rock"</b> de KIO. El diseño completo y su estado de verificación está en <code>DECISIONS/0002</code>, <code>0003</code> y <code>0004</code> del repositorio.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Subsistema</th><th>Qué hace</th><th>Estado</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>Memoria de falsos positivos / riesgo aceptado</b><br><code>finding_suppressions</code></td>
+              <td>Un analista puede silenciar un hallazgo (o una familia de hallazgos por activo / CVE / patrón de ruta / huella) desde el SOAR. Un hallazgo que coincide con una supresión activa y no vencida se aparca en estado <code>SUPPRESSED</code> — no reaparece en la cola de remediación ni en los conteos de críticos/altos — pero se sigue registrando cuántas veces vuelve a dispararse. Endpoints <code>GET/POST /api/suppressions</code>, <code>DELETE /api/suppressions/{id}</code>, <code>POST /api/remediation/{vuln_id}/suppress</code>.</td>
+              <td>Operativo, verificado en vivo (4 pruebas contra la BD real + una supresión de ida y vuelta desde el SOAR). Sin supresiones activas todavía — es una capacidad para el analista, no un backfill.</td>
+            </tr>
+            <tr>
+              <td><b>Bitácora unificada de acciones autónomas</b><br><code>agent_actions</code></td>
+              <td>Un único registro (<code>core/agent_ledger.py</code>) de toda acción que el sistema toma por su cuenta: correlación IA (éxito/fallo), apertura de <i>merge request</i> de auto-fix en GitLab, limpieza de contenedores ZAP huérfanos, enriquecimiento de <i>threat intel</i>, supresiones de analista. Nunca lanza excepción (registra traza completa). <code>GET /api/agent-actions</code> (lista + resumen agregado).</td>
+              <td>Operativo. <b>1,365</b> acciones registradas en vivo (1,304 correlaciones IA, 58 enriquecimientos de <i>threat intel</i>, 3 limpiezas de ZAP).</td>
+            </tr>
+            <tr>
+              <td><b>Contexto de "radio de impacto" para remediación de código</b><br><code>core/code_context.py</code></td>
+              <td>Antes de pedirle a la IA un parche para un hallazgo en un repositorio, lee el bloque de la función que lo contiene desde el clon que ya dejó el escáner de flota y hace <code>git grep</code> de las demás referencias al símbolo afectado. Ese contexto (<i>"CONTEXTO DE CÓDIGO"</i> + <i>"BLAST RADIUS"</i>) se inyecta en el <i>prompt</i>. Estrictamente de solo lectura; cualquier fallo devuelve un bloque vacío.</td>
+              <td>Operativo, verificado en vivo contra ~20 hallazgos reales de repositorios GitLab y de extremo a extremo en <code>correlate_vulnerability()</code>. Aplica solo a correlaciones <i>nuevas</i>.</td>
+            </tr>
+            <tr>
+              <td><b>Revisión de <i>Merge Request</i> "shift-left" + bloqueo de <i>merge</i></b><br><code>auditors/mr_review.py</code></td>
+              <td><i>Webhook</i> de GitLab (<code>POST /api/gitlab/mr-webhook</code>): al abrir un MR, clona solo los archivos cambiados, corre los detectores nativos sin BD (SAST, IaC de Dockerfile, patrones de secretos) más Semgrep y SCA de manifiestos <i>únicamente sobre las líneas que el MR agregó</i>, publica comentarios en línea + una nota resumen, y fija un <i>commit status</i> externo (<code>centinela/security</code>) que pasa a <code>failed</code> a partir de severidad ALTA. Entrada manual: <code>POST /api/gitlab/mr-review/{project_id}/{mr_iid}</code>.</td>
+              <td><b>Parcial.</b> Toda la ruta de <i>lectura</i> (fetch del MR, clon, escaneo, filtrado por línea, decisión de estado) verificada en vivo contra un MR real. Las 3 llamadas de <i>escritura</i> a GitLab (comentario en línea, nota resumen, <i>commit status</i>) y la configuración del <i>webhook</i> del lado de GitLab quedan pendientes por decisión del usuario — cubiertas por pruebas unitarias de la lógica pura.</td>
+            </tr>
+            <tr>
+              <td><b>Motor de correlación de incidentes</b><br><code>core/incident_engine.py</code> · <code>incidents</code> / <code>incident_events</code></td>
+              <td>Bucle cada 120 s que agrupa señales de <code>runtime_alerts</code>, CTI y BloodHound por activo + ventana de tiempo + indicador compartido (IP, usuario) usando <i>union-find</i> determinista, arma una cadena de ataque MITRE ATT&amp;CK, mantiene relojes MTTD/MTTC y un resumen ejecutivo IA opcional sobre la narrativa determinista. Denylist de ruido propio en <code>NOISE_RULES</code>. Endpoints <code>GET /api/incidents</code>, <code>GET /api/incidents/{id}</code>, <code>POST /api/incidents/{id}/note</code>, <code>POST /api/incidents/{id}/status</code>.</td>
+              <td>Operativo, verificado en vivo de extremo a extremo (4 alertas sintéticas de fuerza bruta contra el bucle real → 1 incidente <code>CRITICAL</code>, cadena "Credential Access", contención recomendada real, MTTD/MTTC calculados; todo limpiado después). Sin incidentes abiertos hoy — la ventana real solo contenía ruido en denylist, comportamiento <i>fail-safe</i> correcto.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="dim">Respuesta autónoma de contención (<code>DECISIONS/0004</code>) quedó documentada pero <b>no implementada</b>, deliberadamente congelada a la espera de una decisión explícita del usuario: automatizar la contención contradice una regla del proyecto adoptada tras incidentes reales.</p>
+    </section>
+
     <section id="otros">
       <h2>Otros componentes</h2>
       <ul>
@@ -869,19 +908,21 @@
 
     <section id="estado-actual">
       <h2>Estado técnico actual</h2>
-      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (25 de agosto de 2026):</p>
+      <p>Cifras y comportamiento verificados en vivo contra el sistema en producción (28 de agosto de 2026):</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Indicador</th><th>Valor actual</th></tr></thead>
           <tbody>
-            <tr><td>Activos monitoreados</td><td>87 (servidores, bases de datos, repositorios GitLab)</td></tr>
-            <tr><td>Hallazgos reales (finding_category=VULNERABILITY)</td><td>4,916 — separados de 23,129 hallazgos informativos (calidad de código, defectos funcionales, marcadores de auditoría) desde la clasificación real/informativo introducida el 14-20 de agosto; el número sin diferenciar (28,045) sobrerrepresenta el riesgo real, ver "Taxonomía de clasificación" arriba</td></tr>
-            <tr><td>Hallazgos críticos reales abiertos</td><td>285</td></tr>
-            <tr><td>Confirmados en catálogo CISA KEV (explotación activa)</td><td>24</td></tr>
-            <tr><td>Incumplimientos de plazo de corrección (SLA) — hallazgos reales</td><td>898</td></tr>
+            <tr><td>Activos monitoreados</td><td>95 (servidores, bases de datos, estaciones de trabajo, repositorios GitLab)</td></tr>
+            <tr><td>Hallazgos reales (finding_category=VULNERABILITY)</td><td>7,545 — separados de 26,175 hallazgos informativos (calidad de código, defectos funcionales, marcadores de auditoría) desde la clasificación real/informativo introducida el 14-20 de agosto; el número sin diferenciar sobrerrepresenta el riesgo real, ver "Taxonomía de clasificación" arriba</td></tr>
+            <tr><td>Hallazgos críticos reales abiertos</td><td>280</td></tr>
+            <tr><td>Confirmados en catálogo CISA KEV (explotación activa) — abiertos</td><td>24</td></tr>
+            <tr><td>Incumplimientos de plazo de corrección (SLA) — hallazgos reales abiertos</td><td>869</td></tr>
             <tr><td>Hallazgos de accesibilidad WCAG 2.1 (motor nuevo, 25 ago)</td><td>224, incluidos en el total de hallazgos reales de arriba</td></tr>
-            <tr><td>Proveedores de IA en cadena de respaldo</td><td>4 (Groq → Gemini → NVIDIA → OpenRouter)</td></tr>
-            <tr><td>Cobertura de pruebas automatizadas</td><td>85/85 pasan (sube de 62/62; 22 pruebas nuevas para el motor WCAG y el realineamiento CMMI, ambas del 25 de agosto)</td></tr>
+            <tr><td>Proveedores de IA en cadena de respaldo</td><td>4 (Groq → Gemini → NVIDIA → OpenRouter). <code>/api/investigate/runtime</code> usa esta misma cadena desde el 28 ago (antes invocaba dos modelos ya retirados y devolvía error 404)</td></tr>
+            <tr><td>Subsistemas CodeRabbit / "The Rock" (27 ago)</td><td>5: memoria de falsos positivos, bitácora de acciones autónomas (1,365 acciones reales registradas), contexto de radio de impacto, revisión de MR (parcial), motor de correlación de incidentes. Ver "Detección avanzada y automatización" arriba</td></tr>
+            <tr><td>Bitácora del log de amenazas en tiempo real (28 ago)</td><td>Ingesta de <code>runtime_alerts</code> ahora filtra el ruido de sensores propios (Falco contra los contenedores efímeros de escaneo, latido de Zeek) en el origen; se depuraron 16,175 filas de ruido acumulado y se normalizó la severidad a la escala canónica CRITICAL/HIGH/MEDIUM/LOW/INFO</td></tr>
+            <tr><td>Cobertura de pruebas automatizadas</td><td>122/122 pasan (sube de 85/85; pruebas nuevas para los 5 subsistemas de 27 ago)</td></tr>
           </tbody>
         </table>
       </div>
@@ -904,7 +945,7 @@
     </section>
 
     <footer>
-      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-25
+      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-28
     </footer>
   </main>
 </div>
