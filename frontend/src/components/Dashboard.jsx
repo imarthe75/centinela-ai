@@ -202,7 +202,7 @@ export default function Dashboard() {
       const interval = setInterval(fetchData, 5000)
       return () => clearInterval(interval)
     }
-  }, [auth.isAuthenticated, assetFilter])
+  }, [auth.isAuthenticated, assetFilter, soarCategoryFilter, soarStatusFilter])
 
   const fetchUsers = async () => {
     try {
@@ -520,7 +520,17 @@ export default function Dashboard() {
         axios.get(`${API_BASE}/alerts/runtime`),
         axios.get(`${API_BASE}/risk-distribution`),
         axios.get(`${API_BASE}/inventory`),
-        axios.get(`${API_BASE}/remediation${assetFilter ? `?asset=${assetFilter}` : ''}`)
+        axios.get(`${API_BASE}/remediation${(() => {
+          const p = new URLSearchParams();
+          if (assetFilter) p.set('asset', assetFilter);
+          if (soarCategoryFilter && soarCategoryFilter !== 'ALL') p.set('category', soarCategoryFilter);
+          // Only ask for RESOLVED rows when the analyst explicitly wants the remediated/history
+          // view -- otherwise the queue (and the count the inventory card links into) stays
+          // "pending only" so the two never disagree.
+          if (soarStatusFilter === 'REMEDIADO') p.set('status_scope', 'all');
+          const s = p.toString();
+          return s ? `?${s}` : '';
+        })()}`)
       ])
       
       setStats(resStats.data || { alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
@@ -803,6 +813,9 @@ export default function Dashboard() {
     setSelectedRemediation(null)
     setInvestigationData(null)
     setAssetFilter(assetName)
+    // Drill in on the same set the inventory card counted: real vulnerabilities pending
+    // remediation. The user can switch CATEGORÍA to INFORMATIVO to also see markers/quality.
+    setSoarCategoryFilter('VULNERABILITY')
     setCurrentView('soar')
   }
 
@@ -974,7 +987,7 @@ export default function Dashboard() {
             icon={<LayoutDashboard size={20} />} 
             label="Dashboard" 
             active={currentView === 'dashboard'} 
-            onClick={() => { setCurrentView('dashboard'); setSeverityFilter(null); setAssetFilter(null); }}
+            onClick={() => { setCurrentView('dashboard'); setSeverityFilter(null); setAssetFilter(null); setSoarCategoryFilter('ALL'); }}
           />
           <NavItem 
             icon={<ShieldAlert size={20} />} 
@@ -1793,7 +1806,7 @@ export default function Dashboard() {
                         {assetFilter && (
                             <div className="flex items-center gap-3 bg-[#06B6D4]/10 px-4 py-2 rounded-xl border border-[#06B6D4]/20 animate-in fade-in zoom-in duration-300" title="Solo se muestran remediaciones relacionadas con este activo">
                                 <span className="text-[12px] font-black text-[#06B6D4] uppercase tracking-widest">Filtro Activo: {assetFilter}</span>
-                                <X size={14} className="text-[#06B6D4] cursor-pointer hover:text-white transition-colors" onClick={() => setAssetFilter(null)} />
+                                <X size={14} className="text-[#06B6D4] cursor-pointer hover:text-white transition-colors" onClick={() => { setAssetFilter(null); setSoarCategoryFilter('ALL'); }} />
                             </div>
                         )}
                         <div className="bg-emerald-500/10 text-emerald-500 px-4 py-2 rounded-xl border border-emerald-500/20 text-[12px] font-black uppercase">
@@ -2184,7 +2197,7 @@ export default function Dashboard() {
                         {assetFilter && (
                             <div className="flex items-center gap-3 bg-[#06B6D4]/10 px-4 py-2 rounded-xl border border-[#06B6D4]/20">
                                 <span className="text-[12px] font-black text-[#06B6D4] uppercase tracking-widest">Filtro Activo: {assetFilter}</span>
-                                <X size={14} className="text-[#06B6D4] cursor-pointer" onClick={() => setAssetFilter(null)} />
+                                <X size={14} className="text-[#06B6D4] cursor-pointer" onClick={() => { setAssetFilter(null); setSoarCategoryFilter('ALL'); }} />
                             </div>
                         )}
 

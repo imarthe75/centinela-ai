@@ -1766,20 +1766,19 @@ async def get_inventory():
                     i.cis_percentage,
                     i.cis_checked_at,
                     MAX(i.id) as max_id,
-                    -- Synthetic/system marker cve_ids (SCAN-AUDIT, CIS-BENCHMARK-AUDIT,
-                    -- HEURISTIC-SECURITY-DEBT, HOST-CONTAINMENT-REQUEST, CTI-IOC-MATCH-*,
-                    -- BLOODHOUND-PATH-*) are informational/aggregate markers, never a real
-                    -- per-asset actionable vulnerability -- same list centinela.py's
-                    -- correlate_vulnerability() already uses to route these away from the LLM.
-                    -- Previously only SCAN-AUDIT was excluded here, so e.g. a HIGH-severity
-                    -- HEURISTIC-SECURITY-DEBT row silently counted as "1 real vulnerability" on
-                    -- an asset's inventory card.
+                    -- The inventory card's "Vulnerabilidades" number MUST be computed the exact
+                    -- same way every other surface counts a real, actionable vulnerability:
+                    -- finding_category = 'VULNERABILITY' (the single authoritative classifier in
+                    -- core/deduplication_engine.classify_finding_category(), which every writer
+                    -- funnels through) plus an open status. This replaces an older ad-hoc
+                    -- (cve_id blocklist + severity != info) heuristic that disagreed with
+                    -- /api/stats and with the SOAR queue -- e.g. it counted a CRITICAL-severity
+                    -- SonarQube CODE_SMELL (finding_category='INFORMATIONAL') as a real vuln,
+                    -- so the card said 5 while the real number was 4. A drill-in from this card
+                    -- passes category=VULNERABILITY to /api/remediation so the list matches.
                     COALESCE(COUNT(DISTINCT CASE
-                        WHEN LOWER(COALESCE(v.severity, '')) NOT IN ('info', 'none', '')
-                        AND UPPER(COALESCE(v.cve_id, '')) NOT LIKE 'CTI-IOC-MATCH%'
-                        AND UPPER(COALESCE(v.cve_id, '')) NOT LIKE 'BLOODHOUND-PATH%'
-                        AND UPPER(COALESCE(v.cve_id, '')) NOT IN ('SCAN-AUDIT', 'CIS-BENCHMARK-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'HOST-CONTAINMENT-REQUEST', '')
-                        AND v.status IN ('OPEN', 'NEW', 'CORRELATED')
+                        WHEN v.finding_category = 'VULNERABILITY'
+                        AND v.status IN ('OPEN', 'NEW', 'CORRELATED', 'REOPENED')
                         THEN v.id
                     END), 0) as vulnerability_count,
 
@@ -1881,7 +1880,8 @@ async def get_tops():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/remediation")
-async def get_remediation_history(asset: Optional[str] = None):
+async def get_remediation_history(asset: Optional[str] = None, category: Optional[str] = None,
+                                  status_scope: Optional[str] = "pending"):
     try:
         from core import deduplication_engine
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
@@ -1926,7 +1926,13 @@ async def get_remediation_history(asset: Optional[str] = None):
                   AND UPPER(v.cve_id) NOT IN ('HOST-CONTAINMENT-REQUEST', 'SCAN-AUDIT', 'HEURISTIC-SECURITY-DEBT', 'CIS-BENCHMARK-AUDIT')
                   AND v.status <> 'SUPPRESSED'
             """
-            # SUPPRESSED = an analyst recorded this exact finding as a false positive / accepted
+            # This endpoint is the SOAR *pending-remediation queue*, and the inventory card's
+            # "Vulnerabilidades ... pendientes de remediar" number links straight into it -- so
+            # by default it must NOT include RESOLVED rows, or the count on the card (which
+            # excludes RESOLVED) can never match what the user sees after drilling in. The SOAR
+            # UI's "ESTADO: REMEDIADO" filter re-includes them by passing status_scope=all.
+            # The only VULNERABILITY statuses that actually occur are CORRELATED / RESOLVED /
+            # REOPENED / NEW, so `<> 'RESOLVED'` here is exactly the card's open-status set.
             # risk via /api/suppressions (item 3, 2026-08-27). It stays in the DB for the audit
             # trail and keeps a re-detection counter on the suppression row, but it must not
             # reappear in the SOAR approval queue as something to action.
@@ -1940,6 +1946,18 @@ async def get_remediation_history(asset: Optional[str] = None):
             if asset:
                 query += " AND i.asset_name ILIKE %s"
                 params.append(f"%{asset}%")
+
+            # Optional finding_category filter (VULNERABILITY | INFORMATIONAL). The inventory
+            # card links here with category=VULNERABILITY so the drill-in list matches the
+            # exact count shown on the card -- both are then "finding_category='VULNERABILITY'
+            # and open", the single source of truth. Without the param the queue returns every
+            # category (matching the SOAR UI's own "CATEGORÍA: TODAS" default).
+            if category and category.upper() in ("VULNERABILITY", "INFORMATIONAL"):
+                query += " AND v.finding_category = %s"
+                params.append(category.upper())
+
+            if str(status_scope or "pending").lower() != "all":
+                query += " AND v.status <> 'RESOLVED'"
 
             query += " ORDER BY v.id DESC NULLS LAST LIMIT 5000"
             
