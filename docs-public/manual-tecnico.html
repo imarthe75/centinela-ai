@@ -208,6 +208,8 @@
 
   p { max-width: 68ch; color: var(--text); }
   p.dim { color: var(--text-dim); }
+  .dim { color: var(--text-dim); }
+  td .dim { display: block; font-size: 12px; margin-top: 1px; }
 
   ul, ol.steps { max-width: 68ch; padding-left: 22px; }
   li { margin-bottom: 6px; }
@@ -374,6 +376,7 @@
     <div class="toc-title">Índice</div>
     <ol>
       <li><a href="#overview">Qué es Centinela-AI</a></li>
+      <li><a href="#glosario">Glosario para todo público</a></li>
       <li><a href="#arquitectura">Arquitectura</a></li>
       <li><a href="#ciclo">Ciclo de vida de un hallazgo</a></li>
       <li><a href="#motores">Motores de escaneo</a></li>
@@ -406,6 +409,164 @@
       <h2>Qué es Centinela-AI</h2>
       <p>Centinela-AI es la plataforma central de seguridad de CASMARTS. Descubre activos automáticamente (servidores, bases de datos, repositorios de GitLab, contenedores), los audita con más de una decena de motores de escaneo especializados, usa un modelo de lenguaje para correlacionar cada hallazgo en un reporte ejecutivo con una remediación concreta, y — cuando un humano aprueba esa remediación — la ejecuta de forma automatizada: por Ansible sobre un servidor real, o abriendo un Merge Request sobre un repositorio de código.</p>
       <p class="dim">No es un solo escáner: es la capa de orquestación que conecta descubrimiento, escaneo, análisis y respuesta en un solo flujo, con un tablero (dashboard) como punto único de visibilidad.</p>
+    </section>
+
+    <section id="glosario">
+      <h2>Glosario para todo público</h2>
+      <p>Este manual y el tablero de Centinela usan vocabulario técnico de ciberseguridad. Esta sección explica cada término y sigla <b>en palabras simples</b>, sin dar por sentado conocimiento previo. Si en cualquier parte del documento aparece una palabra que no reconoce, búsquela aquí.</p>
+
+      <h3>1. Palabras base de ciberseguridad</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>Vulnerabilidad</b></td><td>Un defecto o una mala configuración en un sistema que alguien con malas intenciones podría aprovechar para robar información, tomar el control o causar daño.</td></tr>
+            <tr><td><b>CVE</b></td><td>El nombre estándar y único que se le da a cada vulnerabilidad conocida públicamente (por ejemplo, <code>CVE-2021-44228</code>). Funciona como el número de expediente de esa falla, igual en todo el mundo.</td></tr>
+            <tr><td><b>Severidad</b></td><td>Qué tan grave es un hallazgo. Centinela usa cuatro niveles: <b>Crítica</b> (atender de inmediato), <b>Alta</b>, <b>Media</b> y <b>Baja</b>. Además marca aparte los <b>Informativos</b>, que no son un riesgo de seguridad.</td></tr>
+            <tr><td><b>Exploit / explotación</b></td><td>El programa o la técnica concreta que aprovecha una vulnerabilidad para atacar. "Explotación activa" significa que ya hay atacantes usándola en el mundo real, ahora mismo.</td></tr>
+            <tr><td><b>Parche (patch)</b></td><td>La corrección que publica el fabricante del software para cerrar una vulnerabilidad. "Aplicar el parche" quiere decir instalar esa actualización.</td></tr>
+            <tr><td><b>Hardening (endurecimiento)</b></td><td>Configurar un sistema para que sea más difícil de atacar: apagar servicios que no se usan, exigir contraseñas fuertes, cerrar puertos, activar registros de auditoría, etc.</td></tr>
+            <tr><td><b>Superficie de ataque</b></td><td>El conjunto de todos los puntos por donde alguien podría intentar entrar (puertos abiertos, formularios web, cuentas, servicios expuestos). Cuanto más pequeña, mejor.</td></tr>
+            <tr><td><b>Falso positivo</b></td><td>Una alerta que, al revisarla, resulta no ser un problema real. Centinela permite marcarlos ("suprimirlos") para que dejen de aparecer.</td></tr>
+            <tr><td><b>Remediación</b></td><td>La acción concreta para resolver un hallazgo: actualizar una librería, cambiar una configuración, corregir una línea de código, bloquear una dirección.</td></tr>
+            <tr><td><b>SLA</b></td><td>El plazo máximo acordado para corregir algo según su severidad (por ejemplo, 24 horas para lo crítico, 7 días para lo alto). "Incumplimiento de SLA" significa que ya se pasó ese plazo.</td></tr>
+            <tr><td><b>Hallazgo (finding)</b></td><td>Cualquier cosa que un motor de Centinela detecta y registra. Puede ser una vulnerabilidad real o solo información.</td></tr>
+            <tr><td><b>Hallazgo informativo vs. vulnerabilidad real</b></td><td>Centinela separa los hallazgos <b>de seguridad reales</b> (algo que un atacante podría aprovechar) de los <b>informativos</b> (calidad de código, deuda técnica, marcadores de auditoría). El tablero los muestra por separado para no exagerar el nivel de riesgo.</td></tr>
+            <tr><td><b>Puerto</b></td><td>Un "número de canal" dentro de una máquina; cada servicio escucha en uno (la web en el 443, la administración remota SSH en el 22). Un puerto abierto de más agranda la superficie de ataque.</td></tr>
+            <tr><td><b>Firewall</b></td><td>Un filtro que permite o bloquea conexiones de red según reglas definidas.</td></tr>
+            <tr><td><b>Dirección IP</b></td><td>El número que identifica a un equipo dentro de una red (por ejemplo, <code>10.4.3.34</code>).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>2. Tipos de análisis (los "motores" de Centinela)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Sigla / término</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>SAST</b><br><span class="dim">análisis estático</span></td><td>Revisa el <b>código fuente sin ejecutarlo</b>, buscando patrones peligrosos. Es como un corrector ortográfico que lee el texto en busca de errores.</td></tr>
+            <tr><td><b>DAST</b><br><span class="dim">análisis dinámico</span></td><td>Prueba la aplicación <b>mientras está funcionando</b>, lanzándole peticiones como lo haría un atacante, para ver cómo responde. Centinela usa la herramienta ZAP para esto.</td></tr>
+            <tr><td><b>SCA</b><br><span class="dim">análisis de dependencias</span></td><td>Todo programa reutiliza librerías hechas por terceros. SCA revisa esa lista de librerías y avisa si alguna tiene vulnerabilidades conocidas o está desactualizada.</td></tr>
+            <tr><td><b>SBOM</b><br><span class="dim">lista de materiales de software</span></td><td>El inventario completo de todos los componentes y versiones que un programa lleva dentro, como la lista de ingredientes de un producto alimenticio.</td></tr>
+            <tr><td><b>Escaneo de secretos</b></td><td>Busca contraseñas, llaves de acceso o tokens que alguien dejó escritos por error dentro del código, donde no deberían estar.</td></tr>
+            <tr><td><b>OSINT</b><br><span class="dim">inteligencia de fuentes abiertas</span></td><td>Información que <b>cualquiera puede encontrar en fuentes públicas</b> (registros de dominios, buscadores, redes sociales) sobre la organización, y que un atacante también podría usar para preparar un ataque.</td></tr>
+            <tr><td><b>IaC</b><br><span class="dim">infraestructura como código</span></td><td>Archivos de texto que describen cómo se debe montar un servidor o servicio. Centinela los revisa para detectar configuraciones inseguras <b>antes</b> de que se apliquen.</td></tr>
+            <tr><td><b>CSPM</b><br><span class="dim">gestión de postura en la nube</span></td><td>Revisión de la configuración de los servicios en la nube (AWS, Azure, Google Cloud) para detectar cosas mal configuradas, como un almacenamiento accesible al público entero.</td></tr>
+            <tr><td><b>Fuzzing</b></td><td>Enviarle a un programa gran cantidad de datos raros o inesperados para ver si algo lo rompe o revela una falla.</td></tr>
+            <tr><td><b>Pentest</b><br><span class="dim">prueba de penetración</span></td><td>Un ejercicio autorizado y controlado en el que especialistas intentan atacar el sistema de verdad para descubrir debilidades antes de que lo haga un atacante real.</td></tr>
+            <tr><td><b>Benchmark de configuración</b></td><td>Una lista de verificación estándar de la industria (por ejemplo, la de CIS) sobre cómo debe estar configurado un sistema para considerarse seguro.</td></tr>
+            <tr><td><b>FIM</b><br><span class="dim">monitoreo de integridad de archivos</span></td><td>Vigila archivos importantes del sistema y avisa cuando alguno cambia sin autorización.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3. Marcos, catálogos y normas que Centinela usa</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Sigla / término</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>OWASP</b> / <b>OWASP Top 10</b></td><td>Organización sin fines de lucro reconocida mundialmente en seguridad de aplicaciones. Su "Top 10" es la lista de los diez riesgos más comunes en aplicaciones web.</td></tr>
+            <tr><td><b>MITRE ATT&amp;CK</b></td><td>Catálogo público que describe, paso a paso, las técnicas que usan los atacantes reales. Centinela etiqueta sus hallazgos con estas técnicas para dar contexto.</td></tr>
+            <tr><td><b>CIS Benchmarks</b></td><td>Guías muy detalladas del <i>Center for Internet Security</i> sobre cómo configurar de forma segura sistemas operativos y servicios.</td></tr>
+            <tr><td><b>ISO/IEC 27001</b></td><td>Norma internacional para gestionar la seguridad de la información dentro de una organización.</td></tr>
+            <tr><td><b>ISO/IEC 25010</b></td><td>Norma internacional que define qué se entiende por "calidad" en un software (mantenibilidad, fiabilidad, seguridad, etc.).</td></tr>
+            <tr><td><b>CMMI</b></td><td>Modelo que mide qué tan maduros, ordenados y repetibles son los procesos de desarrollo de software de una organización.</td></tr>
+            <tr><td><b>WCAG</b><br><span class="dim">pautas de accesibilidad web</span></td><td>Reglas internacionales para que una página web pueda ser usada por personas con discapacidad visual, motriz o auditiva. En proyectos de gobierno suele ser un requisito legal.</td></tr>
+            <tr><td><b>NIST</b> / <b>NIST CSF</b></td><td>Instituto de estándares de EE. UU. Su <i>Cybersecurity Framework</i> (CSF) es un marco muy usado para organizar la gestión de riesgos de ciberseguridad.</td></tr>
+            <tr><td><b>PCI DSS</b></td><td>Estándar de seguridad obligatorio para cualquier sistema que procese pagos con tarjeta de crédito o débito.</td></tr>
+            <tr><td><b>GDPR</b></td><td>Reglamento europeo de protección de datos personales; sirve de referencia internacional.</td></tr>
+            <tr><td><b>STRIDE</b></td><td>Método para razonar sobre amenazas clasificándolas en seis tipos: suplantación, manipulación, repudio, fuga de información, denegación de servicio y elevación de privilegios.</td></tr>
+            <tr><td><b>NVD</b></td><td>Base de datos del gobierno de EE. UU. con el detalle técnico y la puntuación de cada CVE.</td></tr>
+            <tr><td><b>EPSS</b></td><td>Un puntaje de 0 % a 100 % que estima la probabilidad de que una vulnerabilidad sea explotada en los próximos 30 días. Ayuda a decidir qué corregir primero.</td></tr>
+            <tr><td><b>CISA KEV</b></td><td>Lista oficial del gobierno de EE. UU. de vulnerabilidades que <b>ya se están explotando activamente</b>. Si un hallazgo aparece aquí, es prioridad máxima.</td></tr>
+            <tr><td><b>CTI</b><br><span class="dim">inteligencia de amenazas</span></td><td>Información actualizada sobre atacantes, campañas en curso y servidores maliciosos conocidos.</td></tr>
+            <tr><td><b>IoC</b><br><span class="dim">indicador de compromiso</span></td><td>Una pista concreta de que hubo o hay un ataque: una dirección IP maliciosa, un archivo sospechoso, un dominio usado por delincuentes.</td></tr>
+            <tr><td><b>MISP</b>, <b>VirusTotal</b>, <b>abuse.ch</b></td><td>Fuentes públicas de inteligencia de amenazas que Centinela consulta en vivo.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>4. Siglas de tipo de herramienta o disciplina</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Sigla</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>SOC</b></td><td><i>Centro de Operaciones de Seguridad.</i> El equipo y las herramientas que vigilan la seguridad de una organización de forma continua, las 24 horas.</td></tr>
+            <tr><td><b>SOAR</b></td><td>Automatización de la respuesta: en lugar de que una persona ejecute a mano cada corrección, la plataforma la aplica sola &mdash; <b>siempre con aprobación humana previa</b> en Centinela.</td></tr>
+            <tr><td><b>EDR</b></td><td>Software instalado en cada equipo (el "agente") que vigila lo que ocurre dentro: procesos, archivos, conexiones. Centinela usa <b>Wazuh</b>.</td></tr>
+            <tr><td><b>XDR</b></td><td>La evolución del EDR: junta y correlaciona señales de los equipos, la red, la identidad y la nube en una sola vista.</td></tr>
+            <tr><td><b>NDR</b></td><td>Vigilancia del <b>tráfico de red</b> para detectar comportamiento sospechoso. Centinela usa <b>Zeek</b>.</td></tr>
+            <tr><td><b>IDS / IPS</b></td><td>Sistema que <b>detecta</b> (IDS) o además <b>bloquea</b> (IPS) intentos de intrusión en la red.</td></tr>
+            <tr><td><b>ITDR</b></td><td>Detección y respuesta enfocada en la <b>identidad</b>: ataques de fuerza bruta contra contraseñas, robo de sesiones, cambios sospechosos de permisos. En Centinela se alimenta de Authentik.</td></tr>
+            <tr><td><b>UEBA</b></td><td>Análisis de comportamiento: aprende qué es "normal" para cada usuario y equipo, y alerta cuando algo se sale de ese patrón, sin necesitar una firma de ataque conocida.</td></tr>
+            <tr><td><b>IdP</b><br><span class="dim">proveedor de identidad</span></td><td>El sistema central que gestiona los usuarios y sus inicios de sesión. En CASMARTS es <b>Authentik</b>.</td></tr>
+            <tr><td><b>SSO</b></td><td><i>Inicio de sesión único:</i> autenticarse una sola vez y acceder a varias aplicaciones sin volver a escribir la contraseña.</td></tr>
+            <tr><td><b>OIDC</b></td><td>Protocolo estándar moderno para que una aplicación delegue el inicio de sesión a un proveedor de identidad.</td></tr>
+            <tr><td><b>MFA</b></td><td><i>Autenticación multifactor:</i> pedir algo más que la contraseña (un código temporal, una app, una llave física).</td></tr>
+            <tr><td><b>WAF</b></td><td><i>Firewall de aplicaciones web:</i> filtra el tráfico web malicioso antes de que llegue a la aplicación.</td></tr>
+            <tr><td><b>PAM / IAM</b></td><td>Gestión de identidades y accesos (IAM) y, en particular, control estricto de las cuentas con más privilegios (PAM).</td></tr>
+            <tr><td><b>RBAC</b><br><span class="dim">control de acceso por roles</span></td><td>Dar permisos según el rol de la persona (administrador, visualizador, etc.) en lugar de configurarlos uno por uno.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>5. Términos técnicos generales</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>API</b></td><td>La "puerta de entrada" por la que dos programas se comunican entre sí. El tablero de Centinela le pide los datos al backend a través de una API.</td></tr>
+            <tr><td><b>API REST</b></td><td>El estilo de API más común hoy, basado en direcciones web (URLs) y peticiones HTTP.</td></tr>
+            <tr><td><b>Webhook</b></td><td>Un aviso automático que un sistema envía a otro por una URL <b>en cuanto ocurre algo</b>. Ejemplo: Authentik puede avisarle a Centinela por un webhook cada vez que alguien falla un inicio de sesión.</td></tr>
+            <tr><td><b>Endpoint</b></td><td>Tiene dos sentidos según el contexto: (1) una dirección concreta de una API (por ejemplo <code>/api/health</code>); (2) un "equipo final" &mdash; una laptop, servidor o teléfono conectado a la red.</td></tr>
+            <tr><td><b>HTTP / HTTPS</b></td><td>El idioma con el que los navegadores y los servidores web se comunican. La "S" de HTTPS indica que la comunicación va cifrada.</td></tr>
+            <tr><td><b>SSH</b></td><td>Protocolo para conectarse y administrar un servidor de forma remota y cifrada, escribiendo comandos.</td></tr>
+            <tr><td><b>TLS / SSL</b></td><td>El cifrado que protege la comunicación en internet; es lo que representa el candado del navegador y la "s" de "https".</td></tr>
+            <tr><td><b>Contenedor / Docker</b></td><td>Una forma de empaquetar un programa con todo lo que necesita para funcionar, aislado del resto del sistema. Docker es la herramienta más usada. Centinela corre como varios contenedores coordinados.</td></tr>
+            <tr><td><b>Ansible</b></td><td>Herramienta que aplica cambios de configuración en muchos servidores a la vez, de forma automatizada y repetible. Centinela la usa para ejecutar remediaciones sobre servidores reales.</td></tr>
+            <tr><td><b>Repositorio / Git / GitLab / GitHub</b></td><td>Un <b>repositorio</b> es el lugar donde vive el código de un proyecto, con todo su historial de cambios. <b>Git</b> es la tecnología que lleva ese historial; <b>GitLab</b> y <b>GitHub</b> son plataformas que alojan repositorios.</td></tr>
+            <tr><td><b>Merge Request (MR)</b><br><span class="dim">también llamado Pull Request</span></td><td>Una propuesta de cambio al código que alguien &mdash; o Centinela &mdash; envía para que sea revisada y aprobada antes de integrarse. Centinela corrige código <b>abriendo un MR</b>, nunca modificando el proyecto directamente.</td></tr>
+            <tr><td><b>Host</b></td><td>Cualquier máquina, física o virtual, conectada a la red: un servidor, una base de datos, una PC.</td></tr>
+            <tr><td><b>Agente</b></td><td>Un pequeño programa instalado en un equipo que recolecta información y la envía a la plataforma central. El "agente de Wazuh" es el del EDR.</td></tr>
+            <tr><td><b>Base de datos / PostgreSQL</b></td><td>El lugar organizado donde se guardan los datos. <b>PostgreSQL</b> es la base de datos que usa Centinela como fuente única de verdad de todos los hallazgos.</td></tr>
+            <tr><td><b>Neo4j / grafo de ataque</b></td><td>Una base de datos que guarda <b>relaciones</b> (quién puede acceder a qué). Permite dibujar y encontrar el "camino" que un atacante seguiría para llegar hasta una cuenta de administrador.</td></tr>
+            <tr><td><b>Vault</b><br><span class="dim">bóveda de credenciales</span></td><td>Una caja fuerte digital donde se guardan cifradas las contraseñas y llaves que Centinela necesita para conectarse a los servidores. Nunca se guardan en el código ni en la base de datos.</td></tr>
+            <tr><td><b>Kernel / eBPF</b></td><td>El <b>kernel</b> es el núcleo del sistema operativo. <b>eBPF</b> es una tecnología que permite observar de forma segura lo que hace ese núcleo, para detectar actividad maliciosa muy profunda.</td></tr>
+            <tr><td><b>Proxy inverso / nginx</b></td><td>Un intermediario que recibe todo el tráfico web y lo reparte a los servicios internos. <b>nginx</b> es el más común; Centinela aplica ahí algunas correcciones de seguridad.</td></tr>
+            <tr><td><b>DNS</b></td><td>El "directorio telefónico" de internet: traduce nombres legibles (<code>auth.casmart.internal</code>) a direcciones IP.</td></tr>
+            <tr><td><b>ICMP / ping</b></td><td>Una prueba básica de red para comprobar si un equipo está encendido y responde.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>6. Términos propios de Centinela</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Qué es, en palabras simples</th></tr></thead>
+          <tbody>
+            <tr><td><b>Activo (asset)</b></td><td>Cualquier cosa que Centinela vigila: un servidor, una base de datos, un repositorio de código, un contenedor, una estación de trabajo.</td></tr>
+            <tr><td><b>Descubrimiento de activos</b></td><td>El proceso automático por el que Centinela encuentra equipos y servicios nuevos en la red, sin que nadie los tenga que registrar a mano.</td></tr>
+            <tr><td><b>Motor de escaneo</b></td><td>Cada una de las herramientas especializadas que Centinela ejecuta: una para el código, otra para las dependencias, otra para la red, otra para la nube, etc.</td></tr>
+            <tr><td><b>Correlación con IA</b></td><td>Después de que un motor detecta algo, un modelo de lenguaje redacta en español qué significa, qué riesgo real implica y cómo corregirlo &mdash; incluyendo un parche concreto cuando es posible.</td></tr>
+            <tr><td><b>Cascada de proveedores de IA</b></td><td>Centinela intenta con varios servicios de inteligencia artificial en orden (Groq, Gemini, NVIDIA, OpenRouter). Si uno falla o agota su cuota diaria, pasa automáticamente al siguiente.</td></tr>
+            <tr><td><b>Motor heurístico</b></td><td>El plan de respaldo para cuando ningún servicio de IA está disponible: reglas fijas escritas por expertos que dan una respuesta honesta ("no hay regla automática para esto") en lugar de inventar una.</td></tr>
+            <tr><td><b>Centinela Risk Score (CRS)</b></td><td>Un puntaje único de riesgo por hallazgo que combina la severidad técnica, la probabilidad de explotación (EPSS), si ya se está explotando (CISA KEV) y qué tan crítico es el activo afectado.</td></tr>
+            <tr><td><b>Reachability (alcanzabilidad)</b></td><td>Indica si el código vulnerable de una librería <b>realmente se usa</b> en el proyecto (<code>REACHABLE</code>) o solo está listado pero nunca se llama (<code>UNREACHABLE</code>), lo que reduce la urgencia real.</td></tr>
+            <tr><td><b>Deduplicación / huella (fingerprint)</b></td><td>Centinela calcula una "huella" de cada hallazgo para reconocer cuando dos motores distintos reportan el mismo problema, y así no abrir dos tickets por lo mismo.</td></tr>
+            <tr><td><b>Aprobación humana</b></td><td>Ninguna remediación se ejecuta sola. Una persona debe revisarla y aprobarla en el tablero antes de que se aplique.</td></tr>
+            <tr><td><b>Sentinel</b></td><td>El componente de Centinela que ejecuta las remediaciones <b>ya aprobadas</b> por una persona.</td></tr>
+            <tr><td><b>Contención de host</b></td><td>Una acción de emergencia que aísla un equipo comprometido de la red (bloquea casi todo el tráfico). Siempre requiere una decisión humana explícita, nunca es automática.</td></tr>
+            <tr><td><b>Parche virtual</b></td><td>Bloquear un ataque en la capa de red (por ejemplo, en nginx) sin tocar la aplicación, como medida temporal mientras se corrige el problema de fondo.</td></tr>
+            <tr><td><b>Supresión de hallazgo</b></td><td>Silenciar un hallazgo que ya se revisó y se determinó que es un falso positivo o un riesgo aceptado, para que no siga generando ruido en el tablero.</td></tr>
+            <tr><td><b>Incidente</b></td><td>Cuando varias alertas relacionadas (mismo activo, misma ventana de tiempo, mismo indicador) se agrupan automáticamente en un solo caso investigable.</td></tr>
+            <tr><td><b>MTTD / MTTC</b></td><td>"Tiempo medio hasta <b>detectar</b>" y "tiempo medio hasta <b>contener</b>" un incidente. Miden qué tan rápido reacciona el equipo de seguridad.</td></tr>
+            <tr><td><b>Bitácora de acciones autónomas</b></td><td>El registro de todo lo que Centinela hizo por su cuenta (analizar un hallazgo, abrir un MR, limpiar un contenedor), para poder auditarlo después.</td></tr>
+            <tr><td><b>Quality Gate / Grado A&ndash;F</b></td><td>Una calificación tipo boletín escolar (de A a F) que resume si un repositorio cumple con umbrales mínimos de calidad y seguridad.</td></tr>
+            <tr><td><b>Log Maestro / Búsqueda de Amenazas</b></td><td>La pantalla del tablero donde se ven, en tiempo real, todas las alertas de comportamiento que reportan los sensores de red, sistema e identidad.</td></tr>
+            <tr><td><b>Salud del ecosistema</b></td><td>La pantalla que muestra, motor por motor y servicio por servicio, si cada pieza de Centinela está funcionando correctamente.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section id="arquitectura">
@@ -945,7 +1106,7 @@
     </section>
 
     <footer>
-      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-28
+      Centinela-AI · Manual técnico interno · Generado a partir del código fuente del repositorio · Actualizado: 2026-08-28 (glosario para todo público añadido)
     </footer>
   </main>
 </div>
