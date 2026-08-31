@@ -1525,7 +1525,7 @@ async def get_extended_stats():
                         "print('JSON_DATA:' + str(User.objects.filter(is_active=True)"
                         ".exclude(username__startswith='ak-').exclude(username='AnonymousUser').count()))"
                     )
-                    proc = _run_authentik_ssh_command(remote_snippet, timeout=2)
+                    proc = _run_authentik_ssh_command(remote_snippet, timeout=12)
                     if "JSON_DATA:" in proc.stdout:
                         users_count = int(proc.stdout.split("JSON_DATA:")[1].strip().splitlines()[0])
                 except Exception as auth_e:
@@ -4570,23 +4570,29 @@ async def run_resident_loop():
         raise HTTPException(status_code=500, detail=f"Error en loop determinista: {str(e)}")
 
 
-def _run_authentik_ssh_command(remote_shell_snippet: str, timeout: int = 15) -> subprocess.CompletedProcess:
+def _run_authentik_ssh_command(remote_shell_snippet: str, timeout: int = 40) -> subprocess.CompletedProcess:
     """
     Runs a python3-in-Django-shell one-liner on the Authentik host over SSH.
+
+    `remote_shell_snippet` MUST be a single physical line -- only `;` and expressions, no
+    literal newlines and no statement-level `for`/`if` blocks. `manage.py shell -c` runs the
+    string through `exec()`; a multi-line snippet built with `\\n` in a Python string literal
+    passes a *literal* backslash-n to the remote `exec()`, which is a SyntaxError there (this
+    silently broke both /api/users and /api/users/role -- they returned []/404 forever).
 
     Uses an argument list, not a local shell string -- the previous version built `cmd` as an
     f-string interpolating request-body fields directly (username/role in
     update_authentik_user_role) and ran it through a local command interpreter, a real,
-    exploitable command injection: a username or role containing shell/Python-string-breaking
-    characters could escape both the LOCAL interpreter and the embedded remote
-    `manage.py shell -c "..."` Python string. ssh itself still receives the remote command as a
-    single argument here, so this closes the local-interpreter layer; callers must still
-    validate/escape any interpolated value against the remote Python string themselves (see
-    ROLE_ALLOWLIST and _validate_authentik_username below).
+    exploitable command injection. ssh itself still receives the remote command as a single
+    argument here; callers must still validate/escape any interpolated value against the remote
+    Python string themselves (see ROLE_ALLOWLIST and _validate_authentik_username below).
+
+    Default timeout is 40s: a cold `manage.py shell` on this Authentik build spends ~15-20s just
+    importing apps before it runs the snippet.
     """
     return subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-i", "keys/casmarts.key",
-         "authentik@10.4.3.208",
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+         "-i", "keys/casmarts.key", "authentik@10.4.3.208",
          f'docker exec casmarts-core-authentik-server python3 manage.py shell -c "{remote_shell_snippet}"'],
         capture_output=True, text=True, timeout=timeout
     )
@@ -4608,26 +4614,34 @@ def _validate_authentik_username(username: str) -> str:
 async def get_authentik_users():
     """Lists all non-system users from Authentik with their assigned Centinela RBAC role (Admin / Analyst / Auditor / Viewer)."""
     try:
+        # single physical line -- comprehension + lambda, no `for`/`if` blocks, no newlines
+        # (see _run_authentik_ssh_command's docstring for why the old multi-line form never ran)
         remote_snippet = (
             "import json; from authentik.core.models import User, Group; "
-            "g_admin = Group.objects.filter(name='Centinela Admin').first(); "
-            "g_analyst = Group.objects.filter(name='Centinela Analyst').first(); "
-            "g_auditor = Group.objects.filter(name='Centinela Auditor').first(); "
-            "users = [];\\n"
-            "for u in User.objects.all():\\n"
-            "  if u.username.startswith('ak-') or u.username == 'AnonymousUser': continue;\\n"
-            "  groups = u.groups.all();\\n"
-            "  role = 'Admin' if g_admin in groups else ('Analyst' if g_analyst in groups else ('Auditor' if g_auditor in groups else 'Viewer'));\\n"
-            "  users.append({'username': u.username, 'name': u.name or u.username, 'email': u.email, 'role': role});\\n"
-            "print('JSON_DATA:' + json.dumps(users))"
+            "roles={'Admin':Group.objects.filter(name='Centinela Admin').first(),"
+            "'Analyst':Group.objects.filter(name='Centinela Analyst').first(),"
+            "'Auditor':Group.objects.filter(name='Centinela Auditor').first()}; "
+            "pick=lambda u: next((r for r,g in roles.items() if g and g in u.groups.all()),'Viewer'); "
+            "data=[{'username':u.username,'name':u.name or u.username,'email':u.email,'role':pick(u)} "
+            "for u in User.objects.all() if not u.username.startswith('ak-') and u.username!='AnonymousUser']; "
+            "print('JSON_DATA:'+json.dumps(sorted(data, key=lambda d: d['username'].lower())))"
         )
         proc = _run_authentik_ssh_command(remote_snippet)
-        out = proc.stdout
-        if "JSON_DATA:" in out:
-            json_str = out.split("JSON_DATA:")[1].strip().splitlines()[0]
-            return json.loads(json_str)
-        return []
+        out = proc.stdout or ""
+        for line in out.splitlines():
+            if line.startswith("JSON_DATA:"):
+                return json.loads(line[len("JSON_DATA:"):])
+        # Rule #6: never swallow -- surface why the list is empty instead of a silent []
+        print(f"⚠️ [Authentik] /api/users got no JSON_DATA (rc={proc.returncode}). "
+              f"stdout tail: {out[-300:]!r} | stderr tail: {(proc.stderr or '')[-500:]!r}")
+        raise HTTPException(status_code=502,
+                            detail="Authentik no devolvió la lista de usuarios (ver logs del backend).")
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Authentik tardó demasiado en responder (shell frío).")
     except Exception as e:
+        import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4649,23 +4663,31 @@ async def update_authentik_user_role(body: UserRoleUpdateModel):
         # value entirely (rather than trying to escape it).
         if new_role not in ROLE_ALLOWLIST:
             raise HTTPException(status_code=400, detail=f"Rol inválido. Debe ser uno de: {', '.join(ROLE_ALLOWLIST)}")
+        # single physical line -- list-comprehension side effects instead of `for`/`if` blocks
+        # (a `\\n`-joined multi-line snippet is a SyntaxError under the remote exec(); this
+        # endpoint silently 404'd on every call before this fix)
         remote_snippet = (
-            "from authentik.core.models import User, Group; "
-            "roles = ['Admin', 'Analyst', 'Auditor', 'Viewer']; "
-            "groups = {r: Group.objects.get_or_create(name=f'Centinela {r}')[0] for r in roles}; "
-            f"u = User.objects.filter(username='{username}').first();\\n"
-            "if u:\\n"
-            "  for r, g in groups.items(): u.groups.remove(g)\\n"
-            f"  u.groups.add(groups['{new_role}'])\\n"
-            "  print('ROLE_UPDATED_SUCCESS')"
+            "from authentik.core.models import Group; from authentik.core.models import User; "
+            "groups={r:Group.objects.get_or_create(name='Centinela '+r)[0] for r in ['Admin','Analyst','Auditor','Viewer']}; "
+            f"u=User.objects.filter(username='{username}').first(); "
+            "_=[u.groups.remove(g) for g in groups.values()] if u else None; "
+            f"_=(u.groups.add(groups['{new_role}'])) if u else None; "
+            "print('ROLE_UPDATED_SUCCESS' if u else 'USER_NOT_FOUND')"
         )
         proc = _run_authentik_ssh_command(remote_snippet)
         if "ROLE_UPDATED_SUCCESS" in proc.stdout:
             return {"status": "success", "username": username, "role": new_role}
-        raise HTTPException(status_code=404, detail="Usuario no encontrado en Authentik")
+        if "USER_NOT_FOUND" in proc.stdout:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado en Authentik")
+        print(f"⚠️ [Authentik] /api/users/role no confirmó (rc={proc.returncode}). "
+              f"stdout: {proc.stdout[-300:]!r} | stderr: {(proc.stderr or '')[-500:]!r}")
+        raise HTTPException(status_code=502, detail="Authentik no confirmó el cambio de rol (ver logs del backend).")
     except HTTPException:
         raise
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Authentik tardó demasiado en responder.")
     except Exception as e:
+        import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
