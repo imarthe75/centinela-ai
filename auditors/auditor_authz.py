@@ -120,58 +120,154 @@ def _ant_to_regex(pattern: str) -> re.Pattern:
 
 
 # --------------------------------------------------------------------------- Spring security config
+def _strip_comments(src: str) -> str:
+    """Remove // line and /* */ block comments without touching string literals."""
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in ('"', "'"):
+            q = ch
+            out.append(ch)
+            i += 1
+            while i < n:
+                out.append(src[i])
+                if src[i] == "\\" and i + 1 < n:
+                    out.append(src[i + 1])
+                    i += 2
+                    continue
+                if src[i] == q:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "/":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (src[i] == "*" and src[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _balanced(src: str, open_idx: int) -> "tuple[str, int]":
+    """src[open_idx] must be '('. Return (inner_text, index_after_matching_close)."""
+    depth = 0
+    i = open_idx
+    n = len(src)
+    while i < n:
+        c = src[i]
+        if c in ('"', "'"):
+            q = c
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == q:
+                    break
+                i += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return src[open_idx + 1:i], i + 1
+        i += 1
+    return src[open_idx + 1:], n
+
+
+def _decision_from_tail(tail: str) -> str:
+    low = tail.lower().replace(" ", "")
+    if "@rolesecurity.isadmin" in low or "isadmin(" in low or 'hasrole("admin' in low or "hasrole('admin" in low \
+            or 'hasauthority("admin' in low or "hasauthority('admin" in low or 'hasrole("role_admin' in low:
+        return "admin"
+    if "hasrole" in low or "hasauthority" in low or "hasanyrole" in low or "hasanyauthority" in low:
+        return "role"
+    if "permitall" in low:
+        return "permitAll"
+    if "denyall" in low:
+        return "denyAll"
+    if "anonymous" in low:
+        return "anonymous"
+    if "authenticated" in low:            # covers authenticated()/isAuthenticated()/fullyAuthenticated()
+        return "authenticated"
+    if "access(" in low or "hasipaddress" in low:
+        return "custom"
+    return "authenticated"
+
+
+_MATCHER_CALL = re.compile(r"\.(antMatchers|requestMatchers|mvcMatchers|securityMatcher|regexMatchers)\s*\(")
+
+
 def _parse_security_configs(files_java: List[Tuple[str, str]]) -> Tuple[List[dict], List[str], List[str]]:
     """
     Returns (rules, config_files, csrf_disabled_files).
     Each rule: {"file","methods":set|None,"pattern":str,"regex":Pattern,"decision":str,"raw":str}
       decision in {"admin","role","authenticated","permitAll","denyAll","custom","anonymous"}
+
+    Char-scanned (not one big regex): for each `.antMatchers(...)` we take the balanced-paren
+    argument list, then walk forward over whitespace/comments collecting the chained
+    `.foo(...).bar(...)` terminal calls until the next matcher / `.and(` / `;` -- so a
+    `.access("@x.isAdmin(auth)")` with its own nested parens, or a blank line + `//` comment
+    between two `.antMatchers`, no longer truncates the rule list. (A real bug: SIDECO's
+    develop ResourceServerConfig has 8 rules; the old regex parsed only 1, so 53 genuinely
+    `.authenticated()` endpoints were mis-reported as AUTHZ-NO-RULE.)
     """
     rules: List[dict] = []
     config_files: List[str] = []
     csrf_off: List[str] = []
 
-    for path, content in files_java:
-        if not re.search(r"(HttpSecurity|authorizeRequests|authorizeHttpRequests|antMatchers|requestMatchers)", content):
+    for path, raw_content in files_java:
+        if not re.search(r"(HttpSecurity|authorizeRequests|authorizeHttpRequests|antMatchers|requestMatchers|securityMatcher)", raw_content):
             continue
         config_files.append(path)
-        if re.search(r"\.csrf\s*\(\s*\)\s*\.disable\s*\(\s*\)|csrf\s*\(\s*AbstractHttpConfigurer::disable\s*\)", content):
+        content = _strip_comments(raw_content)
+        if re.search(r"\.csrf\s*\(\s*\)\s*\.disable\s*\(\s*\)|csrf\s*\(\s*\w*\s*->\s*\w*\.disable\s*\(\s*\)\s*\)|csrf\s*\(\s*AbstractHttpConfigurer::disable\s*\)",
+                     content):
             csrf_off.append(path)
 
-        # find every `.antMatchers(...)` / `.requestMatchers(...)` group and the terminal decision
-        # that follows it, up to the next `.antMatchers`/`.and()`/`;`
-        for m in re.finditer(
-            r"\.(?:antMatchers|requestMatchers|mvcMatchers)\s*\((?P<args>.*?)\)\s*"
-            r"(?P<tail>(?:\.[A-Za-z0-9_]+\s*\([^;]*?\))*?)"
-            r"(?=\.(?:antMatchers|requestMatchers|mvcMatchers)\s*\(|\.and\s*\(|;|\Z)",
-            content, re.S,
-        ):
-            args = m.group("args")
-            tail = m.group("tail") or ""
-            # optional leading HttpMethod.XXX
+        for mc in _MATCHER_CALL.finditer(content):
+            kind = mc.group(1)
+            args, after = _balanced(content, mc.end() - 1)
+            if kind in ("securityMatcher", "requestMatchers") and args.strip() == "":
+                continue  # OAuth2 filter-chain selector, not an authorization rule
+
             methods = None
             hm = re.match(r"\s*HttpMethod\.([A-Z]+)\s*,", args)
             if hm:
                 methods = {hm.group(1)}
                 args = args[hm.end():]
             patterns = re.findall(r'"([^"]+)"', args)
+            if not patterns:
+                continue
 
-            low = tail.lower()
-            if "@rolesecurity.isadmin" in low or "isadmin" in low or 'hasrole("admin' in low.replace(" ", "") or 'hasrole(\'admin' in low.replace(" ", ""):
-                decision = "admin"
-            elif "hasrole" in low or "hasauthority" in low or "hasanyrole" in low or "hasanyauthority" in low:
-                decision = "role"
-            elif "permitall" in low:
-                decision = "permitAll"
-            elif "denyall" in low:
-                decision = "denyAll"
-            elif "anonymous" in low:
-                decision = "anonymous"
-            elif "authenticated" in low or "isauthenticated" in low or "fullyauthenticated" in low:
-                decision = "authenticated"
-            elif "access(" in low or "hasipaddress" in low:
-                decision = "custom"
-            else:
-                decision = "authenticated"  # a bare .antMatchers(...) with no terminal is unusual; be conservative
+            # collect the chained terminal calls: .a(...).b(...) ... until next matcher/.and(/;
+            j = after
+            n = len(content)
+            tail_parts = []
+            while j < n:
+                while j < n and content[j] in " \t\r\n":
+                    j += 1
+                if j >= n or content[j] != ".":
+                    break
+                nm = re.match(r"\.([A-Za-z0-9_]+)\s*\(", content[j:])
+                if not nm:
+                    break
+                name = nm.group(1)
+                if name in ("antMatchers", "requestMatchers", "mvcMatchers", "regexMatchers", "and", "securityMatcher"):
+                    break
+                inner, j2 = _balanced(content, j + nm.end() - 1)
+                tail_parts.append(f".{name}({inner})")
+                j = j2
+            tail = "".join(tail_parts)
+            decision = _decision_from_tail(tail)
 
             for pat in patterns:
                 rules.append({
