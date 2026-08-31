@@ -80,6 +80,9 @@ def is_sla_breached(sla_due_date: Optional[datetime]) -> bool:
 _INFORMATIONAL_CVE_EXACT = {
     "SCAN-AUDIT", "HEURISTIC-SECURITY-DEBT", "CIS-BENCHMARK-AUDIT", "SONARQUBE-QUALITY-GATE",
     "STD-ISO25010-LONG-METHOD", "COGNITIVE-COMPLEXITY-EXCEEDED",
+    # authz-dast "auditor ran but had no multi-role credentials, so it was not exercised" marker
+    # -- a state marker like CIS-BENCHMARK-AUDIT, not an individually actionable vulnerability.
+    "AUTHZ-DAST-NO-CREDS",
 }
 _INFORMATIONAL_SCAN_ENGINES = {"cmmi-audit"}
 

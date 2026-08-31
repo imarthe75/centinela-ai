@@ -439,6 +439,19 @@ def scan_appserver(asset_id, endpoint):
 
         log_audit(asset_id, audit_msg)
 
+def _run_authz_dast(asset_id, endpoint):
+    """Authenticated multi-role authorization matrix + IDOR/BOLA probe.
+    No-op (writes an honest 'not exercised' marker) when the asset has no multi-role
+    credentials configured -- same graceful-degradation contract as the CIS auditor."""
+    try:
+        from auditors import auditor_authz_dast
+        auditor_authz_dast.run(asset_id, endpoint)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️ [Auditor-Ext] Authz-DAST error for asset {asset_id}: {e}")
+
+
 def handle_asset_discovered(data):
     asset_id = data["id"]
     a_type = data["type"]
@@ -448,6 +461,7 @@ def handle_asset_discovered(data):
         scan_ip(asset_id, endpoint)
     elif a_type == 'URL':
         scan_url(asset_id, endpoint)
+        _run_authz_dast(asset_id, endpoint)
     elif a_type == 'Repository':
         scan_repo(asset_id, endpoint)
     elif a_type == 'Database (SQL)':
@@ -460,6 +474,7 @@ def handle_asset_discovered(data):
         scan_container(asset_id, endpoint)
     elif a_type in ('AppServer', 'SERVER', 'KUBERNETES', 'Datacenter'):
         scan_appserver(asset_id, endpoint)
+        _run_authz_dast(asset_id, endpoint)
     elif a_type == 'AI-LLM-Endpoint':
         try:
             from auditors import auditor_llm_governance, auditor_medusa
@@ -474,6 +489,7 @@ def handle_asset_discovered(data):
             scan_url(asset_id, endpoint)
         except Exception as e:
             print(f"⚠️ [Auditor-Ext] Error scanning API-Gateway: {e}")
+        _run_authz_dast(asset_id, endpoint)
     elif a_type == 'Cloud-Serverless':
         try:
             from auditors import auditor_cloud

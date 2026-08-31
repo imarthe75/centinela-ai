@@ -34,7 +34,7 @@ def scan_one(target_dir, name):
     from auditors import (auditor_master_vulnerabilities, auditor_sca_dependencies,
                           auditor_compliance_standards, auditor_iac_k8s, auditor_cmmi_v3,
                           auditor_accessibility_wcag, auditor_semgrep, auditor_sonarqube,
-                          auditor_llm_governance)
+                          auditor_llm_governance, auditor_authz)
     aid = resolve_asset_id(name)
     print(f"\n{'='*70}\n{name}  (asset_id={aid})  {target_dir}\n{'='*70}")
     counts = {}
@@ -45,6 +45,7 @@ def scan_one(target_dir, name):
     counts["cmmi"] = len(auditor_cmmi_v3.run_cmmi_audit(target_dir, asset_id=aid))
     counts["wcag"] = len(auditor_accessibility_wcag.run_wcag_accessibility_audit(target_dir, asset_id=aid))
     counts["llm_gov"] = len(auditor_llm_governance.run_llm_governance_audit(target_dir, asset_id=aid))
+    counts["authz"] = len(auditor_authz.run_authz_audit(target_dir, asset_id=aid))
     try:
         sg = auditor_semgrep.scan_path(target_dir, aid, name)
         auditor_semgrep.persist_findings(sg)

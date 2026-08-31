@@ -260,7 +260,20 @@ class GitLabIntegrator:
                 print(f"⚠️ [GitLab-Integrator] Semgrep audit error for {path_ns}: {e}")
                 semgrep_findings = []
 
-            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings) + len(sonar_findings) + len(wcag_findings) + len(semgrep_findings)
+            # Static Broken Access Control / BOLA / client-side-authz audit (added 2026-08-31
+            # after a SIDECO retest where a non-admin account reached the user-admin API because
+            # a sibling route family was hardened and this one was forgotten). Pure static, no
+            # network; the authenticated multi-role runtime confirmation is auditor_authz_dast.
+            try:
+                from auditors import auditor_authz
+                authz_findings = auditor_authz.run_authz_audit(target_dir, asset_id=asset_id)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [GitLab-Integrator] Authz (broken access control) audit error for {path_ns}: {e}")
+                authz_findings = []
+
+            total_findings = len(sast_findings) + len(sca_findings) + len(std_findings) + len(iac_findings) + len(cmmi_findings) + len(sonar_findings) + len(wcag_findings) + len(semgrep_findings) + len(authz_findings)
             summary["scanned_projects"] += 1
             summary["total_vulnerabilities"] += total_findings
             summary["projects_breakdown"].append({
