@@ -566,6 +566,117 @@ exit 1
 """
 
 
+def _authz_fix_guidance(cve_u: str):
+    """
+    Real, mechanical fix guidance per AUTHZ-* family (from auditors/auditor_authz.py /
+    auditor_authz_dast.py) -- for the heuristic (no-LLM) fallback path. These are the same
+    fixes documented in the SIDECO retest report (TcsCSA2 / 403->200 tampering / privilege
+    escalation): a missing Spring Security rule or client-side-only enforcement, always a
+    deterministic, well-known correction -- no LLM reasoning needed to describe it.
+    Returns (titulo, impacto, accion, code_snippet) or None if cve_u isn't an AUTHZ-* family
+    this function has real guidance for.
+    """
+    if cve_u.startswith('AUTHZ-INCONSISTENT-FAMILY'):
+        return (
+            "Escalación de privilegios -- endpoint de identidad sin control de rol",
+            "Un endpoint que administra identidad (usuarios/roles/permisos) solo exige sesión "
+            "iniciada mientras endpoints hermanos exigen rol admin -- cualquier cuenta autenticada "
+            "sin privilegios llega a una función administrativa (el patrón del retest de SIDECO, "
+            "cuenta TcsCSA2: 403->200 por manipulación de respuesta).",
+            "Añadir la regla de rol que falta ANTES del catch-all `.antMatchers(\"/v1/**\").authenticated()`, "
+            "o -mejor- una anotación a nivel de método.",
+            '.antMatchers("/v1/usr/**").access("@roleSecurity.isAdmin(authentication)")\n'
+            '// o: @PreAuthorize("hasRole(\'ADMIN\')") sobre el método del controlador'
+        )
+    if cve_u.startswith('AUTHZ-PERMITALL-WRITE'):
+        return (
+            "Operación de escritura pública (permitAll)",
+            "Un verbo POST/PUT/DELETE queda cubierto por una regla permitAll() -- cualquiera sin "
+            "autenticarse puede invocarlo.",
+            "Cambiar la decisión de la regla o sacar el endpoint del bloque permitAll.",
+            '.antMatchers(HttpMethod.POST, "/ruta/afectada").authenticated()   // o .access("...isAdmin...")'
+        )
+    if cve_u.startswith('AUTHZ-ONLY-AUTHENTICATED-WRITE'):
+        return (
+            "Escritura sensible sin verificación de rol",
+            "El endpoint muta datos sensibles y solo exige .authenticated(); falta el chequeo de rol.",
+            "Añadir rol en la regla de URL o @PreAuthorize en el método.",
+            '@PreAuthorize("hasRole(\'ADMIN\')")   // o hasAnyRole(\'ADMIN\',\'GESTOR\') según el negocio'
+        )
+    if cve_u.startswith('AUTHZ-CLIENT-SIDE-ONLY') or cve_u.startswith('AUTHZ-CLIENT-SIDE-UI-GATE') or cve_u.startswith('AUTHZ-ADMIN-BUNDLE-EXPOSED'):
+        return (
+            "Módulo/función administrativa protegida solo en el cliente",
+            "La ruta/función admin se protege únicamente con un guard o *ngIf de Angular; el backend "
+            "no verifica rol -- interceptar y reescribir la respuesta (403->200) la habilita igual. CWE-602.",
+            "El guard del front puede quedarse por UX, pero el control real debe estar en el backend: "
+            "cada endpoint que consume el módulo/función admin necesita @PreAuthorize o regla de rol.",
+            '@PreAuthorize("hasRole(\'ADMIN\')")   // en CADA endpoint que consume el módulo admin, no solo algunos'
+        )
+    if cve_u.startswith('AUTHZ-CSRF-DISABLED'):
+        return (
+            "Protección CSRF deshabilitada",
+            ".csrf().disable() en la configuración; si la app usa cookie de sesión o form-login, "
+            "queda expuesta a CSRF (aceptable solo si TODO el acceso es Bearer token en cabecera).",
+            "Si el API es 100% stateless, forzar STATELESS y documentarlo; si usa sesión, reactivar CSRF.",
+            'http.sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);\n'
+            '// o: http.csrf().csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse());'
+        )
+    if cve_u.startswith('AUTHZ-IDOR-PARAM-REVIEW') or cve_u.startswith('AUTHZ-DAST-IDOR'):
+        return (
+            "Posible IDOR / BOLA -- id del sujeto en la ruta",
+            "El endpoint recibe el id del sujeto como parámetro de ruta con solo .authenticated(); "
+            "sin comprobación de pertenencia, un usuario lee/modifica datos de otro cambiando el id.",
+            "Comprobar en el servicio que el recurso pertenece a quien lo pide.",
+            'if (!idToken.equals(idUsuarioRuta) && !esAdmin())\n'
+            '    return new ResponseEntity<>(HttpStatus.FORBIDDEN);'
+        )
+    if cve_u.startswith('AUTHZ-NAMESPACE-GAP'):
+        return (
+            "Prefijo de rutas sin cobertura de seguridad",
+            "Los antMatchers cubren un prefijo (p.ej. /v1/**) pero hay controladores o llamadas del "
+            "front bajo otro (/api/**) sin regla -- un rewrite de proxy evita el control de acceso.",
+            "Unificar el prefijo o añadir un catch-all defensivo.",
+            '.anyRequest().authenticated();   // red de seguridad final, además de cubrir el prefijo faltante'
+        )
+    if cve_u.startswith('AUTHZ-NO-RULE') or cve_u.startswith('AUTHZ-NO-METHOD-ANNOTATIONS'):
+        return (
+            "Endpoint sin autorización definida / autorización frágil por lista de URLs",
+            "Sin regla de URL ni anotación de método, la autorización real depende del orden de "
+            "filtros o queda indefinida.",
+            "Añadir una regla explícita o anotación de método; considerar "
+            "@EnableGlobalMethodSecurity(prePostEnabled = true) para defensa en profundidad.",
+            '@PreAuthorize("isAuthenticated()")   // punto de partida mínimo, ajustar el rol real requerido'
+        )
+    if cve_u.startswith('AUTHZ-DAST-BROKEN-FUNCTION-LEVEL'):
+        return (
+            "Escalación de privilegios confirmada en vivo (rol no-admin obtuvo 2xx)",
+            "La sonda autenticada multi-rol reprodujo el acceso real de un rol sin privilegios a un "
+            "endpoint solo-admin -- no es una sospecha estática, es la explotación confirmada.",
+            "La corrección va en el código del repositorio (regla de rol faltante), no en este host -- "
+            "ver el hallazgo AUTHZ-INCONSISTENT-FAMILY correspondiente en el repositorio de origen.",
+            None
+        )
+    if cve_u.startswith('AUTHZ-DAST-DENY-LEAKS-BODY'):
+        return (
+            "Un 401/403 todavía devuelve el cuerpo con datos",
+            "Habilita el bypass exacto del retest de SIDECO: reescribir solo la línea de estado "
+            "(403->200) ya expone datos que el servidor de hecho envió.",
+            "Asegurar que el filtro de autorización corte la respuesta ANTES de serializar el cuerpo, "
+            "no solo cambie el código de estado.",
+            None
+        )
+    if cve_u.startswith('AUTHZ-DAST-NO-CREDS'):
+        return (
+            "Sonda de autorización multi-rol no ejecutada (sin credenciales)",
+            "Este motor confirma en vivo la escalación de privilegios pero necesita credenciales de "
+            "al menos 2 roles distintos configuradas en Vault para poder correr.",
+            "Aprovisionar credenciales en secret/casmarts/authz/{activo} (ver DECISIONS/0005) -- no es "
+            "una vulnerabilidad en sí, es un estado 'pendiente de configurar'.",
+            None
+        )
+    return None
+
+
 def generate_heuristic_script(vuln):
     cve = str(vuln.get('cve_id', 'SECURITY-FINDING')).upper()
     asset = str(vuln.get('asset_name', 'INFRASTRUCTURE-HOST'))
@@ -656,7 +767,49 @@ if ! id -u centinela &>/dev/null; then
 fi
 echo '✅ Hardening de usuario no-root completado.'
 """
-    elif 'SSH' in cve or 'ROOT-LOGIN' in cve or 'AUTH' in cve:
+    elif cve.startswith('AUTHZ'):
+        # Real bug found live 2026-09-01: the next branch's `'AUTH' in cve` substring test
+        # matched every single AUTHZ-* cve_id (they all contain "AUTH"), hijacking every
+        # broken-access-control finding -- including the exact SIDECO privilege-escalation
+        # pattern -- into an irrelevant SSH-root-login hardening script, before this function
+        # ever reached the atype=='GITLAB-REPO' branch below. Caught by manually correlating a
+        # real AUTHZ-INCONSISTENT-FAMILY finding with all 4 LLM providers exhausted (forcing the
+        # heuristic path) and seeing an SSH script come back for a Spring Security finding.
+        guidance = _authz_fix_guidance(cve)
+        location = str(vuln.get('url_path', '')) or 'ver descripción'
+        if atype == 'GITLAB-REPO':
+            if guidance:
+                titulo, impacto, accion, code = guidance
+                code_block = f"\n# Corrección sugerida:\n# {code}\n" if code else ""
+                body = f"""# {cve}: {titulo}
+echo 'ℹ️ Ubicación exacta: {location}'
+echo 'ℹ️ {impacto}'
+echo 'ℹ️ Cómo se resuelve (NO requiere actualizar librerías): {accion}'
+echo 'Al aprobar en SOAR, Centinela clonará el repositorio, creará una rama de corrección y abrirá un Merge Request en GitLab con el parche generado por IA.'
+{code_block}"""
+            else:
+                body = f"""# {cve} es un hallazgo de control de acceso en el repositorio {asset}.
+echo 'ℹ️ Ubicación exacta: {location}'
+echo 'ℹ️ No hay un host remoto que "endurecer" -- la corrección real es un cambio de código en el repositorio.'
+echo 'Al aprobar en SOAR, Centinela clonará el repositorio y abrirá un Merge Request con el parche generado por IA.'
+"""
+        else:
+            # AUTHZ-DAST-* against a live URL/AppServer/SERVER asset: this engine only
+            # *confirms* the vulnerability at runtime -- the fix always lives in the source
+            # repo (a Spring Security rule / method annotation), never on this host.
+            if guidance:
+                titulo, impacto, accion, _code = guidance
+                body = f"""# {cve}: {titulo}
+echo 'ℹ️ {impacto}'
+echo 'ℹ️ Esta sonda CONFIRMA la vulnerabilidad en vivo contra {ep} -- la corrección no se aplica en este host.'
+echo 'ℹ️ {accion}'
+echo 'Buscar el hallazgo AUTHZ-INCONSISTENT-FAMILY / AUTHZ-* correspondiente en el repositorio de origen y corregirlo ahí.'
+"""
+            else:
+                body = f"""# {cve} en {asset} ({ep}): hallazgo de control de acceso confirmado en vivo.
+echo 'ℹ️ La corrección se aplica en el repositorio de origen, no en este host.'
+"""
+    elif 'SSH' in cve or 'ROOT-LOGIN' in cve:
         body = """# Remediar SSH-ROOT-LOGIN / Deshabilitar acceso root por SSH
 if [ -f /etc/ssh/sshd_config ]; then
     echo '🔐 Configurando SSH sin acceso directo a root...'
@@ -888,6 +1041,12 @@ def heuristic_can_automate(vuln):
     if atype == 'GITLAB-REPO':
         # Only the deterministic patch categories Sentinel's GitLab pipeline actually handles.
         return cve in ('DOCKER-MISSING-NON-ROOT-USER', 'DOCKER-ROOT-USER') or cve.startswith('SCA-CVE-')
+    if cve.startswith('AUTHZ'):
+        # AUTHZ-DAST-* runs against a live URL/AppServer/SERVER asset but only *confirms* the
+        # vulnerability -- the real fix is a code change in the source repo, never an action on
+        # this host. Without this, the old blanket `return True` below would mark it
+        # can_automate=True with no real automated action behind it.
+        return False
     return True
 
 
@@ -1038,19 +1197,41 @@ def generate_heuristic_analysis(vuln):
                 "El paquete instalado tiene una vulnerabilidad pública documentada que puede ser explotada sin necesidad de descubrir un 0-day.",
                 f"Sentinel abre un Merge Request actualizando la dependencia a la versión segura conocida ({location}) al aprobar este hallazgo."
             )
+        if cve_u.startswith('AUTHZ'):
+            _g = _authz_fix_guidance(cve_u)
+            if _g:
+                _titulo, _impacto, _accion, _code = _g
+                return (_titulo, _impacto, f"{_accion} Ubicación: {location}.")
         return (
             f"Hallazgo de código fuente: {cve}",
             f"Riesgo específico del tipo de hallazgo -- ver evidencia técnica en {location} para el detalle exacto.",
             "Hallazgo de repositorio sin parche automático soportado todavía -- revisar el código en la ubicación indicada y corregir manualmente, o esperar a que la IA genere un parche cuando haya cupo de API disponible."
         )
 
+    if cve_u.startswith('AUTHZ'):
+        # Not a GitLab-Repo asset: this is an AUTHZ-DAST-* live confirmation against a real
+        # URL/AppServer/SERVER host. Placed before the 'SSH'/'AUTH' substring check below --
+        # every AUTHZ-* cve_id contains "AUTH" as a substring and was being mis-classified as
+        # an SSH-root-login finding (found live 2026-09-01 correlating a real
+        # AUTHZ-INCONSISTENT-FAMILY finding with all 4 LLM providers exhausted).
+        _g = _authz_fix_guidance(cve_u)
+        if _g:
+            _titulo, _impacto, _accion, _code = _g
+            return (_titulo, f"{_impacto} Confirmado en vivo contra {ep}.",
+                   f"La corrección no se aplica en este host: {_accion} Buscar y corregir el hallazgo "
+                   f"correspondiente en el repositorio de origen.")
+        return (
+            f"Hallazgo de control de acceso: {cve}",
+            f"Confirmado en vivo contra {ep}.",
+            "La corrección se aplica en el repositorio de origen, no en este host."
+        )
     if 'DOCKER' in cve_u or 'CONTAINER' in cve_u or 'NON-ROOT' in cve_u or 'non-root' in desc:
         return (
             "Contenedor(es) ejecutando procesos como root",
             "Si un contenedor comprometido corre como root, un escape de contenedor otorga control root directo del host.",
             f"Se audita cada contenedor en ejecución en {ep} buscando procesos root y se provisiona un usuario de servicio restringido para futura remediación manual del Dockerfile/compose."
         )
-    if 'SSH' in cve_u or 'ROOT-LOGIN' in cve_u or 'AUTH' in cve_u:
+    if 'SSH' in cve_u or 'ROOT-LOGIN' in cve_u:
         return (
             "Acceso root habilitado por SSH",
             "Permite ataques de fuerza bruta o diccionario directamente contra la cuenta con más privilegios del sistema.",

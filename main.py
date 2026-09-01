@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import Optional
 import requests
 import re
+import html
 import hvac
 import threading
 import subprocess
@@ -3660,6 +3661,35 @@ def render_pdf_with_weasyprint(html_content: str) -> bytes:
     except Exception as e:
         raise Exception(f"WeasyPrint PDF generation failed: {str(e)}")
 
+
+def _pdf_clean_markdown(text: str, max_len: int = 900) -> str:
+    """Strip the light markdown auditors/the AI cascade write into description/executive_summary/
+    business_impact/developer_steps (**bold**, `code`, absolute clone-path prefixes) so it reads
+    as plain prose in a PDF, which has no markdown renderer of its own."""
+    t = str(text or "")
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+    t = re.sub(r"`([^`]+)`", r"\1", t)
+    t = re.sub(r"^\[/tmp/[^\]]+\]\s*", "", t)
+    t = html.escape(t.strip())
+    return t[:max_len] if max_len else t
+
+
+def _pdf_location_and_fix_block(url_path, fix_patch) -> str:
+    """Real answer to 'en qué parte del código está y cómo se corrige' for a single finding:
+    the exact file:line Centinela's auditors already compute (url_path) and, when the AI
+    correlation produced one, the actual unified diff (fix_patch) -- both already existed as DB
+    columns but neither native PDF report (per-vulnerability, per-asset) ever surfaced them."""
+    loc = str(url_path or "").strip()
+    patch = str(fix_patch or "").strip()
+    out = ""
+    if loc:
+        out += (f"<p style='font-size:9px;margin-top:6px;'><strong>Dónde está en el código:</strong> "
+                f"<code>{html.escape(loc)}</code></p>")
+    if patch:
+        out += (f"<p style='font-size:9px;margin-top:6px;'><strong>Código de la corrección "
+                f"(parche generado por IA):</strong></p><pre>{html.escape(patch[:2500])}</pre>")
+    return out
+
 @app.get("/api/reports/executive")
 async def download_executive_report():
     try:
@@ -3812,8 +3842,13 @@ async def download_executive_report():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/reports/asset/{asset_name}")
+@app.get("/api/reports/asset/{asset_name:path}")
 async def download_asset_report(asset_name: str):
+    # Real bug found live 2026-09-01: plain {asset_name} only matches one path segment, but
+    # every GitLab-Repo asset name contains "/" (e.g. "GitLab/starters/starter-java-authentik")
+    # and the frontend's handleDownloadAssetReport() interpolates it raw (no encodeURIComponent)
+    # -- so this endpoint 404'd for essentially every repo asset in the fleet. `:path` matches
+    # the rest of the URL, same converter the CMMI asset-report route already uses correctly.
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT id, asset_name, asset_type, endpoint, status, criticality, last_audit FROM public.infra_inventory WHERE asset_name = %s", (asset_name,))
@@ -3823,6 +3858,7 @@ async def download_asset_report(asset_name: str):
             cur.execute("""
                 SELECT v.id, v.severity, v.cve_id, v.description, v.executive_summary,
                        v.business_impact, v.developer_steps, v.status, v.detected_at, v.scan_engine,
+                       v.url_path, v.fix_patch,
                        r.executed_bool, r.approval_token
                 FROM public.vulnerability_log v
                 LEFT JOIN public.remediation_history r ON v.id = r.vuln_id
@@ -3845,9 +3881,9 @@ async def download_asset_report(asset_name: str):
         for v in vulns:
             sev = (v["severity"] or "INFO").upper()
             card_cls = "card-crit" if sev == "CRITICAL" else ("card-warn" if sev in ("HIGH","MEDIUM") else "card")
-            exec_sum = v.get("executive_summary") or ""
-            biz_imp  = v.get("business_impact") or "Sin análisis de impacto."
-            steps    = v.get("developer_steps") or "Sin pasos de remediación."
+            exec_sum = _pdf_clean_markdown(v.get("executive_summary") or "", max_len=0)
+            biz_imp  = _pdf_clean_markdown(v.get("business_impact") or "Sin análisis de impacto.", max_len=0)
+            steps    = _pdf_clean_markdown(v.get("developer_steps") or "Sin pasos de remediación.", max_len=0)
             det_date = str(v["detected_at"])[:16] if v.get("detected_at") else "—"
             status_badge = "<span style='color:#16a34a;font-weight:600'>Resuelto ✓</span>" if v.get("executed_bool") else "<span style='color:#d97706;'>Pendiente</span>"
             vuln_cards += f"""
@@ -3864,7 +3900,8 @@ async def download_asset_report(asset_name: str):
               <p style='font-size:9px; color:#475569;'><strong>Impacto al Negocio:</strong> {biz_imp}</p>
               <hr class='divider'>
               <span class='section-label label-tech'>Detalle Técnico</span>
-              <p style='font-size:9px; margin:4px 0;'>{v.get('description','Sin descripción técnica.')[:600]}</p>
+              <p style='font-size:9px; margin:4px 0;'>{_pdf_clean_markdown(v.get('description') or 'Sin descripción técnica.')}</p>
+              {_pdf_location_and_fix_block(v.get('url_path'), v.get('fix_patch'))}
               <p style='font-size:9px; color:#334155; margin-top:6px;'><strong>Pasos de Remediación:</strong><br>{steps}</p>
             </div>"""
 
@@ -4243,6 +4280,7 @@ async def download_vulnerability_report(vuln_id: int):
                 SELECT v.id, i.asset_name, i.endpoint, i.asset_type,
                        v.severity, v.cve_id, v.description, v.executive_summary,
                        v.business_impact, v.developer_steps, v.status, v.detected_at, v.scan_engine,
+                       v.url_path, v.fix_patch,
                        r.script_path, r.executed_bool, r.log_output, r.approval_token
                 FROM public.vulnerability_log v
                 LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
@@ -4256,9 +4294,9 @@ async def download_vulnerability_report(vuln_id: int):
         gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
         sev = (vuln["severity"] or "INFO").upper()
         card_cls = "card-crit" if sev == "CRITICAL" else ("card-warn" if sev in ("HIGH","MEDIUM") else "card-ok")
-        exec_sum = vuln.get("executive_summary") or "Análisis de IA pendiente de procesamiento."
-        biz_imp  = vuln.get("business_impact") or "Sin análisis de impacto al negocio disponible."
-        steps    = vuln.get("developer_steps") or "Sin pasos de remediación disponibles."
+        exec_sum = _pdf_clean_markdown(vuln.get("executive_summary") or "Análisis de IA pendiente de procesamiento.", max_len=0)
+        biz_imp  = _pdf_clean_markdown(vuln.get("business_impact") or "Sin análisis de impacto al negocio disponible.", max_len=0)
+        steps    = _pdf_clean_markdown(vuln.get("developer_steps") or "Sin pasos de remediación disponibles.", max_len=0)
         script   = vuln.get("log_output") or ""
         det_date = str(vuln["detected_at"])[:16] if vuln.get("detected_at") else "—"
         remediated = vuln.get("executed_bool", False)
@@ -4297,7 +4335,8 @@ async def download_vulnerability_report(vuln_id: int):
 
 <div class='card card-tech'>
   <span class='section-label label-tech'>Detalle Técnico</span>
-  <p style='margin-top:6px; font-size:9px; line-height:1.6;'>{vuln.get('description','Sin descripción técnica disponible.')}</p>
+  <p style='margin-top:6px; font-size:9px; line-height:1.6;'>{_pdf_clean_markdown(vuln.get('description') or 'Sin descripción técnica disponible.')}</p>
+  {_pdf_location_and_fix_block(vuln.get('url_path'), vuln.get('fix_patch'))}
   <hr class='divider'>
   <h3>Pasos de Remediación para el Equipo Técnico</h3>
   <p style='font-size:9px; line-height:1.7; margin-top:4px;'>{steps}</p>
