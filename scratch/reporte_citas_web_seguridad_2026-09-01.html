@@ -1,0 +1,260 @@
+<title>Seguridad de Cita en Línea</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4;
+  --ink:#1b2733; --ink-soft:#586675; --ink-faint:#8a97a4;
+  --brand:#1a3a5c; --brand-soft:#e7edf3; --rule:#dfe4e9;
+  --crit:#b3271e; --crit-bg:#fbeceb; --crit-rule:#f0cdca;
+  --warn:#a86a12; --warn-bg:#fbf2e5; --warn-rule:#eeddba;
+  --ok:#2c7a4b; --ok-bg:#ebf6ef; --ok-rule:#cbe5d5;
+  --code-bg:#0f1b28; --code-ink:#dbe4ec; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#7f93a6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0d141c; --surface:#151f29; --surface-2:#1c2833;
+  --ink:#e5e9ee; --ink-soft:#a2afbb; --ink-faint:#71818f;
+  --brand:#77aad4; --brand-soft:#1b2a39; --rule:#27323d;
+  --crit:#e5726a; --crit-bg:#2a1613; --crit-rule:#48221e;
+  --warn:#d79f56; --warn-bg:#2a2113; --warn-rule:#453619;
+  --ok:#69bd8c; --ok-bg:#12251b; --ok-rule:#274634;
+  --code-bg:#0a1119; --code-ink:#cbd6e0; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#6d8194;
+}}
+:root[data-theme="dark"]{
+  --ground:#0d141c; --surface:#151f29; --surface-2:#1c2833;
+  --ink:#e5e9ee; --ink-soft:#a2afbb; --ink-faint:#71818f;
+  --brand:#77aad4; --brand-soft:#1b2a39; --rule:#27323d;
+  --crit:#e5726a; --crit-bg:#2a1613; --crit-rule:#48221e;
+  --warn:#d79f56; --warn-bg:#2a2113; --warn-rule:#453619;
+  --ok:#69bd8c; --ok-bg:#12251b; --ok-rule:#274634;
+  --code-bg:#0a1119; --code-ink:#cbd6e0; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#6d8194;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font-family:"DM Sans",system-ui,-apple-system,Segoe UI,sans-serif;font-size:15px;line-height:1.62;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:0 24px 100px}
+code{font-family:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;
+  background:var(--brand-soft);padding:1px 5px;border-radius:4px;word-break:break-word}
+h2 code,h3 code{font-size:.84em;background:none;padding:0}
+
+.masthead{border-bottom:2px solid var(--brand);padding:46px 0 20px}
+.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand);font-weight:600}
+h1{font-family:"Newsreader",Georgia,serif;font-weight:500;font-size:33px;line-height:1.15;
+  margin:.34em 0 .3em;letter-spacing:-.01em;text-wrap:balance}
+.lede{color:var(--ink-soft);max-width:66ch;margin:0}
+.runline{margin-top:14px;font-size:12px;color:var(--ink-faint);letter-spacing:.02em}
+
+h2{font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:22px;margin:48px 0 4px;
+  padding-top:24px;border-top:1px solid var(--rule);text-wrap:balance}
+h3{font-size:15.5px;font-weight:700;margin:22px 0 6px}
+h4{font-size:13px;font-weight:700;margin:14px 0 4px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em}
+p{margin:9px 0} ul,ol{margin:9px 0;padding-left:22px} li{margin:5px 0}
+
+.verdict{background:var(--ok-bg);border:1px solid var(--ok-rule);border-left:3px solid var(--ok);
+  border-radius:10px;padding:16px 18px;margin:24px 0;font-size:14px;color:var(--ink-soft)}
+.verdict b{color:var(--ink)}
+.verdict .big{font-family:"Newsreader",Georgia,serif;font-size:17px;color:var(--ok);font-weight:600;display:block;margin-bottom:6px}
+
+.finding{background:var(--surface);border:1px solid var(--rule);border-radius:12px;margin:16px 0;overflow:hidden}
+.finding .hd{padding:12px 17px;border-bottom:1px solid var(--rule);display:flex;gap:10px;align-items:baseline;
+  flex-wrap:wrap;background:var(--surface-2)}
+.finding .hd .n{font-family:"DM Mono",monospace;font-size:12px;color:var(--ink-faint);flex:none}
+.finding .hd .t{font-weight:700;font-size:14.5px}
+.finding .hd .sev{font-family:"DM Sans",sans-serif;font-size:10px;font-weight:700;letter-spacing:.05em;
+  text-transform:uppercase;padding:2px 8px;border-radius:20px;flex:none;margin-left:auto}
+.sev-med{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-rule)}
+.sev-low{background:var(--brand-soft);color:var(--brand);border:1px solid var(--rule)}
+.finding .bd{padding:14px 17px}
+.finding .bd p{font-size:13.5px;margin:7px 0}
+.finding .bd p b{color:var(--ink)}
+
+pre{background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:13px 15px;overflow-x:auto;
+  font-family:"DM Mono",ui-monospace,monospace;font-size:12px;line-height:1.62;margin:10px 0}
+pre .add{color:var(--code-add)} pre .del{color:var(--code-del)} pre .cmt{color:var(--code-cmt)}
+pre b{color:#fff;font-weight:600}
+
+.note{background:var(--brand-soft);border:1px solid var(--rule);border-radius:8px;padding:11px 14px;
+  margin:12px 0;font-size:13px;color:var(--ink-soft)}
+.note b{color:var(--ink)}
+.tw{overflow-x:auto;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);
+  padding:8px 9px;border-bottom:1px solid var(--rule);background:var(--surface-2)}
+td{padding:8px 9px;border-bottom:1px solid var(--rule);vertical-align:top}
+td code,td.mono{font-family:"DM Mono",monospace;font-size:11px}
+tr:last-child td{border-bottom:none}
+
+footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--rule);font-size:11.5px;
+  color:var(--ink-faint);line-height:1.7}
+a{color:var(--brand)}
+</style>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Centinela-AI · CASMARTS · Confidencial</div>
+  <h1>Seguridad de Cita en Línea: qué revisar y cómo corregirlo</h1>
+  <p class="lede">Misma revisión que se hizo para SIDECO, aplicada a <code>siat-atencion-citas</code>
+    (backend + frontend, el sistema desplegado en <code>/citaOnline/</code>). El resultado es distinto
+    porque el sistema es distinto: aquí <b>no hay escalación de privilegios que revisar</b> — y este
+    documento explica por qué, y cuál es el riesgo real de una app pública de este tipo.</p>
+  <div class="runline">Análisis 1 de septiembre de 2026 · código real de <code>WebSecurityConfig.java</code>, <code>CitaOnlineController.java</code>, <code>RateLimitFilter.java</code>, <code>RenapoServiceImpl.java</code>, <code>web.xml</code> (snapshot del 28-ago)</div>
+</header>
+
+<div class="verdict">
+  <span class="big">La escalación de privilegios del retest de SIDECO no aplica aquí.</span>
+  Cita en Línea es una app <b>pública de autoservicio ciudadano</b>: una sola página
+  (<code>CitaOnline.xhtml</code>), un solo controlador (<code>CitaOnlineController</code>, <code>@Scope("session")</code>),
+  <b>sin login, sin módulo de administración, sin roles</b>. <code>WebSecurityConfig</code> es literalmente
+  <code>.antMatchers("/**").permitAll()</code>. No hay un «módulo admin» detrás de un guard que se pueda
+  alcanzar reescribiendo un <code>403</code>, porque ese módulo no existe. El backend
+  (<code>siat-atencion-citas-backend</code>) es una librería JPA/JSF sin capa HTTP ni <code>@RestController</code>.
+</div>
+
+<h2>Lo que sí hay que revisar en una app pública así</h2>
+<p>El riesgo no es «un rol bajo llega a funciones de un rol alto». Es: <b>todo el backend está expuesto sin
+  autenticar</b>, así que lo que importa es (1) abuso a escala, (2) exposición de datos personales, (3) la
+  integración con RENAPO, y (4) que las defensas que ya escribieron (filtros, CSRF) funcionen de verdad.
+  Cinco hallazgos concretos, con su corrección.</p>
+
+<div class="finding">
+  <div class="hd"><span class="n">01</span><span class="t"><code>RateLimitFilter</code> no limita por cliente y tiene fuga de memoria</span><span class="sev sev-med">Media</span></div>
+  <div class="bd">
+    <p><b>Qué encontramos.</b> <code>RateLimitFilter.java:31</code> usa
+      <code>request.getRemoteAddr()</code> como clave. La app está detrás del proxy de <code>10.4.2.185</code>,
+      así que <code>getRemoteAddr()</code> devuelve <b>la IP del proxy para todo el tráfico</b> → todos los
+      ciudadanos comparten un solo contador de 60/min. En la práctica: o bloquea a todos cuando el tráfico
+      agregado pasa de 60/min, o no bloquea a nadie. Además el <code>ConcurrentHashMap</code>
+      (<code>línea 16</code>) nunca purga IPs viejas → crece sin límite.</p>
+    <p><b>En qué afecta.</b> No hay control real de abuso: agendamiento masivo, flood del envío de correos, y
+      —sobre todo— martilleo de la validación de CURP contra RENAPO (ver hallazgo 03). Y la fuga de memoria
+      es un DoS a mediano plazo.</p>
+    <p><b>Cómo se corrige</b> (sin librerías nuevas, aunque una librería lo hace mejor):</p>
+<pre><span class="cmt">// 1. leer la IP real del cliente (el proxy debe fijar X-Forwarded-For y descartar el que envíe el cliente)</span>
+<span class="add">String fwd = request.getHeader("X-Forwarded-For");</span>
+<span class="add">String ip = (fwd != null &amp;&amp; !fwd.isBlank()) ? fwd.split(",")[0].trim() : request.getRemoteAddr();</span>
+
+<span class="cmt">// 2. purgar entradas viejas: un barrido periódico, o migrar a un cache con expiración</span>
+<span class="cmt">//    (Guava Cache expireAfterWrite(1, MINUTES), o Bucket4j para rate-limiting de verdad)</span></pre>
+    <p class="note"><b>Config del proxy:</b> en nginx/Apache, <code>proxy_set_header X-Forwarded-For $remote_addr;</code>
+      (no <code>$proxy_add_x_forwarded_for</code>, que concatena lo que mande el cliente y es falsificable).</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="hd"><span class="n">02</span><span class="t">La protección CSRF es cosmética</span><span class="sev sev-med">Media</span></div>
+  <div class="bd">
+    <p><b>Qué encontramos.</b> <code>WebSecurityConfig</code> hace <code>http.csrf().disable()</code>. Aparte,
+      un <code>CsrfRenderKit</code>/<code>CsrfResponseWriter</code> inyecta el <code>CsrfToken</code> de Spring
+      como campo oculto en cada <code>&lt;form&gt;</code> (<code>CsrfResponseWriter.java:49-55</code>).
+      <b>Pero como Spring CSRF está deshabilitado, nadie valida ese token al recibir el POST.</b> El campo se
+      escribe y se ignora.</p>
+    <p><b>En qué afecta.</b> Un sitio de terceros puede auto-enviar el formulario de
+      <code>registraCita()</code> (bookings masivos / spam). La única barrera real hoy es el
+      <code>ViewState</code> de JSF — que sí ayuda si el guardado de estado es en servidor y la vista es
+      stateful, pero eso hay que confirmarlo, no asumirlo.</p>
+    <p><b>Cómo se corrige.</b> Decidir una de dos y aplicarla de forma consistente:</p>
+<pre><span class="cmt">// Opción A — reactivar CSRF de Spring y dejar que el token que ya se inyecta SÍ se valide</span>
+<span class="del">http.csrf().disable()</span>
+<span class="add">http.csrf(csrf -&gt; csrf.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))</span>
+
+<span class="cmt">// Opción B — quedarse sin Spring CSRF pero confirmar la defensa de JSF:</span>
+<span class="cmt">//   web.xml -&gt; javax.faces.STATE_SAVING_METHOD = server  (ya está seteado, verificar el valor)</span>
+<span class="cmt">//   y que la vista NO sea &lt;f:view transient="true"&gt; (stateless)</span>
+<span class="cmt">//   -&gt; en ese caso, ELIMINAR el CsrfRenderKit para no dar falsa sensación de protección</span></pre>
+    <p class="note"><b>Aparte:</b> <code>CsrfResponseWriter.java:51</code> tiene comentado un
+      <code>System.out.println</code> que <b>imprimía el valor del token</b>, y el de la línea 58 imprime a
+      stdout en cada render. Quitar ambos.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="hd"><span class="n">03</span><span class="t">La validación de CURP contra RENAPO queda como oráculo abierto</span><span class="sev sev-med">Media</span></div>
+  <div class="bd">
+    <p><b>Qué encontramos.</b> <code>registraCita()</code> valida la CURP que teclea el ciudadano contra el
+      registro nacional (<code>RenapoServiceImpl</code>). Como todo es <code>permitAll</code> y el rate limit
+      no funciona (hallazgo 01), ese paso se puede invocar en bucle. Además <code>RenapoServiceImpl</code>
+      importa <code>TrustStrategy</code> / <code>SSLContexts</code> / <code>SSLConnectionSocketFactory</code>
+      — patrón de <b>confianza TLS total</b> (acepta cualquier certificado) para llamar a RENAPO.</p>
+    <p><b>En qué afecta.</b> (1) <b>Privacidad:</b> un atacante valida/enumera CURPs a escala; una CURP
+      codifica fecha de nacimiento, sexo y entidad — un oráculo de «existe / no existe» es un problema de
+      datos personales. (2) <b>Operativo:</b> se agota la cuota del contrato con RENAPO o RENAPO bloquea la
+      IP del servidor. (3) <b>MITM:</b> con confianza TLS total, un atacante en la red intercepta la
+      consulta a RENAPO (datos personales en tránsito).</p>
+    <p><b>Cómo se corrige.</b></p>
+<pre><span class="cmt">// a) rate limit que funcione (hallazgo 01) + una prueba humana en el paso de CURP</span>
+<span class="cmt">//    (CAPTCHA / hCaptcha / turnstile) antes de llamar a RENAPO</span>
+<span class="cmt">// b) quitar la confianza TLS total en RenapoServiceImpl:</span>
+<span class="del">SSLContexts.custom().loadTrustMaterial(null, (chain, authType) -&gt; true)   // acepta cualquier cert</span>
+<span class="add">// usar el trust store por defecto de la JVM; si RENAPO usa una CA interna,</span>
+<span class="add">// importar ESA CA al truststore, no confiar en todas</span>
+<span class="cmt">// c) monitorear el volumen de llamadas a RENAPO y alertar sobre picos</span></pre>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="hd"><span class="n">04</span><span class="t">Reimpresión del comprobante — sin IDOR directo, verificar que no haya otra vía</span><span class="sev sev-low">Baja</span></div>
+  <div class="bd">
+    <p><b>Qué encontramos.</b> <code>generarComprobante()</code> (<code>CitaOnlineController.java:868</code>)
+      arma el PDF (nombre, CURP, cita) a partir de <code>citaDisponibleBean.getCitaId()</code> que vive en
+      el <b>bean de sesión</b> del ciudadano que acaba de agendar. <b>No es un endpoint de búsqueda por
+      folio</b> — lee estado de sesión, así que <b>no hay IDOR aquí</b>. Bien.</p>
+    <p><b>Qué falta confirmar.</b> Que no exista <b>otra</b> ruta de «reimprimir comprobante» (un enlace en
+      el correo de confirmación, un parámetro de URL, un flujo «consulta tu cita con folio + CURP»). Si el
+      folio (<code>citaDisponibleBean.getCitaId()</code>) es secuencial y en algún punto viaja en una URL o
+      en el correo, se vuelve enumerable → datos de otros ciudadanos.</p>
+    <p><b>Cómo se corrige</b> (si aparece esa vía): exigir <b>folio + al menos otro dato personal</b> (CURP
+      completa o fecha de la cita) para reimprimir, y que el identificador no sea secuencial (UUID).</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="hd"><span class="n">05</span><span class="t">Endurecimiento del build de producción</span><span class="sev sev-low">Baja</span></div>
+  <div class="bd">
+    <p><b>Qué encontramos.</b> <code>web.xml</code> define <code>javax.faces.PROJECT_STAGE</code> (línea 10);
+      hay que verificar que el artefacto de <b>producción</b> lo tenga en <code>Production</code>, no
+      <code>Development</code> (que muestra árbol de componentes y trazas en las páginas de error). El commit
+      <code>558cde9</code> «se agrega archivo de configuracion dev» — confirmar que ese perfil dev no viaja
+      al empaquetado de producción.</p>
+    <p><b>En qué afecta.</b> En <code>Development</code>, cualquier error de JSF expone estructura interna,
+      rutas y a veces datos del formulario en la respuesta.</p>
+    <p><b>Cómo se corrige.</b></p>
+<pre>&lt;context-param&gt;
+  &lt;param-name&gt;javax.faces.PROJECT_STAGE&lt;/param-name&gt;
+  <span class="add">&lt;param-value&gt;Production&lt;/param-value&gt;</span>
+&lt;/context-param&gt;
+<span class="cmt">// y que el pipeline de build de prod use el profile/config correcto, no el "dev"</span></pre>
+  </div>
+</div>
+
+<h2>Lo que ya está bien</h2>
+<div class="tw"><table>
+<thead><tr><th>Control</th><th>Estado</th></tr></thead>
+<tbody>
+<tr><td class="mono">SecurityHeadersFilter</td><td>Presente y mapeado (<code>@WebFilter("/*")</code>). Verificar que fije <code>X-Content-Type-Options</code>, <code>X-Frame-Options</code>/CSP <code>frame-ancestors</code>, <code>Referrer-Policy</code>.</td></tr>
+<tr><td class="mono">InputSanitizationFilter</td><td>Presente y mapeado. Confirmar que cubre los campos que llegan a <code>registraCita()</code> (nombre, domicilio, CURP, correo) y que no rompe caracteres válidos (acentos, ñ).</td></tr>
+<tr><td class="mono">AuditLogFilter</td><td>Presente. Verificar que registra IP real (hallazgo 01), CURP intentada y cita creada — y que <b>no</b> escribe PII completa en claro en el log.</td></tr>
+<tr><td>Sin módulo admin / sin roles</td><td>Correcto por diseño para autoservicio ciudadano. No hay superficie de escalación de privilegios.</td></tr>
+<tr><td>Comprobante desde sesión</td><td>Sin IDOR directo (hallazgo 04).</td></tr>
+</tbody>
+</table></div>
+
+<h2>Checklist</h2>
+<ol>
+  <li>Arreglar <code>RateLimitFilter</code>: <code>X-Forwarded-For</code> + purga/expiración del mapa; configurar el proxy para fijar la cabecera de forma no falsificable.</li>
+  <li>Decidir CSRF: reactivar Spring CSRF <b>o</b> confirmar el <code>STATE_SAVING</code> de JSF y quitar el <code>CsrfRenderKit</code> engañoso. Quitar los <code>System.out.println</code> de <code>CsrfResponseWriter</code>.</li>
+  <li>Poner CAPTCHA en el paso de CURP y quitar la confianza TLS total de <code>RenapoServiceImpl</code>; monitorear volumen de llamadas a RENAPO.</li>
+  <li>Confirmar que no hay una vía de reimpresión de comprobante por folio enumerable.</li>
+  <li><code>PROJECT_STAGE=Production</code> en el build de producción; verificar que el config «dev» no se empaqueta.</li>
+  <li>Repasar la tabla «lo que ya está bien» y confirmar cada control con una prueba.</li>
+</ol>
+
+<footer>
+  Generado por Centinela-AI. <code>siat-atencion-citas</code> se analizó con los mismos motores que SIDECO
+  (SAST, SCA, STRIDE, Semgrep, SonarQube, control de acceso); el motor de control de acceso reporta
+  <b>0 hallazgos</b> de escalación de privilegios en este sistema, consistente con su diseño de app pública.
+  Snapshot del 28 de agosto de 2026 — re-escanear si el repositorio tiene una versión más reciente.
+  Clasificación: CONFIDENCIAL — uso interno.
+</footer>
+</div>
