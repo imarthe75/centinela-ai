@@ -1,0 +1,443 @@
+<title>Escalación de privilegios SIDECO</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4;
+  --ink:#1b2733; --ink-soft:#586675; --ink-faint:#8a97a4;
+  --brand:#1a3a5c; --brand-soft:#e7edf3; --rule:#dfe4e9;
+  --crit:#b3271e; --crit-bg:#fbeceb; --crit-rule:#f0cdca;
+  --fix:#2c7a4b; --fix-bg:#ebf6ef; --fix-rule:#cbe5d5;
+  --warn:#a86a12; --warn-bg:#fbf2e5;
+  --code-bg:#0f1b28; --code-ink:#dbe4ec; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#7f93a6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0d141c; --surface:#151f29; --surface-2:#1c2833;
+  --ink:#e5e9ee; --ink-soft:#a2afbb; --ink-faint:#71818f;
+  --brand:#77aad4; --brand-soft:#1b2a39; --rule:#27323d;
+  --crit:#e5726a; --crit-bg:#2a1613; --crit-rule:#48221e;
+  --fix:#69bd8c; --fix-bg:#12251b; --fix-rule:#274634;
+  --warn:#d79f56; --warn-bg:#2a2113;
+  --code-bg:#0a1119; --code-ink:#cbd6e0; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#6d8194;
+}}
+:root[data-theme="dark"]{
+  --ground:#0d141c; --surface:#151f29; --surface-2:#1c2833;
+  --ink:#e5e9ee; --ink-soft:#a2afbb; --ink-faint:#71818f;
+  --brand:#77aad4; --brand-soft:#1b2a39; --rule:#27323d;
+  --crit:#e5726a; --crit-bg:#2a1613; --crit-rule:#48221e;
+  --fix:#69bd8c; --fix-bg:#12251b; --fix-rule:#274634;
+  --warn:#d79f56; --warn-bg:#2a2113;
+  --code-bg:#0a1119; --code-ink:#cbd6e0; --code-add:#7ee2a8; --code-del:#f3a49c; --code-cmt:#6d8194;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font-family:"DM Sans",system-ui,-apple-system,Segoe UI,sans-serif;font-size:15px;line-height:1.62;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px 100px}
+code{font-family:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;
+  background:var(--brand-soft);padding:1px 5px;border-radius:4px;word-break:break-word}
+h2 code,h3 code,h4 code{font-size:.82em;background:none;padding:0}
+
+.masthead{border-bottom:2px solid var(--brand);padding:46px 0 20px}
+.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand);font-weight:600}
+h1{font-family:"Newsreader",Georgia,serif;font-weight:500;font-size:33px;line-height:1.15;
+  margin:.34em 0 .3em;letter-spacing:-.01em;text-wrap:balance}
+.lede{color:var(--ink-soft);max-width:66ch;margin:0}
+.runline{margin-top:14px;font-size:12px;color:var(--ink-faint);letter-spacing:.02em}
+
+h2{font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:23px;margin:52px 0 4px;
+  padding-top:24px;border-top:1px solid var(--rule);text-wrap:balance}
+h2 .num{color:var(--ink-faint);font-family:"DM Mono",monospace;font-size:15px;margin-right:10px}
+h3{font-size:15.5px;font-weight:700;margin:26px 0 6px}
+h4{font-size:13.5px;font-weight:700;margin:16px 0 4px;color:var(--ink-soft);letter-spacing:.01em}
+p{margin:9px 0}
+ul,ol{margin:9px 0;padding-left:22px} li{margin:4px 0}
+strong{font-weight:600}
+
+.summary{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--brand);
+  border-radius:10px;padding:16px 18px;margin:24px 0;font-size:14px;color:var(--ink-soft)}
+.summary b{color:var(--ink)}
+
+.chain{counter-reset:step;list-style:none;padding:0;margin:16px 0}
+.chain li{counter-increment:step;position:relative;padding:10px 0 10px 44px;border-top:1px solid var(--rule);font-size:14px}
+.chain li:first-child{border-top:none}
+.chain li::before{content:counter(step);position:absolute;left:0;top:10px;width:26px;height:26px;
+  border-radius:50%;background:var(--brand-soft);color:var(--brand);font-family:"DM Mono",monospace;
+  font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center}
+
+.cause{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--crit);
+  border-radius:10px;padding:14px 17px;margin:12px 0}
+.cause h3{margin:0 0 4px;display:flex;gap:9px;align-items:baseline}
+.cause h3 .tag{font-family:"DM Mono",monospace;font-size:11px;font-weight:600;color:var(--crit);
+  background:var(--crit-bg);border:1px solid var(--crit-rule);border-radius:5px;padding:1px 7px;flex:none}
+.cause p{font-size:13.5px;margin:6px 0}
+
+.file-block{background:var(--surface);border:1px solid var(--rule);border-radius:12px;margin:18px 0;overflow:hidden}
+.file-hd{background:var(--surface-2);border-bottom:1px solid var(--rule);padding:10px 16px;
+  font-family:"DM Mono",monospace;font-size:12.5px;font-weight:500;display:flex;justify-content:space-between;
+  align-items:center;flex-wrap:wrap;gap:6px}
+.file-hd .mod{font-family:"DM Sans",sans-serif;font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.08em}
+.file-body{padding:14px 16px}
+
+pre{background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:13px 15px;overflow-x:auto;
+  font-family:"DM Mono",ui-monospace,monospace;font-size:12px;line-height:1.62;margin:10px 0;
+  -webkit-font-smoothing:auto}
+pre .add{color:var(--code-add)} pre .del{color:var(--code-del)} pre .cmt{color:var(--code-cmt)}
+pre b{color:#fff;font-weight:600}
+
+.tw{overflow-x:auto;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);
+  padding:8px 9px;border-bottom:1px solid var(--rule);white-space:nowrap;background:var(--surface-2)}
+td{padding:8px 9px;border-bottom:1px solid var(--rule);vertical-align:top}
+td.mono,td code{font-family:"DM Mono",monospace}
+tr:last-child td{border-bottom:none}
+.pa{display:inline-block;font-family:"DM Mono",monospace;font-size:10.5px;padding:1px 6px;border-radius:4px;
+  background:var(--fix-bg);color:var(--fix);border:1px solid var(--fix-rule);white-space:nowrap}
+.pa.self{background:var(--brand-soft);color:var(--brand);border-color:var(--rule)}
+.pa.pub{background:var(--warn-bg);color:var(--warn);border-color:var(--rule)}
+
+.note{background:var(--brand-soft);border:1px solid var(--rule);border-radius:8px;padding:11px 14px;
+  margin:12px 0;font-size:13px;color:var(--ink-soft)}
+.note.fix{background:var(--fix-bg);border-color:var(--fix-rule);border-left:3px solid var(--fix)}
+.note.warn{background:var(--warn-bg);border-left:3px solid var(--warn)}
+.note b{color:var(--ink)}
+
+.verify{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:6px 16px 14px;margin:14px 0}
+.verify h4{margin-top:14px}
+
+footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--rule);font-size:11.5px;
+  color:var(--ink-faint);line-height:1.7}
+a{color:var(--brand)}
+</style>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Centinela-AI · CASMARTS · Confidencial</div>
+  <h1>Escalación de privilegios en SIDECO: solución por módulo y por método</h1>
+  <p class="lede">Guía de remediación para la observación del retest (cuenta <code>TcsCSA2</code>, sin rol de
+    administrador, alcanzó el módulo de administración de usuarios y modificó usuarios y roles). Cubre el
+    codebase <code>backend-sideco-develop</code> (ResourceServer + frontend Angular). Cada corrección trae
+    el código exacto y cómo verificarla.</p>
+  <div class="runline">Análisis 1 de septiembre de 2026 · basado en el código real de <code>ResourceServerConfig.java</code>, <code>UsuarioController.java</code>, <code>CatalogoController.java</code> y <code>autorizacion.guard.ts</code></div>
+</header>
+
+<div class="summary">
+  <b>Resumen.</b> El endpoint que el atacante usó (<code>GET /v1/usr/getUsuarios</code>) no tiene ninguna regla
+  de autorización: cae en <code>.antMatchers("/v1/**").authenticated()</code>, así que basta una sesión válida.
+  Pero no es un solo hueco: hay <b>cinco</b> defectos que se combinan. Aunque se tape el <code>/v1/usr/**</code>,
+  la función <code>RoleSecurity.isAdmin()</code> se puede burlar con un nombre de usuario que contenga la
+  cadena «admin», y <code>siatSecurity.test()</code> se usa como <i>alternativa</i> a estar autenticado
+  (spoofeando la cabecera <code>Referer</code>). Este documento los corrige todos.
+</div>
+
+<h2><span class="num">01</span>Cómo lo hizo el atacante</h2>
+<p>La cadena, paso a paso, para entender qué corrige cada cambio:</p>
+<ol class="chain">
+  <li>Se autentica con una cuenta real de bajo privilegio (<code>TcsCSA2</code>, rol no administrador).</li>
+  <li>El frontend pide <code>catalogosAdmin</code>; el <code>AutorizacionGuard</code> de Angular llama al
+      backend (<code>POST /v1/usr/revisarRolRuta</code>) para saber si ese rol ve la ruta. La respuesta es
+      «no» → el guard redirige a <code>/</code>.</li>
+  <li>Con una herramienta de interceptación, reescribe esa respuesta de <code>403</code> a
+      <code>200 OK</code>. El guard cree que sí y <b>renderiza el módulo administrativo</b> (la clase
+      <code>CatusuariosadminComponent</code> ya venía descargada en el bundle).</li>
+  <li>El componente ya montado hace su llamada de datos: <code>GET /v1/usr/getUsuarios</code>. El backend
+      <b>no exige rol admin en <code>/v1/usr/**</code></b> → responde <code>200</code> con la lista completa
+      de usuarios.</li>
+  <li>Desde ahí, <code>POST /v1/usr/guardarUsuarios</code> y <code>PUT /v1/usr/accesoSistema/{id}</code>
+      —también sin rol— le permiten editar usuarios y asignar roles elevados.</li>
+</ol>
+<p>El punto 3 es la barrera <i>solo-cliente</i>. El punto 4 es la barrera <i>que falta en el servidor</i>.
+  Hay que cerrar el 4 (obligatorio) y reforzar el 3.</p>
+
+<h2><span class="num">02</span>Los cinco defectos</h2>
+
+<div class="cause">
+  <h3><span class="tag">A</span>Sin regla para <code>/v1/usr/**</code></h3>
+  <p><code>UsuarioController</code> está en <code>@RequestMapping("/v1/usr/")</code>. En
+    <code>ResourceServerConfig.java</code> se blindan por nombre <code>/v1/catalogos/roles*</code>,
+    <code>/v1/catalogos/catMenu*</code>, <code>obtenerAllRoles</code>, etc. con
+    <code>@roleSecurity.isAdmin</code>, y las mutaciones de <code>/v1/catalogos/**</code> con
+    POST/PUT/DELETE. Pero <b>nada cubre <code>/v1/usr/**</code></b>: cae en la regla final
+    <code>.antMatchers("/v1/**").authenticated()</code> (línea 78). Todos los métodos de administración de
+    identidad quedan a nivel «cualquier usuario con token».</p>
+</div>
+
+<div class="cause">
+  <h3><span class="tag">B</span><code>RoleSecurity.isAdmin()</code> se burla con el nombre de usuario</h3>
+  <p>La función decide «es admin» con cuatro <code>contains("admin")</code> sobre cadenas:
+    <code>auth.getName()</code>, cada <code>GrantedAuthority</code>, el claim <code>authorities</code> y el
+    claim <code>user_name</code>. Un usuario llamado <code>radminez</code>, <code>adminis_prueba</code>,
+    <code>gadmine</code> —o cualquier cadena que contenga «admin»— pasa como administrador. Aunque se
+    corrija el defecto A, este deja abierta la escalada por el solo hecho de nombrar la cuenta.</p>
+</div>
+
+<div class="cause">
+  <h3><span class="tag">C</span><code>siatSecurity.test()</code> usado como <i>alternativa</i> a autenticarse</h3>
+  <p>Las reglas de <code>/v1/catalogos/**</code> y <code>/v1/calc/**</code> son
+    <code>.access("isAuthenticated() <b>or</b> @siatSecurity.test(request)")</code>.
+    <code>siatSecurity.test()</code> sólo mira las cabeceras <code>Origin</code> / <code>Referer</code>
+    contra una lista de dominios <code>*.edomex.gob.mx</code>. Cualquier cliente que no sea un navegador
+    (curl, Postman, la herramienta del pentester) <b>fija esa cabecera a mano</b> y pasa el <code>or</code>
+    <b>sin token</b>. Es una señal anti-CSRF, no autorización.</p>
+</div>
+
+<div class="cause">
+  <h3><span class="tag">D</span>El módulo admin del frontend se protege sólo en el navegador</h3>
+  <p><code>catalogos-admin-routing.module.ts:12</code> usa <code>canActivate:[AutorizacionGuard]</code>. El
+    guard llama a <code>revisarRoles(url)</code> y navega a <code>/</code> si es <code>false</code> — una
+    decisión del lado del cliente sobre una respuesta HTTP interceptable. Además, en
+    <code>layoutcompleto-routing.module.ts:158</code> la ruta padre <code>catalogosAdmin</code>
+    (<code>loadChildren</code>) <b>no tiene <code>canActivate</code></b>; sólo lo tiene la ruta hija, y el
+    componente ya viaja en el bundle.</p>
+</div>
+
+<div class="cause">
+  <h3><span class="tag">E</span><code>httpBasic()</code> + <code>csrf().disable()</code></h3>
+  <p><code>ResourceServerConfig</code> habilita <code>http.httpBasic()</code> junto al resource server JWT y
+    deshabilita CSRF. Basic Auth reenvía usuario y contraseña en cada petición y amplía la superficie; con
+    CSRF apagado, cualquier hueco de autorización es explotable también desde una página de terceros si la
+    sesión usa cookie. Si el acceso real es 100% Bearer JWT, <code>httpBasic()</code> sobra.</p>
+</div>
+
+<h2><span class="num">03</span>Corrección — <code>ResourceServerConfig.java</code></h2>
+<p class="note"><b>Buena noticia:</b> la clase ya tiene
+  <code>@EnableGlobalMethodSecurity(prePostEnabled = true)</code> (línea 22), así que
+  <code>@PreAuthorize</code> funciona sin tocar configuración. Aplicamos defensa en dos capas: regla de URL
+  <i>y</i> anotación de método.</p>
+
+<div class="file-block">
+  <div class="file-hd"><span>ResourceServer/…/config/ResourceServerConfig.java · configure()</span><span class="mod">Defecto A + C + E</span></div>
+  <div class="file-body">
+<h4>3.1 — Añadir la regla de <code>/v1/usr/**</code> (antes del catch-all de la línea 78)</h4>
+<pre><span class="cmt">// 2b. IDENTIDAD: administración de usuarios = SOLO ADMINISTRADOR</span>
+<span class="cmt">//     (lecturas propias y catálogos de apoyo se excluyen abajo, en 4b)</span>
+<span class="add">.antMatchers("/v1/usr/**").access("@roleSecurity.isAdmin(authentication)")</span>
+
+<span class="cmt">// 4b. Endpoints de /v1/usr que NO son administración de identidad:</span>
+<span class="cmt">//     - /logeado  : perfil del propio token</span>
+<span class="cmt">//     - /revisarRolRuta : lo usa el guard del front; valida contra el usuario autenticado</span>
+<span class="add">.antMatchers("/v1/usr/logeado", "/v1/usr/revisarRolRuta").authenticated()</span></pre>
+<p class="note warn"><b>Orden.</b> En Spring Security gana la <b>primera</b> regla que coincide. Las dos
+  líneas de <code>4b</code> deben ir <b>antes</b> de <code>.antMatchers("/v1/usr/**")…isAdmin</code>, o
+  <code>/logeado</code> también quedaría restringido a admin. Colócalas justo encima de la regla amplia.</p>
+
+<h4>3.2 — Quitar el <code>or @siatSecurity.test</code> como alternativa a autenticarse</h4>
+<pre><span class="del">.antMatchers("/v1/catalogos/**").access("isAuthenticated() or @siatSecurity.test(request)")</span>
+<span class="del">.antMatchers("/v1/calc/**").access("isAuthenticated() or @siatSecurity.test(request)")</span>
+<span class="add">.antMatchers("/v1/catalogos/**").authenticated()</span>
+<span class="add">.antMatchers("/v1/calc/**").authenticated()</span></pre>
+<p><code>siatSecurity</code> sigue siendo útil como filtro anti-CSRF/anti-hotlink, pero debe ser un
+  <b>requisito adicional</b>, nunca un sustituto del token. Si se quiere conservar esa validación de origen,
+  usar <code>and</code>, no <code>or</code>:</p>
+<pre>.antMatchers("/v1/catalogos/**").access("isAuthenticated() <span class="add">and</span> @siatSecurity.test(request)")</pre>
+
+<h4>3.3 — Revisar <code>httpBasic()</code></h4>
+<pre><span class="cmt">// Si TODO el acceso real es Bearer JWT (SIAT/SIDECO/SolicitudWeb lo son):</span>
+<span class="del">http.httpBasic();</span>
+<span class="cmt">// Si Basic Auth es necesario para un consumidor servicio-a-servicio concreto,</span>
+<span class="cmt">// limitarlo a esa ruta y ese usuario técnico, no global:</span>
+<span class="add">http.antMatcher("/v1/interop/**").httpBasic();</span></pre>
+  </div>
+</div>
+
+<div class="file-block">
+  <div class="file-hd"><span>ResourceServer/…/config/ResourceServerConfig.java · RoleSecurity.isAdmin()</span><span class="mod">Defecto B</span></div>
+  <div class="file-body">
+<p>Reemplazar los cuatro <code>contains("admin")</code> por comparación exacta contra una lista de
+  authorities/roles válidos. El <code>contains</code> sobre <code>getName()</code> / <code>user_name</code>
+  se elimina por completo — el nombre de usuario nunca debe otorgar privilegios.</p>
+<pre>public static class RoleSecurity {
+
+    <span class="cmt">// Roles/authorities que SÍ son administrador. Ajustar a los valores reales</span>
+    <span class="cmt">// que emite el AuthServer en el claim "authorities".</span>
+    <span class="add">private static final java.util.Set&lt;String&gt; ROLES_ADMIN = java.util.Set.of(</span>
+    <span class="add">        "ADMINISTRADOR", "ROLE_ADMINISTRADOR", "ADMIN_SIDECO", "SUPER_ADMIN");</span>
+
+    public boolean isAdmin(org.springframework.security.core.Authentication auth) {
+        if (auth == null || !auth.isAuthenticated()) return false;
+
+        <span class="cmt">// 1. GrantedAuthorities: comparación EXACTA (no substring)</span>
+        <span class="add">boolean granted = auth.getAuthorities().stream()</span>
+        <span class="add">    .map(a -&gt; a.getAuthority() == null ? "" : a.getAuthority().trim().toUpperCase())</span>
+        <span class="add">    .anyMatch(ROLES_ADMIN::contains);</span>
+        <span class="add">if (granted) return true;</span>
+
+        <span class="cmt">// 2. Claim "authorities" del JWT: comparación EXACTA elemento por elemento</span>
+        if (auth.getPrincipal() instanceof org.springframework.security.oauth2.jwt.Jwt jwt) {
+            Object claim = jwt.getClaims().get("authorities");
+            if (claim instanceof java.util.Collection&lt;?&gt; col) {
+                <span class="add">for (Object r : col) {</span>
+                <span class="add">    if (r != null &amp;&amp; ROLES_ADMIN.contains(r.toString().trim().toUpperCase())) return true;</span>
+                <span class="add">}</span>
+            } else if (claim != null) {
+                <span class="add">if (ROLES_ADMIN.contains(claim.toString().trim().toUpperCase())) return true;</span>
+            }
+        }
+
+        <span class="del">// ELIMINADO: auth.getName().contains("admin")</span>
+        <span class="del">// ELIMINADO: claim "user_name".contains("admin")</span>
+        <span class="del">// ELIMINADO: authority.contains("admin")   (substring)</span>
+        return false;
+    }
+}</pre>
+<p class="note warn"><b>Antes de desplegar B:</b> confirmar con el equipo del <code>AuthServer</code> qué
+  string exacto lleva el claim <code>authorities</code> para un administrador (¿<code>"Administrador"</code>,
+  <code>"ROLE_ADMIN"</code>, un id numérico?). Poblar <code>ROLES_ADMIN</code> con ese valor real y probar
+  con una cuenta admin legítima <b>antes</b> de subir, o los administradores reales pierden acceso.</p>
+  </div>
+</div>
+
+<h2><span class="num">04</span>Corrección — <code>UsuarioController.java</code> (<code>/v1/usr/</code>)</h2>
+<p>Segunda capa: <code>@PreAuthorize</code> por método. Aunque la regla 3.1 ya cubre <code>/v1/usr/**</code>,
+  la anotación protege ante un cambio futuro de configuración y documenta la intención en el propio código.
+  <code>@PreAuthorize("@roleSecurity.isAdmin(authentication)")</code> reutiliza el mismo helper.</p>
+<div class="tw"><table>
+<thead><tr><th>Línea</th><th>Método</th><th>Qué hace</th><th>Anotación a aplicar</th></tr></thead>
+<tbody>
+<tr><td>56</td><td class="mono">GET /byClave/{clave}</td><td>Usuario por nombre de cuenta</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>74</td><td class="mono">GET /logeado</td><td>Perfil del <b>propio</b> token</td><td><span class="pa self">authenticated</span> — dejar sin @PreAuthorize</td></tr>
+<tr><td>87</td><td class="mono">GET /getUsuarioByRol/{idRol}</td><td>Lista usuarios de un rol</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td><b>105</b></td><td class="mono">GET /getUsuarios</td><td><b>Lista completa de usuarios</b> ← retest</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>127</td><td class="mono">POST /guardarUsuarios</td><td>Alta/edición de usuario</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>148</td><td class="mono">POST /revisarRolRuta</td><td>¿el rol del token ve esta ruta? (lo usa el guard)</td><td><span class="pa self">authenticated</span> — ya valida contra el usuario autenticado</td></tr>
+<tr><td>167</td><td class="mono">DELETE /{idUsuario}</td><td><b>Borra un usuario</b></td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>173</td><td class="mono">PUT /{idUsuario}</td><td><b>Modifica un usuario</b></td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>179</td><td class="mono">GET /usuariobyId/{id}</td><td>Usuario por id</td><td><span class="pa">isAdmin</span> · o self (ver 4.1)</td></tr>
+<tr><td><b>192</b></td><td class="mono">PUT /accesoSistema/{idUsuario}</td><td><b>Otorga/revoca acceso al sistema</b></td><td><span class="pa">isAdmin</span> — crítico</td></tr>
+<tr><td>211</td><td class="mono">GET /obtenerUsuariosConciliadores</td><td>Lista de conciliadores (para selects)</td><td><span class="pa self">authenticated</span></td></tr>
+<tr><td>225</td><td class="mono">GET /findByUsuarioByNombreUsuario/{n}</td><td>Búsqueda por nombre</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>237</td><td class="mono">GET /findByUsuarioByCorreo/{correo}</td><td>Búsqueda por correo (PII)</td><td><span class="pa">isAdmin</span></td></tr>
+<tr><td>249</td><td class="mono">GET /conciliadoresUnidad/{idUnidad}</td><td>Conciliadores de una unidad</td><td><span class="pa self">authenticated</span> + filtrar por unidad del token</td></tr>
+<tr><td><b>261</b></td><td class="mono">GET /getUsuarios/{idUnidad}</td><td>Usuarios de una unidad (IDOR en <code>idUnidad</code>)</td><td><span class="pa">isAdmin</span> · o gestor de <b>esa</b> unidad (ver 4.1)</td></tr>
+<tr><td>280</td><td class="mono">GET /obtenerCorreoPorId/{id}</td><td>Correo por id (PII, IDOR)</td><td><span class="pa">isAdmin</span> · o self</td></tr>
+</tbody>
+</table></div>
+
+<div class="file-block">
+  <div class="file-hd"><span>Ejemplo — método getUsuarios (línea 105)</span><span class="mod">Defecto A</span></div>
+  <div class="file-body">
+<pre><span class="add">@PreAuthorize("@roleSecurity.isAdmin(authentication)")</span>
+@GetMapping("/getUsuarios")
+public ResponseEntity&lt;?&gt; getUsuarios() {
+    ...
+}</pre>
+<p>Repetir la anotación en cada método marcado <span class="pa">isAdmin</span> en la tabla. Importar
+  <code>org.springframework.security.access.prepost.PreAuthorize</code>.</p>
+  </div>
+</div>
+
+<h3 id="s41">4.1 — Los tres casos que no son «todo o nada»</h3>
+<h4>IDOR — <code>/usuariobyId/{id}</code>, <code>/obtenerCorreoPorId/{id}</code>, <code>/getUsuarios/{idUnidad}</code></h4>
+<p>Si el negocio necesita que un usuario consulte <b>su propio</b> registro (o los de su unidad) sin ser
+  admin, la regla no puede ser sólo <code>isAdmin</code>. Añadir la comprobación de pertenencia en el
+  servicio:</p>
+<pre>public UsuarioConsultaDTO usuarioPorId(Long idPedido, Authentication auth) {
+    Long idToken = usuarioService.idDe(auth.getName());        <span class="cmt">// id del usuario autenticado</span>
+    boolean admin = new RoleSecurity().isAdmin(auth);
+    <span class="add">if (!admin &amp;&amp; !idToken.equals(idPedido)) {</span>
+    <span class="add">    throw new AccessDeniedException("No autorizado para consultar este usuario");</span>
+    <span class="add">}</span>
+    return usuarioService.getById(idPedido);
+}</pre>
+<p>Para <code>/getUsuarios/{idUnidad}</code>: comparar <code>idUnidad</code> contra la unidad del token; si no
+  coincide y no es admin → <code>403</code>.</p>
+
+<h2><span class="num">05</span>Corrección — <code>CatalogoController.java</code> (<code>/v1/catalogos/</code>)</h2>
+<p>La configuración ya blinda por nombre <code>roles*</code>, <code>catRoles*</code>,
+  <code>rolesWithMenus</code>, <code>catMenu*</code>, <code>obtenerAllRoles</code>,
+  <code>obtenerPermisos*</code>, y todas las mutaciones POST/PUT/DELETE de <code>/v1/catalogos/**</code>.
+  Queda <b>un hueco</b>:</p>
+<div class="file-block">
+  <div class="file-hd"><span>CatalogoController.java:384 · GET /obtieneUsuariosByRol/{idRol}/{idUsuario}</span><span class="mod">IDOR + gap</span></div>
+  <div class="file-body">
+<p>No está en la lista de rutas blindadas por nombre (líneas 36-53 del config) y por método GET tampoco cae
+  en las reglas de mutación. Queda a nivel <code>.antMatchers("/v1/catalogos/**").authenticated()</code>.
+  Devuelve usuarios de un rol y recibe <code>idUsuario</code> como parámetro de ruta.</p>
+<pre><span class="cmt">// Opción 1 — añadirlo a la lista de rutas admin en ResourceServerConfig (línea 35-53):</span>
+    "/v1/catalogos/obtieneUsuariosByRol/**",
+
+<span class="cmt">// Opción 2 — anotación de método:</span>
+<span class="add">@PreAuthorize("@roleSecurity.isAdmin(authentication)")</span>
+@GetMapping("/obtieneUsuariosByRol/{idRol}/{idUsuario}")</pre>
+<p class="note"><b>Sobre los otros hallazgos de <code>CatalogoController</code></b> (líneas 629, 634, 660,
+  675, 712, 1362, 1741): las reglas por nombre y por método del config <b>ya los cubren</b> hoy. Centinela
+  los sigue marcando porque su análisis estático evalúa cada endpoint de forma aislada; al validar contra el
+  <code>ResourceServerConfig</code> actual, esos endpoints resuelven a <code>isAdmin</code>. Confirmar con
+  una prueba autenticada (paso 7) y, si pasan, marcarlos como <i>riesgo aceptado / cubierto por config</i>.</p>
+  </div>
+</div>
+
+<h2><span class="num">06</span>Corrección — Frontend Angular</h2>
+<div class="file-block">
+  <div class="file-hd"><span>src/app/modulos/shared/_layouts/layoutcompleto/layoutcompleto-routing.module.ts:158</span><span class="mod">Defecto D</span></div>
+  <div class="file-body">
+<p>La ruta padre <code>catalogosAdmin</code> se carga sin <code>canActivate</code>. Añadirlo en el padre,
+  no sólo en la hija:</p>
+<pre>{
+  path: 'catalogosAdmin',
+  <span class="add">canActivate: [AutorizacionGuard],</span>
+  loadChildren: () =&gt; import('@app/modulos/catalogos-admin/catalogos-admin.module')
+      .then(m =&gt; m.CatalogosAdminModule)
+},</pre>
+  </div>
+</div>
+<div class="note fix">
+  <b>Lo que de verdad cierra el vector D es el backend (secciones 3 y 4).</b> El guard de Angular se puede
+  seguir burlando reescribiendo la respuesta de <code>revisarRoles</code>; su valor es de experiencia de
+  usuario (no mostrar un menú que no funciona), no de seguridad. Una vez que <code>/v1/usr/getUsuarios</code>
+  y compañía exijan <code>isAdmin</code> en el servidor, aunque el atacante fuerce el render del módulo,
+  <b>todas sus llamadas de datos responden 403</b> y la pantalla queda vacía.
+</div>
+<p><b>Opcional, refuerzo:</b> mover <code>catUsuarios</code>/<code>catSalas</code> a su propio bundle
+  <code>loadChildren</code> para que el JS del módulo admin no viaje al navegador de usuarios sin rol
+  (mitiga <code>AUTHZ-ADMIN-BUNDLE-EXPOSED</code>). No sustituye a la corrección de backend.</p>
+
+<h2><span class="num">07</span>Verificación</h2>
+<p>Con dos tokens: uno de <b>administrador legítimo</b> y uno de <b>usuario sin rol</b> (equivalente a
+  <code>TcsCSA2</code>).</p>
+<div class="verify">
+<h4>A · <code>/v1/usr/**</code> exige admin</h4>
+<pre><span class="cmt"># usuario sin rol -&gt; debe ser 403</span>
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN_NOADMIN" \
+  https://desasideco.edomex.gob.mx/wsbev1/v1/usr/getUsuarios      <span class="cmt"># 403</span>
+curl ... -X POST .../v1/usr/guardarUsuarios -d '{...}'            <span class="cmt"># 403</span>
+curl ... -X PUT  .../v1/usr/accesoSistema/1 -d '{...}'            <span class="cmt"># 403</span>
+<span class="cmt"># admin legítimo -&gt; 200</span>
+curl ... -H "Authorization: Bearer $TOKEN_ADMIN" .../v1/usr/getUsuarios   <span class="cmt"># 200</span>
+<span class="cmt"># propio perfil sigue accesible para cualquiera autenticado</span>
+curl ... -H "Authorization: Bearer $TOKEN_NOADMIN" .../v1/usr/logeado     <span class="cmt"># 200</span></pre>
+<h4>B · el nombre de usuario ya no otorga privilegios</h4>
+<pre><span class="cmt"># crear/usar una cuenta cuyo nombre contenga "admin" pero SIN rol admin</span>
+<span class="cmt"># (p. ej. "adminprueba") -&gt; sus peticiones a /v1/usr/** y /v1/catalogos/roles deben dar 403</span></pre>
+<h4>C · <code>siatSecurity</code> ya no sustituye al token</h4>
+<pre><span class="cmt"># sin Authorization, con Referer falsificado -&gt; debe ser 401, NO 200</span>
+curl -s -o /dev/null -w "%{http_code}\n" -H "Referer: https://sideco.edomex.gob.mx" \
+  https://desasideco.edomex.gob.mx/wsbev1/v1/catalogos/obtenerAllRoles   <span class="cmt"># 401</span></pre>
+<h4>D · el módulo admin del front</h4>
+<pre><span class="cmt"># como usuario sin rol, forzar el render de /catalogosAdmin/catUsuarios</span>
+<span class="cmt"># (reescribiendo la respuesta del guard). Resultado esperado: la tabla</span>
+<span class="cmt"># queda vacía y la consola muestra 403 en /v1/usr/getUsuarios.</span></pre>
+</div>
+
+<h2><span class="num">08</span>Checklist de despliegue</h2>
+<ol>
+  <li>Confirmar con el <code>AuthServer</code> el valor exacto del claim <code>authorities</code> para un administrador → poblar <code>ROLES_ADMIN</code>.</li>
+  <li>Aplicar 3.1 (regla <code>/v1/usr/**</code> + excepción <code>/logeado</code>, <code>/revisarRolRuta</code>) y 3.2 (<code>or</code> → <code>and</code> / <code>authenticated</code>).</li>
+  <li>Aplicar B (<code>RoleSecurity.isAdmin</code> con comparación exacta).</li>
+  <li>Anotar <code>@PreAuthorize</code> en los métodos de <code>UsuarioController</code> marcados <span class="pa">isAdmin</span> y en <code>CatalogoController:384</code>.</li>
+  <li>Añadir las comprobaciones de pertenencia (sección 4.1) donde el negocio requiera acceso «self».</li>
+  <li>Decidir sobre <code>httpBasic()</code> (E): quitar o acotar a interop.</li>
+  <li>Frontend: <code>canActivate</code> en la ruta padre <code>catalogosAdmin</code>.</li>
+  <li><b>Probar con cuenta admin real en un entorno de pruebas antes de producción</b> — los cambios B y 3.2 pueden dejar fuera a usuarios legítimos si el claim de rol no coincide.</li>
+  <li>Re-ejecutar la verificación (sección 7) y volver a correr el análisis de Centinela para confirmar que los hallazgos <code>AUTHZ-*</code> del repo pasan a <code>RESUELTO</code>.</li>
+</ol>
+
+<footer>
+  Generado por Centinela-AI a partir del análisis estático de control de acceso (<code>authz-static</code>)
+  y la inspección del código de <code>backend-sideco-develop</code> / <code>frontend-sideco-develop</code>
+  (snapshot del 28 de agosto de 2026). Si el repositorio tiene una versión más reciente, re-escanear antes
+  de aplicar. Clasificación: CONFIDENCIAL — uso interno.
+</footer>
+</div>
