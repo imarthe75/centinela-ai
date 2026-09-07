@@ -17,3 +17,15 @@ docs/
 keys/
 database/*.db
 database/sentinela.db
+
+# --- Análisis personalizados y trabajo ad-hoc (NUNCA se versiona) ---
+# Solo el código del producto va a git. Los escaneos por cliente,
+# scripts de un solo uso, JSON/logs de recon y reportes generados
+# (HTML/PDF/ZIP) viven aquí y quedan fuera del control de versiones.
+scratch/
+!scratch/README.md
+
+# Reportes/descargas generados que sirve el frontend (el .gitignore
+# anidado ya los excluye; se refuerza aquí por seguridad).
+frontend/public/descargas/*
+!frontend/public/descargas/.gitignore
