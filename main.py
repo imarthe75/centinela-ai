@@ -4586,13 +4586,39 @@ async def get_scan_coverage():
 
 
 @app.get("/api/compliance/audit")
-async def run_compliance_audit():
-    """Ejecuta la auditoría de estándares integrales (5 Pilares: Seguridad, Calidad, UX/UI, Persistencia, Evidencia)."""
+async def run_compliance_audit(target_dir: Optional[str] = "/app"):
+    """Ejecuta la auditoría de Estándares Integrales (STRIDE + ISO 25010) sobre el código.
+
+    Rewritten 2026-09-08: the previous body imported a class `AuditorComplianceStandards`
+    that this module has never exported (it only has module-level functions), so this
+    endpoint returned a 500 on every single call. Now calls the real
+    `run_compliance_standards_audit()` and attributes findings to a real self-audit asset,
+    matching `/api/audit/full-spectrum`'s pattern (see its comment for the asset_id / `/app`
+    reasoning).
+    """
     try:
-        from auditors.auditor_compliance_standards import AuditorComplianceStandards
-        auditor = AuditorComplianceStandards()
-        report = auditor.run_full_audit()
-        return report
+        from auditors import auditor_compliance_standards
+
+        asset_id = resolve_self_audit_asset_id(target_dir)
+        findings = auditor_compliance_standards.run_compliance_standards_audit(target_dir, asset_id=asset_id)
+
+        by_severity: Dict[str, int] = {}
+        by_rule: Dict[str, int] = {}
+        for f in findings:
+            sev = str(f.get("severity", "UNKNOWN")).upper()
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+            rule = f.get("cve_id", "UNKNOWN")
+            by_rule[rule] = by_rule.get(rule, 0) + 1
+
+        return {
+            "status": "success",
+            "target_dir": target_dir,
+            "asset_id": asset_id,
+            "total": len(findings),
+            "by_severity": by_severity,
+            "by_rule": dict(sorted(by_rule.items(), key=lambda kv: kv[1], reverse=True)),
+            "findings": findings,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en auditoría de estándares: {str(e)}")
 
