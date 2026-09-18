@@ -1094,15 +1094,13 @@
           <tbody>
             <tr><td><code>db-hardening</code></td><td>Operativo</td><td>Verificado contra bases de datos reales (TLS en tránsito, exposición de puertos por defecto)</td></tr>
             <tr><td><code>iac-native</code></td><td>Operativo</td><td>Persistencia verificada; detección de contenedores privilegiados, montajes <code>hostPath</code> y recursos públicos en Terraform</td></tr>
-            <tr><td><code>cmmi-audit</code></td><td>Operativo</td><td>Realineado 25 ago 2026 a 5 áreas reales evaluables desde código (<code>CAR</code>/<code>PQA</code>/<code>CM</code>/<code>MC</code>/<code>VV</code>, ver tabla de motores arriba); cada hallazgo se atribuye al repositorio y archivo:línea exacto; el reporte <code>/api/audit/cmmi-v3-report</code> refleja datos reales por activo</td></tr>
-            <tr><td><code>accessibility-wcag</code></td><td>Operativo (nuevo 25 ago 2026)</td><td>224 hallazgos reales verificados en vivo contra SIAT/SIDECO; conectado al ciclo periódico de GitLab</td></tr>
+            <tr><td><code>cmmi-audit</code></td><td>Operativo</td><td>Evaluación de áreas CMMI v3.0 alineadas a código (<code>CAR</code>/<code>PQA</code>/<code>CM</code>/<code>MC</code>/<code>VV</code>); cada hallazgo se atribuye al repositorio y archivo:línea exacto.</td></tr>
+            <tr><td><code>accessibility-wcag</code></td><td>Operativo</td><td>Auditoría WCAG 2.1; conectado al ciclo periódico de escaneo GitLab.</td></tr>
             <tr><td>SpiderFoot OSINT</td><td>Operativo</td><td>Enumeración pasiva (subdominios, CT logs, WHOIS) activa sobre activos <code>SERVER</code>/<code>AppServer</code></td></tr>
             <tr><td>Motor de deduplicación</td><td>Operativo</td><td>Comparación segura ante valores nulos; sin duplicados en alertas agregadas ni en hallazgos por activo</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="dim">Resuelto (13 de agosto de 2026): la cuenta de servicio <code>monitor</code> ya tiene rol Developer en el grupo GitLab <code>arquitectura/</code>. Verificado en vivo — no solo por la interfaz de GitLab — clonando los 18 proyectos reales del grupo con el token configurado: 18/18 exitosos (antes, cada uno de estos mismos repositorios devolvía <code>403 Forbidden</code>). El ciclo periódico de escaneo ya venía usando ese mismo token y tiene <code>last_audit</code> real de hoy en los 18 proyectos — no requirió ningún cambio de código.</p>
-      <p class="dim">Resuelto (25 de agosto de 2026): el modelo CMMI del motor propio se cruzó contra el manual de metodología real de C&amp;A (<code>Manual_Metodologia_CA_v2_COMPLETO.docx</code>) y se encontraron dos códigos fabricados (<code>SAM</code>, <code>MSR</code>) que nunca existieron en el modelo de 19 áreas tailored de la empresa. Reemplazados por 5 áreas reales evaluables desde código; las otras 14 quedan explícitamente marcadas "no evaluado" en vez de asumidas. Ese mismo manual recibió un nuevo "Glosario de acrónimos" (acrónimo, inglés, español, descripción técnica y entendible) para las 19 áreas CMMI y otros términos del manual.</p>
     </section>
 
     <footer>
