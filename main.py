@@ -3901,13 +3901,14 @@ async def download_asset_report(asset_name: str):
                   CASE UPPER(v.severity) WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
                   v.detected_at DESC
             """, (asset["id"],))
-            vulns = cur.fetchall()
+            all_vulns = cur.fetchall()
+            vulns = all_vulns[:50]
 
         gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
-        total_v = len(vulns)
-        critical_v = sum(1 for v in vulns if str(v["severity"]).upper() == "CRITICAL")
-        high_v     = sum(1 for v in vulns if str(v["severity"]).upper() == "HIGH")
-        resolved_v = sum(1 for v in vulns if v.get("executed_bool"))
+        total_v = len(all_vulns)
+        critical_v = sum(1 for v in all_vulns if str(v["severity"]).upper() == "CRITICAL")
+        high_v     = sum(1 for v in all_vulns if str(v["severity"]).upper() == "HIGH")
+        resolved_v = sum(1 for v in all_vulns if v.get("executed_bool"))
         risk = "ALTO" if critical_v > 0 else ("MEDIO" if high_v > 0 else "BAJO")
         risk_color = "#dc2626" if critical_v > 0 else ("#d97706" if high_v > 0 else "#16a34a")
 
