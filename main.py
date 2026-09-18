@@ -3890,53 +3890,68 @@ async def download_asset_report(asset_name: str):
             if not asset:
                 raise HTTPException(status_code=404, detail="Asset not found")
             cur.execute("""
-                SELECT v.id, v.severity, v.cve_id, v.description, v.executive_summary,
-                       v.business_impact, v.developer_steps, v.status, v.detected_at, v.scan_engine,
-                       v.url_path, v.fix_patch,
-                       r.executed_bool, r.approval_token
+                SELECT v.cve_id, v.severity, v.scan_engine, COUNT(*) as occurrence_count,
+                       MAX(v.description) as description, MAX(v.executive_summary) as executive_summary,
+                       MAX(v.business_impact) as business_impact, MAX(v.developer_steps) as developer_steps,
+                       MAX(v.fix_patch) as fix_patch,
+                       ARRAY_AGG(v.url_path) as all_locations,
+                       COUNT(CASE WHEN r.executed_bool THEN 1 END) as resolved_count
                 FROM public.vulnerability_log v
                 LEFT JOIN public.remediation_history r ON v.id = r.vuln_id
                 WHERE v.asset_id = %s
+                GROUP BY v.cve_id, v.severity, v.scan_engine
                 ORDER BY
                   CASE UPPER(v.severity) WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
-                  v.detected_at DESC
+                  occurrence_count DESC
             """, (asset["id"],))
-            all_vulns = cur.fetchall()
-            vulns = all_vulns[:50]
+            grouped_vulns = cur.fetchall()
 
         gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
-        total_v = len(all_vulns)
-        critical_v = sum(1 for v in all_vulns if str(v["severity"]).upper() == "CRITICAL")
-        high_v     = sum(1 for v in all_vulns if str(v["severity"]).upper() == "HIGH")
-        resolved_v = sum(1 for v in all_vulns if v.get("executed_bool"))
+        total_v = sum(g["occurrence_count"] for g in grouped_vulns)
+        critical_v = sum(g["occurrence_count"] for g in grouped_vulns if str(g["severity"]).upper() == "CRITICAL")
+        high_v     = sum(g["occurrence_count"] for g in grouped_vulns if str(g["severity"]).upper() == "HIGH")
+        resolved_v = sum(g["resolved_count"] for g in grouped_vulns)
         risk = "ALTO" if critical_v > 0 else ("MEDIO" if high_v > 0 else "BAJO")
         risk_color = "#dc2626" if critical_v > 0 else ("#d97706" if high_v > 0 else "#16a34a")
 
         vuln_cards = ""
-        for v in vulns:
-            sev = (v["severity"] or "INFO").upper()
+        for g in grouped_vulns:
+            sev = (g["severity"] or "INFO").upper()
             card_cls = "card-crit" if sev == "CRITICAL" else ("card-warn" if sev in ("HIGH","MEDIUM") else "card")
-            exec_sum = _pdf_clean_markdown(v.get("executive_summary") or "", max_len=0)
-            biz_imp  = _pdf_clean_markdown(v.get("business_impact") or "Sin análisis de impacto.", max_len=0)
-            steps    = _pdf_clean_markdown(v.get("developer_steps") or "Sin pasos de remediación.", max_len=0)
-            det_date = str(v["detected_at"])[:16] if v.get("detected_at") else "—"
-            status_badge = "<span style='color:#16a34a;font-weight:600'>Resuelto ✓</span>" if v.get("executed_bool") else "<span style='color:#d97706;'>Pendiente</span>"
+            exec_sum = _pdf_clean_markdown(g.get("executive_summary") or "", max_len=0)
+            biz_imp  = _pdf_clean_markdown(g.get("business_impact") or "Sin análisis de impacto.", max_len=0)
+            steps    = _pdf_clean_markdown(g.get("developer_steps") or "Sin pasos de remediación.", max_len=0)
+            cnt      = g["occurrence_count"]
+            
+            locs = [l for l in (g.get("all_locations") or []) if l]
+            loc_sample = locs[:10]
+            loc_html = ""
+            if loc_sample:
+                items = "".join([f"<li><code>{html.escape(l)}</code></li>" for l in loc_sample])
+                more = f"<p style='font-size:8px;color:#64748b;margin-top:2px;'>... y {len(locs)-10} ubicaciones adicionales en el código con el mismo patrón.</p>" if len(locs) > 10 else ""
+                loc_html = f"<div style='margin-top:4px;'><strong>Ubicaciones afectadas ({len(locs)} ocurrencias):</strong><ul style='margin:2px 0 0 16px;padding:0;font-size:8.5px;'>{items}</ul>{more}</div>"
+
+            patch = str(g.get("fix_patch") or "").strip()
+            patch_html = f"<div style='margin-top:4px;'><strong>Código de Parche / Remediación Generada por IA:</strong><pre>{html.escape(patch[:2000])}</pre></div>" if patch else ""
+
             vuln_cards += f"""
             <div class='card {card_cls}' style='margin-bottom:10px;'>
               <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;'>
                 <div>
                   <span class='badge badge-{sev}'>{sev}</span>
-                  <strong style='font-size:10px; margin-left:6px;'>{v['cve_id']}</strong>
+                  <strong style='font-size:10px; margin-left:6px;'>{g['cve_id']}</strong>
+                  <span style='font-size:9px; color:#475569; margin-left:6px;'>({cnt} Ocurrencias)</span>
                 </div>
-                <div style='font-size:8px; color:#64748b; text-align:right;'>{det_date} &bull; Motor: {v.get('scan_engine','N/D')} &bull; {status_badge}</div>
+                <div style='font-size:8px; color:#64748b; text-align:right;'>Motor: {g.get('scan_engine','N/D')}</div>
               </div>
               <span class='section-label label-exec'>Resumen Ejecutivo</span>
-              <p style='font-size:9.5px; margin:4px 0 8px;'>{exec_sum or 'Análisis de IA pendiente.'}</p>
+              <p style='font-size:9.5px; margin:4px 0 8px;'>{exec_sum or 'Análisis de IA en proceso.'}</p>
               <p style='font-size:9px; color:#475569;'><strong>Impacto al Negocio:</strong> {biz_imp}</p>
               <hr class='divider'>
               <span class='section-label label-tech'>Detalle Técnico</span>
-              <p style='font-size:9px; margin:4px 0;'>{_pdf_clean_markdown(v.get('description') or 'Sin descripción técnica.')}</p>
-              {_pdf_location_and_fix_block(v.get('url_path'), v.get('fix_patch'))}
+              <p style='font-size:9px; margin:4px 0;'>{_pdf_clean_markdown(g.get('description') or 'Sin descripción técnica.')}</p>
+              {loc_html}
+              {patch_html}
               <p style='font-size:9px; color:#334155; margin-top:6px;'><strong>Pasos de Remediación:</strong><br>{steps}</p>
             </div>"""
 
