@@ -106,6 +106,16 @@ def scan_path(path: str, asset_id: int, asset_name: str) -> list[dict]:
     findings = []
     for r in data.get("results", []):
         check_id  = r.get("check_id", "semgrep-finding")
+        # vulnerability_log.cve_id is VARCHAR(100); some real Java rule-ids (nested package
+        # paths, e.g. spring-actuator-non-health-enabled.*) exceed that. Found live 2026-09-11
+        # auditing teca/backend/backend-teca: a single 105-char check_id raised a DB error that
+        # persist_findings() never caught mid-loop, rolling back the ENTIRE transaction -- all
+        # 15 real Semgrep findings for that repo, silently lost, every cycle. Truncate with a
+        # hash suffix (not a bare truncate) so two different long ids that share a 90-char
+        # prefix still get distinct, stable cve_ids across re-scans.
+        if len(check_id) > 100:
+            import hashlib
+            check_id = f"{check_id[:90]}-{hashlib.sha256(check_id.encode()).hexdigest()[:8]}"
         severity  = _severity_from_semgrep(r.get("extra", {}).get("severity"))
         file_path = r.get("path", "unknown")
         # semgrep echoes whatever path form it was given; scan_path passes an absolute temp

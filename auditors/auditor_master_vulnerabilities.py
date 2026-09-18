@@ -123,7 +123,8 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
 
     # 4. Hardcoded Secrets & JWT Tokens
     secret_patterns = [
-        (r'(jwt_secret|api_key|password|private_key)\s*=\s*["\'][A-Za-z0-9+/=_-]{8,}["\']', "HARDCODED-SECRET", "HIGH", "Hardcoded credential or secret key detected in source code.")
+        (r'(jwt_secret|api_key|password|private_key)\s*=\s*["\'][A-Za-z0-9+/=_-]{8,}["\']', "HARDCODED-SECRET", "HIGH", "Hardcoded credential or secret key detected in source code."),
+        (r'(ghp_[A-Za-z0-9_]{36}|glpat-[A-Za-z0-9_]{20}|hvs\.[A-Za-z0-9_-]{24}|"type":\s*"service_account")', "EXPANDED-CLOUD-SECRET", "CRITICAL", "Hardcoded cloud token, PAT, or service account credential detected.")
     ]
     for idx, line in enumerate(lines, 1):
         for pattern, rule_id, severity, desc in secret_patterns:
@@ -136,14 +137,24 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
                     "description": f"{desc} Line {idx}: {line.strip()}"
                 })
 
-    # 5. Advanced Backend DB & Performance Security (SpringBoot, Python, ORM N+1 & Antipatterns)
+    # 5. Advanced Backend DB, Security & Performance (SpringBoot, Python, Deserialization, XXE, CSRF)
     backend_db_patterns = [
         (r'\.(raw|extra)\s*\(\s*f?["\'].*?\{', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection via raw/extra query interpolation."),
         (r'sequelize\.query\s*\(\s*f?["\'].*?\+', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection in Node.js Sequelize."),
         (r'(postgres|mysql)://[^\s"\']+@[^\s"\']+', "DB-UNENCRYPTED-CONN-STRING", "MEDIUM", "Database Connection string detected in code without explicit TLS/SSL parameters."),
-        # N+1 Query Antipatterns (Python Django/SQLAlchemy/SpringBoot)
-        (r'for\s+\w+\s+in\s+.*?\.(all|filter)\(\):?\s*\n\s*.*?\.\w+', "ORM-N-PLUS-ONE-QUERY", "MEDIUM", "Potential N+1 Query antipattern inside loop. Use select_related/prefetch_related or join fetch."),
-        (r'@Query\s*\([^)]*nativeQuery\s*=\s*true', "SPRINGBOOT-NATIVE-QUERY-RISK", "MEDIUM", "SpringBoot native SQL query bypasses JPA parameter escaping safety.")
+        (r'@Query\s*\([^)]*nativeQuery\s*=\s*true', "SPRINGBOOT-NATIVE-QUERY-RISK", "MEDIUM", "SpringBoot native SQL query bypasses JPA parameter escaping safety."),
+        # Deserialization, Path Traversal, Weak Crypto, CSRF Disabled & XXE (CWE-502, CWE-22, CWE-327, CWE-352, CWE-611)
+        (r'\b(pickle\.loads|pickle\.load|marshal\.loads)\s*\(|yaml\.load\s*\([^)]*?(?<!SafeLoader)\)', "INSECURE-DESERIALIZATION", "CRITICAL", "Insecure deserialization risk (CWE-502). Use SafeLoader for YAML or safer serialization formats."),
+        (r'open\s*\(\s*(f["\'].*?\{|.*?\+)', "PATH-TRAVERSAL-RISK", "HIGH", "Potential Path Traversal risk when opening file paths constructed dynamically (CWE-22)."),
+        (r'hashlib\.(md5|sha1)\s*\(|Cipher\.getInstance\s*\(\s*["\']AES/ECB', "WEAK-CRYPTOGRAPHY", "HIGH", "Use of weak cryptographic algorithm or ECB mode (CWE-327). Use SHA-256/SHA-512 or AES/GCM."),
+        (r'\.csrf\s*\(\s*\)\s*\.disable\s*\(|csrf\s*->\s*csrf\.disable\s*\(', "SPRINGBOOT-CSRF-DISABLED", "HIGH", "CSRF protection explicitly disabled in Spring Security configuration (CWE-352)."),
+        (r'DocumentBuilderFactory\.newInstance\s*\(\s*\)|xml\.etree\.ElementTree', "XXE-INSECURE-PARSER", "MEDIUM", "XML parser initialization without explicit XXE / DTD protection (CWE-611)."),
+        # Module Audit Extracted Findings
+        (r'(LocalAuth|TestSandbox|Backdoor)Controller', "BACKDOOR-SANDBOX-CONTROLLER", "CRITICAL", "Backdoor or sandbox/test controller detected in production code (CWE-288 / CWE-798)."),
+        (r'TrustAllManager|NullHostnameVerifier|X509TrustManager', "JVM-GLOBAL-SSL-BYPASS", "CRITICAL", "Disabling SSL/TLS certificate or hostname verification JVM-wide (CWE-295)."),
+        (r'@RequestParam.*?(jwt|token)|request\.getParameter\s*\(\s*["\']token["\']', "JWT-IN-URL-PARAM", "HIGH", "Passing JWT token in URL query parameter instead of Authorization header."),
+        (r'JdkSerializationRedisSerializer', "REDIS-JDK-SERIALIZATION", "HIGH", "Insecure Java JDK serialization used in Redis cache config (CWE-502)."),
+        (r'Files\.readAllBytes|byte\[\]\s+\w+\s*=\s*.*?readAllBytes', "OOM-BYTE-ARRAY-STREAMING", "MEDIUM", "Loading entire file into byte[] array risks Heap Out-Of-Memory. Use InputStream/StreamingResponseBody.")
     ]
     for idx, line in enumerate(lines, 1):
         for pattern, rule_id, severity, desc in backend_db_patterns:
@@ -156,6 +167,16 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
                     "description": f"{desc} Line {idx}: {line.strip()}"
                 })
 
+    # Multi-line ORM N+1 Query Scan on full content
+    if re.search(r'for\s+\w+\s+in\s+.*?\.(all|filter)\(\):?\s*\n\s*.*?\.\w+', content, re.IGNORECASE):
+        findings.append({
+            "cve_id": "ORM-N-PLUS-ONE-QUERY",
+            "severity": "MEDIUM",
+            "file": file_path,
+            "line": 1,
+            "description": "Potential N+1 Query antipattern inside loop detected in file. Use select_related/prefetch_related or join fetch."
+        })
+
     # 6. Advanced Frontend Security (React, Angular, SpringBoot & DOM XSS)
     if filename.endswith((".js", ".ts", ".jsx", ".tsx", ".html", ".java")):
         frontend_patterns = [
@@ -164,7 +185,8 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
             # React & Angular Specific Security Antipatterns
             (r'dangerouslySetInnerHTML', "REACT-DANGEROUSLY-SET-INNER-HTML", "HIGH", "React dangerouslySetInnerHTML antipattern detected (DOM XSS risk)."),
             (r'\[innerHTML\]\s*=\s*', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular [innerHTML] binding bypassing sanitization DOM XSS risk."),
-            (r'bypassSecurityTrust(Html|Script|ResourceUrl)', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular explicit security sanitization bypass (DomSanitizer).")
+            (r'bypassSecurityTrust(Html|Script|ResourceUrl|Style)', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular explicit security sanitization bypass (DomSanitizer)."),
+            (r'<button(?![^>]*aria-label)[^>]*>(?!\s*<span[^>]*>[^<]+</span>|\s*[^<\s]+)', "ACCESSIBILITY-WCAG-MISSING-LABEL", "LOW", "Interactive button missing accessible label or text content (WCAG 2.1 AA).")
         ]
         for idx, line in enumerate(lines, 1):
             for pattern, rule_id, severity, desc in frontend_patterns:
@@ -281,7 +303,7 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
                 # codebase. Confirmed safe to add: every pattern inside scan_sast_code() is
                 # already internally guarded by its own filename check, so .java files simply
                 # exercise the subset of rules that apply to them, same as any other extension.
-                elif file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".java")):
+                elif file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".java", ".html", ".xml", ".properties", ".json", ".yml", ".yaml")):
                     all_findings.extend(scan_sast_code(full_path, content))
             except Exception as e:
                 print(f"⚠️ [Master-Auditor] Error reading {full_path}: {e}")

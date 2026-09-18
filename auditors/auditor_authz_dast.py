@@ -103,6 +103,22 @@ def _load_config(asset_name: str) -> Optional[dict]:
                     continue
     except Exception:
         pass
+
+    # 3. PostgreSQL cat_asset_credentials table (fallback)
+    if db_manager:
+        try:
+            with db_manager.get_db_cursor() as cur:
+                cur.execute("""
+                    SELECT config_json FROM public.cat_asset_credentials
+                    WHERE asset_name = %s
+                    LIMIT 1;
+                """, (asset_name,))
+                row = cur.fetchone()
+                if row:
+                    return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        except Exception as db_err:
+            print(f"⚠️ [Authz-DAST] Could not load config from cat_asset_credentials: {db_err}")
+
     return None
 
 

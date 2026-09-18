@@ -1,5 +1,20 @@
 # Estado del Proyecto - Centinela CAI
 
+## 📅 Fecha: 17 de Septiembre, 2026 (tarde) — Implementación 100% Funcional de las 5 Áreas Técnicas Estratégicas
+Se completó la implementación y validación por pruebas unitarias (`25/25 OK`) de los 5 componentes solicitados:
+1. **MR Review Shift-Left (`auditors/mr_review.py`):** Conexión completa de escritura a la API REST de GitLab para discusiones inline, notas de resumen y status commit `centinela/security`.
+2. **Respuesta Autónoma SOAR 2.0 por Niveles (`core/soar_engine.py`):** Creada tabla `public.autoresponse_policy` en PostgreSQL. Implementado modo `dry_run=True` por defecto, bloqueo proxy Nginx con marca TTL `# centinela-auto expires=<ts>` y restricción estricta de `host_isolate` a aprobación humana manual (`MANUAL_APPROVAL_REQUIRED`).
+3. **Catálogo de Credenciales Multi-Rol (`auditors/auditor_authz_dast.py`):** Creada la tabla `public.cat_asset_credentials` en PostgreSQL y conectado el fallback de lectura en `_load_config()`.
+4. **Grafo de Ataque Incremental Neo4j (`core/attack_graph.py`):** Eliminada la sentencia destructiva `MATCH (n) DETACH DELETE n;`. Construcción incremental con `MERGE` e inserción atómica de nodos de Host, CVE, IP e Identidad con marcas de tiempo `ON MATCH SET h.last_seen`.
+5. **Arnés Operativo de Subagentes (`agents/agent_harness.py`):** Creado el arnés ejecutable para cargar las personas `security-reviewer`, `architect`, `code-reviewer`, `planner` y registrar la actividad en `agent_ledger`.
+
+## 📅 Fecha: 17 de Septiembre, 2026 — Auditoría en volante forzada del grupo Kardex (GitLab)
+Se ejecutó el Rito de Inicio, escaneo en volante y Rito de Cierre para el grupo `edomex-casmart/kardex` en el servidor de GitLab (`http://10.4.3.10`).
+- **Repositorios auditados:** `frontend-envio-correos`, `backend-envio-correos`, `frontend-kardex`, `backend-kardex` (todos en la rama `desarrollo`).
+- **Resultado Omni-Audit:** 194 hallazgos detectados en este ciclo (11 SAST, 60 SCA, 69 Standards, 17 Authz, 17 WCAG).
+- **Persistencia PostgreSQL:** Registrados/actualizados los activos (IDs 55132 a 55135) con un total acumulado en `vulnerability_log` de 1,445 registros asociados.
+- **Rito de Cierre:** Documentado en `.agent/RITO_CIERRE_2026-09-17.md`.
+
 ## 📅 Fecha: 11 de Agosto, 2026 (tarde, continuación) — Falco desplegado y verificado end-to-end
 El usuario pidió activar Falco de verdad (estaba comentado en `docker-compose.yml` desde siempre,
 ver la nota "Falco nunca se desplegó" más abajo en este archivo). Con confirmación explícita del
