@@ -5,8 +5,11 @@ Inspects codebases, APIs, Dockerfiles, and configurations for security flaws.
 import os
 import re
 import ast
+import logging
 from typing import List, Dict, Any
 from core import db_manager
+
+logger = logging.getLogger(__name__)
 
 
 def _is_inside_string_literal(line: str, pos: int) -> bool:
@@ -28,16 +31,68 @@ def _is_real_dangerous_call(line: str, match: "re.Match") -> bool:
     shell=True) -- NOT for HARDCODED-SECRET or the SQLi patterns, where matching inside a string
     literal is the entire point. Real bug fixed 2026-08-13: this scanner's own detector files
     (which necessarily contain comments and description strings *about* those risky calls, to
-    define what they catch) were self-flagging on every scan -- confirmed live, 6/6
-    CODE-INJECTION-EVAL findings against this codebase's own auditors/*.py were exactly this,
-    not a real dynamic-eval call. (Note: this single-line heuristic doesn't track state across a
-    multi-line triple-quoted docstring, so a docstring that spells out the flagged pattern
-    literally can still self-match, as this one nearly did -- worded around it rather than
-    add cross-line tracking for a single, rare self-referential case.)
+    define what they catch) were self-flagging on every scan.
     """
-    if line.lstrip().startswith("#"):
+    clean = line.lstrip()
+    if clean.startswith(("#", "//", "/*", "*")):
         return False
     return not _is_inside_string_literal(line, match.start())
+
+
+def _evaluate_line_patterns(
+    lines: List[str],
+    file_path: str,
+    patterns: List[Any],
+    check_dangerous_call: bool = False
+) -> List[Dict[str, Any]]:
+    """Evaluates a group of regex patterns line-by-line with comment and self-audit filters."""
+    findings = []
+    for idx, line in enumerate(lines, 1):
+        clean_line = line.strip()
+        if clean_line.startswith(("#", "//", "/*", "*")):
+            continue
+        for pattern, rule_id, severity, desc in patterns:
+            # Safeguard against self-matching scanner rule-definition tuples
+            if clean_line.startswith("(") and rule_id in line:
+                continue
+            m = re.search(pattern, line, re.IGNORECASE)
+            if not m:
+                continue
+            if check_dangerous_call and not _is_real_dangerous_call(line, m):
+                continue
+            findings.append({
+                "cve_id": rule_id,
+                "severity": severity,
+                "file": file_path,
+                "line": idx,
+                "description": f"{desc} Line {idx}: {clean_line}"
+            })
+    return findings
+
+
+def _check_cognitive_complexity(file_path: str, content: str) -> List[Dict[str, Any]]:
+    """AST cognitive complexity check for Python files."""
+    findings = []
+    try:
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                complexity = 0
+                for sub in ast.walk(node):
+                    if isinstance(sub, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With)):
+                        complexity += 1
+                if complexity > 15:
+                    findings.append({
+                        "cve_id": "COGNITIVE-COMPLEXITY-EXCEEDED",
+                        "severity": "MEDIUM",
+                        "file": file_path,
+                        "line": node.lineno,
+                        "description": f"Function '{node.name}' has cognitive complexity of {complexity} (max recommended: 15)."
+                    })
+    except Exception as e:
+        logger.error(f"Could not parse {file_path} for cognitive complexity: {e}", exc_info=True)
+        print(f"⚠️ [Master-Auditor] Could not parse {file_path} for cognitive complexity: {e}")
+    return findings
 
 
 def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
@@ -49,176 +104,121 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     # 1. SQL Injection Detection
     sqli_patterns = [
         (r'execute\s*\(\s*f["\'].*?SELECT.*?\{', "SQL-INJECTION-FSTRING", "HIGH", "SQL Injection via interpolated f-string in query."),
-        # Real bug fixed here: the previous `.*?` segments could cross the query string's OWN
-        # closing quote into either (a) a LATER, unrelated string literal on the same line, or
-        # (b) an inner, different-type quote char nested inside a single SQL string containing
-        # a literal '%wildcard%' -- e.g. the safe, correctly-parameterized
-        # `cur.execute("... LIKE %s", (f"%{name}%",))` and the fully-static
-        # `cur.execute("... LIKE '%None%'")` were both flagged, the regex mistaking a SQL LIKE
-        # wildcard for a Python `%` format operator. Confirmed live: 3 genuinely safe queries
-        # (2 in centinela.py, 1 in scratch/db_count.py) flagged this way. Fixed with a
-        # backreference (`\1`) so the "content" segments can only contain characters that are
-        # NOT the SAME quote character that opened the string -- this correctly finds the
-        # string's real terminator (crossing over inner different-type quotes, never crossing
-        # the matching one) regardless of whether a comma/second argument follows. Real unsafe
-        # `"...%s" % value` calls (no parameter tuple at all) are still caught.
         (r'execute\s*\(\s*(["\'])(?:(?!\1).)*?SELECT(?:(?!\1).)*?\1\s*%\s*[^(]', "SQL-INJECTION-PERCENT", "HIGH", "SQL Injection via string percent formatting without parameter tuple."),
         (r'execute\s*\(\s*["\'].*?\+.*?\+', "SQL-INJECTION-CONCAT", "CRITICAL", "SQL Injection via string concatenation.")
     ]
-    for idx, line in enumerate(lines, 1):
-        for pattern, rule_id, severity, desc in sqli_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+    findings.extend(_evaluate_line_patterns(lines, file_path, sqli_patterns))
 
     # 2. Command Injection Detection
     cmd_patterns = [
         (r'subprocess\.(run|Popen|call|check_output)\s*\([^)]*shell\s*=\s*True', "CMD-INJECTION-SHELL-TRUE", "CRITICAL", "Command Injection risk: subprocess executed with shell=True."),
         (r'os\.system\s*\(', "CMD-INJECTION-OS-SYSTEM", "HIGH", "Insecure os.system call. Use subprocess with explicit argument list."),
-        # \b is required: without it this matched "eval(" as a substring inside any longer
-        # identifier ending in those letters (e.g. onErrorEval(err), retrieval(x)) -- confirmed
-        # against real production data where 136 of 140 logged CODE-INJECTION-EVAL findings were
-        # exactly this false positive, not an actual eval() call.
         (r'\beval\s*\(', "CODE-INJECTION-EVAL", "CRITICAL", "Dynamic Code Execution risk via eval().")
     ]
-    for idx, line in enumerate(lines, 1):
-        for pattern, rule_id, severity, desc in cmd_patterns:
-            m = re.search(pattern, line, re.IGNORECASE)
-            if m and _is_real_dangerous_call(line, m):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+    findings.extend(_evaluate_line_patterns(lines, file_path, cmd_patterns, check_dangerous_call=True))
 
     # 3. SSRF (Server-Side Request Forgery)
-    # Real false positive fixed 2026-08-13: the old pattern flagged ANY f-string URL starting
-    # with http(s)://, regardless of whether the interpolated {variable} controls the actual
-    # destination HOST (real SSRF risk) or is merely a path/query segment on an otherwise
-    # hardcoded, fixed host (not SSRF at all -- e.g. main.py's own
-    # `requests.get(f"http://ip-api.com/json/{ip}?...")`, where the request always goes to
-    # ip-api.com no matter what `ip` contains). `[^/"\']*\{` requires the first `{` interpolation
-    # to appear before the first `/` after the scheme -- i.e. inside the host/authority part of
-    # the URL, which is the actual condition for SSRF (attacker-influenced destination).
     ssrf_patterns = [
         (r'requests\.(get|post|put|delete)\s*\(\s*f["\']https?://[^/"\']*\{', "SSRF-UNCHECKED-FETCH", "MEDIUM", "Potential SSRF: the request's destination HOST is dynamically interpolated without private/internal IP validation.")
     ]
-    for idx, line in enumerate(lines, 1):
-        for pattern, rule_id, severity, desc in ssrf_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+    findings.extend(_evaluate_line_patterns(lines, file_path, ssrf_patterns))
 
-    # 4. Hardcoded Secrets & JWT Tokens
+    # 4. Hardcoded Secrets & Cloud Credentials (CWE-798)
     secret_patterns = [
         (r'(jwt_secret|api_key|password|private_key)\s*=\s*["\'][A-Za-z0-9+/=_-]{8,}["\']', "HARDCODED-SECRET", "HIGH", "Hardcoded credential or secret key detected in source code."),
-        (r'(ghp_[A-Za-z0-9_]{36}|glpat-[A-Za-z0-9_]{20}|hvs\.[A-Za-z0-9_-]{24}|"type":\s*"service_account")', "EXPANDED-CLOUD-SECRET", "CRITICAL", "Hardcoded cloud token, PAT, or service account credential detected.")
+        (r'\bAKIA[0-9A-Z]{16}\b', "HARDCODED-SECRET-AWS-KEY", "CRITICAL", "AWS Access Key ID detected in source code."),
+        (r'\b(?:sk_live_[0-9a-zA-Z]{24,}|rk_live_[0-9a-zA-Z]{24,})\b', "HARDCODED-SECRET-STRIPE", "CRITICAL", "Stripe live secret key detected in source code."),
+        (r'\b(?:gh[pousr]_[a-zA-Z0-9_]{36,255}|github_pat_[0-9a-zA-Z_]{82})\b', "HARDCODED-SECRET-GITHUB", "CRITICAL", "GitHub Personal Access Token detected in source code."),
+        (r'\bglpat-[0-9a-zA-Z\-]{20,}\b', "HARDCODED-SECRET-GITLAB", "CRITICAL", "GitLab Personal Access Token detected in source code."),
+        (r'\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,32}\b', "HARDCODED-SECRET-SLACK", "HIGH", "Slack API token detected in source code."),
+        (r'\b(?:hvs\.[a-zA-Z0-9_-]{20,}|s\.[a-zA-Z0-9]{24,})\b', "HARDCODED-SECRET-VAULT", "CRITICAL", "HashiCorp Vault token detected in source code."),
+        (r'["\']type["\']\s*:\s*' + r'["\']service_account["\']', "HARDCODED-SECRET-GCP-KEY", "CRITICAL", "GCP Service Account private key JSON credential detected in source code.")
     ]
-    for idx, line in enumerate(lines, 1):
-        for pattern, rule_id, severity, desc in secret_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+    findings.extend(_evaluate_line_patterns(lines, file_path, secret_patterns))
 
-    # 5. Advanced Backend DB, Security & Performance (SpringBoot, Python, Deserialization, XXE, CSRF)
+    # 5. Insecure Deserialization (CWE-502)
+    deserialization_patterns = [
+        (r'\bpickle\.(loads|load)\s*\(', "INSECURE-DESERIALIZATION-PICKLE", "CRITICAL", "Insecure deserialization via pickle (CWE-502). Untrusted input leads to Remote Code Execution."),
+        (r'\byaml\.(unsafe_load|load)\s*\((?![^)]*Loader\s*=\s*(?:yaml\.)?SafeLoader)', "INSECURE-DESERIALIZATION-YAML", "HIGH", "Insecure YAML deserialization without SafeLoader (CWE-502). Use yaml.safe_load() or Loader=SafeLoader."),
+        (r'\bmarshal\.(loads|load)\s*\(', "INSECURE-DESERIALIZATION-MARSHAL", "CRITICAL", "Insecure deserialization via marshal (CWE-502)."),
+        (r'\b(?:node-serialize|serialize)\.unserialize\s*\(', "INSECURE-DESERIALIZATION-NODE", "CRITICAL", "Insecure Node.js deserialization via node-serialize/unserialize (CWE-502).")
+    ]
+    findings.extend(_evaluate_line_patterns(lines, file_path, deserialization_patterns, check_dangerous_call=True))
+
+    # 6. Path Traversal & Unsanitized File Access (CWE-22)
+    path_traversal_patterns = [
+        (r'open\s*\([^)]*(?:request\.(?:args|GET|POST|values|form|json)|req\.(?:params|query|body)|user_path|user_file)', "PATH-TRAVERSAL-UNSANITIZED", "HIGH", "Potential Path Traversal (CWE-22): file opened directly with unvalidated user input."),
+        (r'new\s+(?:File|FileInputStream|FileOutputStream)\s*\([^)]*(?:request\.getParameter|req\.getParameter)', "PATH-TRAVERSAL-UNSANITIZED", "HIGH", "Potential Path Traversal (CWE-22): File/Stream instantiated with unvalidated HTTP parameter."),
+        (r'fs\.(?:readFile|createReadStream|readFileSync|writeFile|writeFileSync)\s*\([^)]*(?:req\.params|req\.query|req\.body)', "PATH-TRAVERSAL-UNSANITIZED", "HIGH", "Potential Path Traversal (CWE-22): Node.js fs method called with unvalidated HTTP input.")
+    ]
+    findings.extend(_evaluate_line_patterns(lines, file_path, path_traversal_patterns, check_dangerous_call=True))
+
+    # 7. Framework Security Misconfiguration & CSRF Disabled (CWE-352 / CWE-693)
+    framework_patterns = [
+        (r'(?:http\.)?csrf\(\)\.disable\(\)|\.csrf\s*\(\s*(?:\w+\s*->\s*)?\w+\.disable\(\)\)', "SPRING-CSRF-DISABLED", "HIGH", "Spring Security CSRF protection explicitly disabled (CWE-352)."),
+        (r'helmet\s*\(\s*\{[^}]*contentSecurityPolicy\s*:\s*false', "EXPRESS-CSP-DISABLED", "MEDIUM", "Content Security Policy explicitly disabled in Helmet configuration (CWE-693).")
+    ]
+    findings.extend(_evaluate_line_patterns(lines, file_path, framework_patterns, check_dangerous_call=True))
+
+    # 8. Weak Cryptography & Obsolete Algorithms (CWE-327)
+    weak_crypto_patterns = [
+        (r'hashlib\.(?:md5|sha1)\s*\(', "WEAK-CRYPTO-HASH", "MEDIUM", "Use of weak or obsolete hash algorithm (MD5/SHA1) via hashlib (CWE-327). Use SHA-256 or SHA-3."),
+        (r'Cipher\.getInstance\s*\(\s*["\'](?:DES|RC4|AES/ECB|Blowfish)', "WEAK-CRYPTO-CIPHER", "HIGH", "Use of insecure/broken cryptographic cipher or ECB mode (CWE-327). Use AES/GCM or ChaCha20."),
+        (r'MessageDigest\.getInstance\s*\(\s*["\'](?:MD5|SHA-1|SHA1)["\']', "WEAK-CRYPTO-HASH", "MEDIUM", "Java MessageDigest with weak hash algorithm MD5/SHA-1 (CWE-327)."),
+        (r'crypto\.createHash\s*\(\s*["\'](?:md5|sha1)["\']', "WEAK-CRYPTO-HASH", "MEDIUM", "Node.js crypto.createHash with obsolete hash algorithm MD5/SHA-1 (CWE-327).")
+    ]
+    findings.extend(_evaluate_line_patterns(lines, file_path, weak_crypto_patterns, check_dangerous_call=True))
+
+    # 9. XML External Entity (XXE) Injection (CWE-611)
+    xxe_patterns = [
+        (r'(?:xml\.etree\.ElementTree|ET)\.(?:parse|fromstring)\s*\(|xml\.dom\.minidom\.parse(?:String)?\s*\(|xml\.sax\.make_parser\s*\(', "XXE-INSECURE-PARSER", "HIGH", "Potentially vulnerable standard XML parser used without defusedxml (CWE-611)."),
+        (r'(?:DocumentBuilderFactory|XMLInputFactory|SAXParserFactory)\.newInstance\s*\(\)', "XXE-JAVA-XML-PARSER", "HIGH", "Java XML parser instantiated without explicit secure processing features (CWE-611).")
+    ]
+    findings.extend(_evaluate_line_patterns(lines, file_path, xxe_patterns, check_dangerous_call=True))
+
+    # 10. Advanced Backend DB, Architecture & Performance Security (SpringBoot, Java, Python Antipatterns)
     backend_db_patterns = [
         (r'\.(raw|extra)\s*\(\s*f?["\'].*?\{', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection via raw/extra query interpolation."),
         (r'sequelize\.query\s*\(\s*f?["\'].*?\+', "ORM-RAW-QUERY-INJECTION", "HIGH", "Risk of ORM SQL Injection in Node.js Sequelize."),
         (r'(postgres|mysql)://[^\s"\']+@[^\s"\']+', "DB-UNENCRYPTED-CONN-STRING", "MEDIUM", "Database Connection string detected in code without explicit TLS/SSL parameters."),
         (r'@Query\s*\([^)]*nativeQuery\s*=\s*true', "SPRINGBOOT-NATIVE-QUERY-RISK", "MEDIUM", "SpringBoot native SQL query bypasses JPA parameter escaping safety."),
-        # Deserialization, Path Traversal, Weak Crypto, CSRF Disabled & XXE (CWE-502, CWE-22, CWE-327, CWE-352, CWE-611)
-        (r'\b(pickle\.loads|pickle\.load|marshal\.loads)\s*\(|yaml\.load\s*\([^)]*?(?<!SafeLoader)\)', "INSECURE-DESERIALIZATION", "CRITICAL", "Insecure deserialization risk (CWE-502). Use SafeLoader for YAML or safer serialization formats."),
-        (r'open\s*\(\s*(f["\'].*?\{|.*?\+)', "PATH-TRAVERSAL-RISK", "HIGH", "Potential Path Traversal risk when opening file paths constructed dynamically (CWE-22)."),
-        (r'hashlib\.(md5|sha1)\s*\(|Cipher\.getInstance\s*\(\s*["\']AES/ECB', "WEAK-CRYPTOGRAPHY", "HIGH", "Use of weak cryptographic algorithm or ECB mode (CWE-327). Use SHA-256/SHA-512 or AES/GCM."),
-        (r'\.csrf\s*\(\s*\)\s*\.disable\s*\(|csrf\s*->\s*csrf\.disable\s*\(', "SPRINGBOOT-CSRF-DISABLED", "HIGH", "CSRF protection explicitly disabled in Spring Security configuration (CWE-352)."),
-        (r'DocumentBuilderFactory\.newInstance\s*\(\s*\)|xml\.etree\.ElementTree', "XXE-INSECURE-PARSER", "MEDIUM", "XML parser initialization without explicit XXE / DTD protection (CWE-611)."),
-        # Module Audit Extracted Findings
         (r'(LocalAuth|TestSandbox|Backdoor)Controller', "BACKDOOR-SANDBOX-CONTROLLER", "CRITICAL", "Backdoor or sandbox/test controller detected in production code (CWE-288 / CWE-798)."),
         (r'TrustAllManager|NullHostnameVerifier|X509TrustManager', "JVM-GLOBAL-SSL-BYPASS", "CRITICAL", "Disabling SSL/TLS certificate or hostname verification JVM-wide (CWE-295)."),
         (r'@RequestParam.*?(jwt|token)|request\.getParameter\s*\(\s*["\']token["\']', "JWT-IN-URL-PARAM", "HIGH", "Passing JWT token in URL query parameter instead of Authorization header."),
         (r'JdkSerializationRedisSerializer', "REDIS-JDK-SERIALIZATION", "HIGH", "Insecure Java JDK serialization used in Redis cache config (CWE-502)."),
         (r'Files\.readAllBytes|byte\[\]\s+\w+\s*=\s*.*?readAllBytes', "OOM-BYTE-ARRAY-STREAMING", "MEDIUM", "Loading entire file into byte[] array risks Heap Out-Of-Memory. Use InputStream/StreamingResponseBody.")
     ]
-    for idx, line in enumerate(lines, 1):
-        for pattern, rule_id, severity, desc in backend_db_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+    findings.extend(_evaluate_line_patterns(lines, file_path, backend_db_patterns))
 
-    # Multi-line ORM N+1 Query Scan on full content
-    if re.search(r'for\s+\w+\s+in\s+.*?\.(all|filter)\(\):?\s*\n\s*.*?\.\w+', content, re.IGNORECASE):
-        findings.append({
-            "cve_id": "ORM-N-PLUS-ONE-QUERY",
-            "severity": "MEDIUM",
-            "file": file_path,
-            "line": 1,
-            "description": "Potential N+1 Query antipattern inside loop detected in file. Use select_related/prefetch_related or join fetch."
-        })
-
-    # 6. Advanced Frontend Security (React, Angular, SpringBoot & DOM XSS)
+    # 11. Advanced Frontend Security (React, Angular, SpringBoot & DOM XSS)
     if filename.endswith((".js", ".ts", ".jsx", ".tsx", ".html", ".java")):
         frontend_patterns = [
             (r'(VITE_|NEXT_PUBLIC_|REACT_APP_)(DB_|DATABASE_|POSTGRES_|MYSQL_)', "FRONTEND-EXPOSED-DB-CREDENTIAL", "CRITICAL", "Exposed Database credential or connection URL in Frontend public environment variable."),
             (r'localStorage\.setItem\s*\(\s*["\'](token|jwt|session|auth_token)["\']', "FRONTEND-JWT-LOCALSTORAGE", "MEDIUM", "Storing authentication token in localStorage makes it vulnerable to XSS extraction. Use httpOnly cookies."),
-            # React & Angular Specific Security Antipatterns
             (r'dangerouslySetInnerHTML', "REACT-DANGEROUSLY-SET-INNER-HTML", "HIGH", "React dangerouslySetInnerHTML antipattern detected (DOM XSS risk)."),
             (r'\[innerHTML\]\s*=\s*', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular [innerHTML] binding bypassing sanitization DOM XSS risk."),
             (r'bypassSecurityTrust(Html|Script|ResourceUrl|Style)', "ANGULAR-BYPASS-SECURITY-TRUST", "HIGH", "Angular explicit security sanitization bypass (DomSanitizer)."),
             (r'<button(?![^>]*aria-label)[^>]*>(?!\s*<span[^>]*>[^<]+</span>|\s*[^<\s]+)', "ACCESSIBILITY-WCAG-MISSING-LABEL", "LOW", "Interactive button missing accessible label or text content (WCAG 2.1 AA).")
         ]
-        for idx, line in enumerate(lines, 1):
-            for pattern, rule_id, severity, desc in frontend_patterns:
-                if re.search(pattern, line, re.IGNORECASE):
-                    findings.append({
-                        "cve_id": rule_id,
-                        "severity": severity,
-                        "file": file_path,
-                        "line": idx,
-                        "description": f"{desc} Line {idx}: {line.strip()}"
-                    })
+        findings.extend(_evaluate_line_patterns(lines, file_path, frontend_patterns))
 
-    # 5. AST Cognitive Complexity Check (Python files)
+    # 12. Multiline Pattern Detection (e.g. ORM N+1 queries across lines)
+    n_plus_one_re = re.compile(r'for\s+\w+\s+in\s+.*?\.(?:all|filter)\(\):?\s*\n\s*.*?\.\w+', re.IGNORECASE)
+    for m in n_plus_one_re.finditer(content):
+        line_no = content[:m.start()].count('\n') + 1
+        first_line = lines[line_no - 1] if line_no <= len(lines) else ""
+        if not first_line.lstrip().startswith(("#", "//", "/*", "*")):
+            findings.append({
+                "cve_id": "ORM-N-PLUS-ONE-QUERY",
+                "severity": "MEDIUM",
+                "file": file_path,
+                "line": line_no,
+                "description": f"Potential N+1 Query antipattern inside loop. Use select_related/prefetch_related or join fetch. Line {line_no}: {first_line.strip()}"
+            })
+
+    # 13. AST Cognitive Complexity Check (Python files)
     if filename.endswith(".py"):
-        try:
-            tree = ast.parse(content)
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    complexity = 0
-                    for sub in ast.walk(node):
-                        if isinstance(sub, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With)):
-                            complexity += 1
-                    if complexity > 15:
-                        findings.append({
-                            "cve_id": "COGNITIVE-COMPLEXITY-EXCEEDED",
-                            "severity": "MEDIUM",
-                            "file": file_path,
-                            "line": node.lineno,
-                            "description": f"Function '{node.name}' has cognitive complexity of {complexity} (max recommended: 15)."
-                        })
-        except Exception as e:
-            print(f"⚠️ [Master-Auditor] Could not parse {file_path} for cognitive complexity: {e}")
+        findings.extend(_check_cognitive_complexity(file_path, content))
 
     return findings
 
@@ -306,6 +306,7 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
                 elif file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".java", ".html", ".xml", ".properties", ".json", ".yml", ".yaml")):
                     all_findings.extend(scan_sast_code(full_path, content))
             except Exception as e:
+                logger.error(f"Error reading {full_path}: {e}", exc_info=True)
                 print(f"⚠️ [Master-Auditor] Error reading {full_path}: {e}")
 
     # Persist findings in DB if available. Two real bugs fixed here:
@@ -350,6 +351,7 @@ def run_master_vulnerability_scan(target_dir: str = "/app", asset_id: int = None
                 if resolved_count:
                     print(f"✅ [Master-Auditor] Reconciled {resolved_count} stale sast-native finding(s) as RESOLVED for asset {asset_id}.")
     except Exception as db_err:
+        logger.error(f"Could not log findings to DB: {db_err}", exc_info=True)
         print(f"⚠️ [Master-Auditor] Could not log findings to DB: {db_err}")
 
     return all_findings

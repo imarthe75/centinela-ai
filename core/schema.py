@@ -100,6 +100,37 @@ CORE_SCHEMA_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_incidents_status ON public.incidents (status, detected_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_incident_events_src ON public.incident_events (source, source_id)",
+    # ------------------------------------------------------------------ independent login
+    # Local dashboard users (added 2026-09-08). Replaces the Authentik-backed /api/users.
+    # Seeded from .env AUTH_USERNAME / AUTH_PASSWORD_HASH_B64 on first startup if empty.
+    # role in ('Admin','Analyst','Auditor','Viewer'); password_hash is passlib pbkdf2_sha256.
+    """
+    CREATE TABLE IF NOT EXISTS public.app_users (
+        id            SERIAL PRIMARY KEY,
+        username      TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'Viewer',
+        email         TEXT,
+        full_name     TEXT,
+        active        BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_login_at TIMESTAMP
+    )
+    """,
+    # ------------------------------------------------------------------ authz dast configs
+    # Per-asset multi-role authorization and DAST testing configuration (BOLA / IDOR / BFLA)
+    """
+    CREATE TABLE IF NOT EXISTS public.asset_auth_configs (
+        id               SERIAL PRIMARY KEY,
+        asset_id         INTEGER REFERENCES public.infra_inventory(id) ON DELETE CASCADE,
+        asset_name       TEXT UNIQUE NOT NULL,
+        base_url         TEXT,
+        config           JSONB NOT NULL,
+        created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_asset_auth_configs_name ON public.asset_auth_configs (asset_name)",
 ]
 
 

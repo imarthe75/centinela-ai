@@ -2856,6 +2856,216 @@ async def authentik_itdr_webhook(payload: dict, request: Request):
         print(f"⚠️ [ITDR-Webhook-Error] {e}")
         return {"status": "error", "detail": str(e)}
 
+@app.post("/api/edr/wazuh/webhook")
+async def wazuh_edr_webhook(payload: dict, request: Request):
+    """
+    Ingests live EDR alerts from Wazuh Manager or Vector Syslog pipe.
+    Normalizes priority, resolves asset in infra_inventory, stores in runtime_alerts,
+    and inserts into ClickHouse telemetry table.
+    """
+    token = os.getenv("WAZUH_WEBHOOK_TOKEN", "") or os.getenv("ITDR_WEBHOOK_TOKEN", "")
+    if token:
+        presented = (
+            request.headers.get("x-centinela-token", "").strip()
+            or request.headers.get("x-wazuh-token", "").strip()
+            or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        )
+        if presented != token:
+            raise HTTPException(status_code=401, detail="Invalid or missing Wazuh webhook token")
+
+    rule = payload.get("rule", {}) or {}
+    agent = payload.get("agent", {}) or {}
+    data = payload.get("data", {}) or {}
+    full_log = payload.get("full_log") or payload.get("output") or rule.get("description", "")
+    level = rule.get("level", 3)
+    try:
+        level = int(level)
+    except (ValueError, TypeError):
+        level = 3
+
+    if level >= 12:
+        priority = "CRITICAL"
+    elif level >= 8:
+        priority = "HIGH"
+    elif level >= 5:
+        priority = "MEDIUM"
+    elif level >= 3:
+        priority = "LOW"
+    else:
+        priority = "INFO"
+
+    rule_id = rule.get("id", "0000")
+    rule_name = f"WAZUH-{rule_id}: {str(rule.get('description', 'Wazuh Alert'))[:80]}"
+
+    agent_id = str(agent.get("id", "")).strip()
+    agent_ip = str(agent.get("ip", "")).strip()
+    agent_name = str(agent.get("name", "")).strip()
+
+    asset_id = None
+    with db_manager.get_db_cursor() as cur:
+        if agent_id:
+            cur.execute("SELECT id FROM public.infra_inventory WHERE agent_id = %s LIMIT 1", (agent_id,))
+            r = cur.fetchone()
+            if r:
+                asset_id = r[0]
+        if not asset_id and agent_ip:
+            cur.execute("SELECT id FROM public.infra_inventory WHERE endpoint LIKE %s LIMIT 1", (f"%{agent_ip}%",))
+            r = cur.fetchone()
+            if r:
+                asset_id = r[0]
+        if not asset_id and agent_name:
+            cur.execute("SELECT id FROM public.infra_inventory WHERE asset_name ILIKE %s LIMIT 1", (f"%{agent_name}%",))
+            r = cur.fetchone()
+            if r:
+                asset_id = r[0]
+
+        cur.execute("""
+            INSERT INTO public.runtime_alerts (asset_id, priority, rule_name, alert_text, output_fields)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (asset_id, priority, rule_name, full_log, json.dumps(payload)))
+        new_id = cur.fetchone()[0]
+
+    # Asynchronous write to ClickHouse telemetry
+    try:
+        username = data.get("srcuser") or data.get("dstuser") or payload.get("predecoder", {}).get("user", "")
+        clickhouse_manager.insert_telemetry_event(
+            source="wazuh",
+            event_type=f"RULE_{rule_id}",
+            username=str(username or ""),
+            client_ip=agent_ip,
+            severity=priority,
+            details=payload,
+            confidence=0.9
+        )
+    except Exception as e:
+        print(f"⚠️ [Wazuh-Webhook] ClickHouse telemetry insert: {e}")
+
+    return {"status": "ingested", "alert_id": new_id, "priority": priority, "rule_name": rule_name, "asset_id": asset_id}
+
+@app.get("/api/correlations/sast-runtime")
+async def get_sast_runtime_correlations():
+    """
+    Unified matrix correlating static code findings (SAST/SCA) detected in repositories
+    with suspicious runtime executions (Falco/Wazuh/Zeek alerts) occurring on the associated hosts.
+    """
+    with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+        # 1. Correlated active incidents that bridge static & runtime events
+        cur.execute("""
+            SELECT i.id AS incident_id, i.title, i.severity, i.status, i.kill_chain,
+                   i.detected_at, inv.asset_name, inv.endpoint,
+                   COUNT(CASE WHEN ie.source = 'vulnerability' THEN 1 END) AS sast_count,
+                   COUNT(CASE WHEN ie.source = 'runtime_alert' THEN 1 END) AS runtime_count
+            FROM public.incidents i
+            LEFT JOIN public.infra_inventory inv ON i.asset_id = inv.id
+            JOIN public.incident_events ie ON i.id = ie.incident_id
+            GROUP BY i.id, i.title, i.severity, i.status, i.kill_chain, i.detected_at, inv.asset_name, inv.endpoint
+            HAVING COUNT(CASE WHEN ie.source = 'vulnerability' THEN 1 END) > 0
+               AND COUNT(CASE WHEN ie.source = 'runtime_alert' THEN 1 END) > 0
+            ORDER BY i.detected_at DESC
+            LIMIT 50
+        """)
+        hybrid_incidents = cur.fetchall()
+
+        # 2. Top assets with both open SAST findings and active runtime alerts
+        cur.execute("""
+            SELECT inv.id AS asset_id, inv.asset_name, inv.asset_type, inv.endpoint,
+                   COUNT(DISTINCT v.id) AS open_vulnerabilities,
+                   COUNT(DISTINCT r.id) AS runtime_alerts_count,
+                   MAX(r.detected_at) AS last_runtime_event
+            FROM public.infra_inventory inv
+            JOIN public.vulnerability_log v ON inv.id = v.asset_id AND v.status != 'RESOLVED'
+            JOIN public.runtime_alerts r ON inv.id = r.asset_id
+            GROUP BY inv.id, inv.asset_name, inv.asset_type, inv.endpoint
+            ORDER BY open_vulnerabilities DESC, runtime_alerts_count DESC
+            LIMIT 25
+        """)
+        correlated_assets = cur.fetchall()
+
+        # 3. Recent runtime executions associated with assets
+        cur.execute("""
+            SELECT r.id, r.asset_id, inv.asset_name, r.priority, r.rule_name, r.alert_text, r.detected_at
+            FROM public.runtime_alerts r
+            LEFT JOIN public.infra_inventory inv ON r.asset_id = inv.id
+            WHERE r.rule_name NOT IN ('ZEEK-CONN-HEARTBEAT', 'Falco internal: syscall event drop')
+            ORDER BY r.detected_at DESC
+            LIMIT 30
+        """)
+        recent_runtime = cur.fetchall()
+
+    return {
+        "hybrid_incidents": hybrid_incidents,
+        "correlated_assets": correlated_assets,
+        "recent_runtime_events": recent_runtime,
+        "count_hybrid": len(hybrid_incidents),
+        "count_assets": len(correlated_assets),
+    }
+
+class AuthzConfigModel(BaseModel):
+    asset_name: str
+    base_url: Optional[str] = None
+    config: dict
+
+@app.get("/api/authz/configs")
+async def list_authz_configs():
+    """List all configured multi-role DAST authorization profiles."""
+    with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, asset_id, asset_name, base_url, config, created_at, updated_at
+            FROM public.asset_auth_configs
+            ORDER BY asset_name
+        """)
+        rows = cur.fetchall()
+    return {"configs": rows, "count": len(rows)}
+
+@app.get("/api/authz/configs/{asset_name:path}")
+async def get_authz_config(asset_name: str):
+    """Get multi-role DAST authorization profile for a specific asset."""
+    with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, asset_id, asset_name, base_url, config, created_at, updated_at
+            FROM public.asset_auth_configs
+            WHERE asset_name = %s
+        """, (asset_name,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No authz config found for asset '{asset_name}'")
+    return row
+
+@app.post("/api/authz/configs")
+async def upsert_authz_config(body: AuthzConfigModel):
+    """Create or update a multi-role DAST authorization profile for an asset."""
+    with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT id FROM public.infra_inventory WHERE asset_name = %s LIMIT 1", (body.asset_name,))
+        inv = cur.fetchone()
+        asset_id = inv["id"] if inv else None
+
+        cur.execute("""
+            INSERT INTO public.asset_auth_configs (asset_id, asset_name, base_url, config, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (asset_name) DO UPDATE SET
+                asset_id = EXCLUDED.asset_id,
+                base_url = EXCLUDED.base_url,
+                config = EXCLUDED.config,
+                updated_at = NOW()
+            RETURNING id, asset_name, base_url, config, updated_at
+        """, (asset_id, body.asset_name, body.base_url, json.dumps(body.config)))
+        row = cur.fetchone()
+    return {"status": "saved", "config": row}
+
+@app.get("/api/templates/gitlab-ci")
+async def get_gitlab_ci_template():
+    """Serves the reusable Centinela CI/CD Quality Gate template."""
+    tmpl_path = "/opt/centinela-ai/templates/centinela-quality-gate.gitlab-ci.yml"
+    if not os.path.exists(tmpl_path):
+        tmpl_path = os.path.join(os.path.dirname(__file__), "templates", "centinela-quality-gate.gitlab-ci.yml")
+    if not os.path.exists(tmpl_path):
+        raise HTTPException(status_code=404, detail="CI template file not found")
+    with open(tmpl_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content, media_type="text/yaml")
+
 @app.get("/api/itdr/telemetry/recent")
 async def get_recent_itdr_telemetry(minutes: int = 15):
     """
@@ -3402,6 +3612,19 @@ async def gitlab_mr_webhook(request: Request, background_tasks: BackgroundTasks)
         return {"status": "ignored", "reason": f"object_kind={payload.get('object_kind')}"}
     attrs = payload.get("object_attributes", {}) or {}
     action = attrs.get("action")
+    state = attrs.get("state")
+
+    # Item 1 closure: when an MR is merged, resolve associated findings and complete remediation record
+    if action in ("merge", "merged") or state == "merged":
+        try:
+            from remediation.gitlab_autofix import handle_mr_merged
+            merge_res = handle_mr_merged(payload)
+            return {"status": "merged_processed", "action": action or state, "result": merge_res}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "detail": str(e)}
+
     if action not in ("open", "reopen", "update"):
         return {"status": "ignored", "reason": f"action={action}"}
     # 'update' fires for label/assignee/description edits too -- only re-review on real new commits.
@@ -4150,6 +4373,129 @@ async def download_cmmi_asset_report(asset_name: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/group/{group_name:path}")
+async def download_group_executive_report(group_name: str):
+    """
+    Consolidated Executive Security & CMMI/ISO Report PDF for a specific GitLab group / subsystem
+    (e.g., 'kardex', 'starters', 'setag'). Aggregates all repos and assets under this prefix.
+    """
+    try:
+        from auditors.compliance_mapper import evaluate_cmmi_v3_for_asset
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, asset_name, asset_type, endpoint, criticality, status, last_scanned, last_audit, agent_id
+                FROM public.infra_inventory
+                WHERE asset_name ILIKE %s OR asset_name ILIKE %s
+                ORDER BY asset_name
+            """, (f"GitLab/{group_name}/%", f"%{group_name}%"))
+            group_assets = cur.fetchall()
+
+            if not group_assets:
+                raise HTTPException(status_code=404, detail=f"No se encontraron activos asociados al grupo '{group_name}'")
+
+            asset_ids = [a["id"] for a in group_assets]
+            cur.execute("""
+                SELECT v.id, v.asset_id, v.cve_id, v.severity, v.status, v.scan_engine, v.url_path, v.description,
+                       inv.asset_name
+                FROM public.vulnerability_log v
+                JOIN public.infra_inventory inv ON v.asset_id = inv.id
+                WHERE v.asset_id = ANY(%s) AND v.status != 'RESOLVED'
+                ORDER BY CASE v.severity
+                    WHEN 'CRITICAL' THEN 1
+                    WHEN 'HIGH' THEN 2
+                    WHEN 'MEDIUM' THEN 3
+                    WHEN 'LOW' THEN 4
+                    ELSE 5 END
+            """, (asset_ids,))
+            vulns = cur.fetchall()
+
+            # Evaluate CMMI v3.0 for each asset in the group
+            asset_cmmi_list = []
+            for a in group_assets:
+                cmmi_res = evaluate_cmmi_v3_for_asset(cur, a)
+                asset_cmmi_list.append(cmmi_res)
+
+        gen_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        total_assets = len(group_assets)
+        avg_cmmi = round(sum(a["cmmi_compliance_percentage"] for a in asset_cmmi_list) / max(total_assets, 1), 1)
+
+        sev_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for v in vulns:
+            s = str(v.get("severity", "")).upper()
+            if s in sev_counts:
+                sev_counts[s] += 1
+
+        # Build HTML table for assets
+        assets_table_rows = "".join([
+            f"""<tr>
+                  <td><b>{a['asset_name']}</b></td>
+                  <td>{a['asset_type']}</td>
+                  <td style='text-align:center;'><span class='badge {"badge-low" if a["cmmi_compliance_percentage"]>=90 else "badge-medium" if a["cmmi_compliance_percentage"]>=70 else "badge-critical"}'>{a['cmmi_compliance_percentage']}%</span></td>
+                  <td>{a['cmmi_maturity_level']}</td>
+                  <td style='text-align:center;'><b>{a['active_vulnerabilities_count']}</b></td>
+                </tr>"""
+            for a in sorted(asset_cmmi_list, key=lambda x: x["cmmi_compliance_percentage"])
+        ])
+
+        # Top 15 vulnerabilities
+        top_vulns = vulns[:15]
+        vulns_table_rows = "".join([
+            f"""<tr>
+                  <td><code>{v['cve_id']}</code></td>
+                  <td>{v['asset_name']}</td>
+                  <td style='text-align:center;'><span class='badge badge-{str(v['severity']).lower()}'>{v['severity']}</span></td>
+                  <td>{str(v.get('url_path') or '—')[:40]}</td>
+                  <td>{str(v.get('description') or '')[:100]}...</td>
+                </tr>"""
+            for v in top_vulns
+        ]) if top_vulns else "<tr><td colspan='5' style='text-align:center;'>✅ Sin vulnerabilidades activas registradas en este grupo.</td></tr>"
+
+        html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{CIVIKA_PDF_STYLES}</style></head><body>
+{build_pdf_header(f"Reporte Ejecutivo Consolidado — Grupo {group_name.upper()}", f"Auditoría Integral Multi-Proyecto ({total_assets} repositorios/activos)", gen_date)}
+
+<div class="kpi-grid">
+  <div class="kpi-card"><div class="kpi-num">{avg_cmmi}%</div><div class="kpi-label">Cumplimiento CMMI Promedio</div></div>
+  <div class="kpi-card"><div class="kpi-num">{total_assets}</div><div class="kpi-label">Proyectos en Grupo</div></div>
+  <div class="kpi-card kpi-crit"><div class="kpi-num">{sev_counts['CRITICAL']}</div><div class="kpi-label">Críticas Activas</div></div>
+  <div class="kpi-card kpi-crit"><div class="kpi-num">{sev_counts['HIGH']}</div><div class="kpi-label">Altas Activas</div></div>
+</div>
+
+<h2>Estado de Cumplimiento por Repositorio / Activo ({total_assets})</h2>
+<table>
+  <tr><th>Activo / Repositorio</th><th>Tipo</th><th style='text-align:center;'>CMMI</th><th>Nivel de Madurez</th><th style='text-align:center;'>Vulnerabilidades</th></tr>
+  {assets_table_rows}
+</table>
+
+<h2>Principales Vulnerabilidades Abiertas ({len(vulns)})</h2>
+<table>
+  <tr><th>CVE / Regla</th><th>Proyecto</th><th style='text-align:center;'>Severidad</th><th>Ubicación</th><th>Descripción</th></tr>
+  {vulns_table_rows}
+</table>
+
+<div class='pdf-footer-bar'>
+  Centinela-AI | SETAG Ecosistema de Seguridad | Grupo: {group_name} | Clasificación: CONFIDENCIAL
+</div>
+</body></html>"""
+
+        try:
+            pdf_bytes = render_pdf_with_weasyprint(html_content)
+            from fastapi.responses import Response
+            safe_name = group_name.replace("/", "_")
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename=reporte_grupo_{safe_name}.pdf",
+                         "Cache-Control": "no-store"})
+        except Exception as e:
+            print(f"⚠️ WeasyPrint fallback: {e}")
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

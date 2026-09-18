@@ -45,6 +45,10 @@ import {
   ClipboardCheck,
   ClipboardList,
   ChevronDown,
+  ChevronUp,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
   Laptop,
   RefreshCw,
   Radio,
@@ -114,6 +118,31 @@ function healthStatusTier(status) {
   return 'fail'
 }
 
+// Encabezado interactivo ordenable consistente para tablas
+function SortableHeader({ label, field, currentField, currentOrder, onSort, align = 'left', className = '' }) {
+  const isActive = currentField === field
+  return (
+    <th 
+      onClick={() => onSort(field)} 
+      className={`cursor-pointer select-none hover:text-[#06B6D4] transition-colors group/th ${className}`}
+      title={`Ordenar por ${label}`}
+    >
+      <div className={`flex items-center gap-1.5 ${align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start'}`}>
+        <span>{label}</span>
+        {isActive ? (
+          currentOrder === 'asc' ? (
+            <ChevronUp size={13} className="text-[#06B6D4] shrink-0" />
+          ) : (
+            <ChevronDown size={13} className="text-[#06B6D4] shrink-0" />
+          )
+        ) : (
+          <ArrowUpDown size={11} className="text-slate-600 group-hover/th:text-slate-400 transition-colors shrink-0" />
+        )}
+      </div>
+    </th>
+  )
+}
+
 export default function Dashboard() {
   const auth = useAuth()
   const [currentView, setCurrentView] = useState('dashboard')
@@ -152,14 +181,22 @@ export default function Dashboard() {
   const [inventorySearch, setInventorySearch] = useState('')
   const [inventoryViewMode, setInventoryViewMode] = useState('grid') // 'grid' | 'table'
   const [inventorySortBy, setInventorySortBy] = useState('newest')   // 'newest' | 'alpha' | 'vulns' | 'alerts'
+  const [inventorySortField, setInventorySortField] = useState('newest') // 'newest' | 'name' | 'type' | 'endpoint' | 'vulns' | 'alerts' | 'cis'
+  const [inventorySortOrder, setInventorySortOrder] = useState('desc')   // 'desc' | 'asc'
   const [inventoryTypeFilter, setInventoryTypeFilter] = useState('')
   const [threatSearch, setThreatSearch] = useState('')
   const [threatSortBy, setThreatSortBy] = useState('newest')   // 'newest' | 'oldest' | 'severity'
+  const [threatSortField, setThreatSortField] = useState('date') // 'date' | 'severity' | 'asset' | 'rule'
+  const [threatSortOrder, setThreatSortOrder] = useState('desc') // 'desc' | 'asc'
   
   const [assetStatusFilter, setAssetStatusFilter] = useState('ALL') // NEW: ALL, VULNERABLE, ATTACKED
   const [soarSeverityFilter, setSoarSeverityFilter] = useState('ALL')
   const [soarStatusFilter, setSoarStatusFilter] = useState('ALL')
   const [soarSearch, setSoarSearch] = useState('')
+  const [soarSortField, setSoarSortField] = useState('severity') // 'severity' | 'crs' | 'cve' | 'asset' | 'status' | 'date'
+  const [soarSortOrder, setSoarSortOrder] = useState('desc')     // 'desc' | 'asc'
+  const [xdrSortField, setXdrSortField] = useState('severity')   // 'severity' | 'incident' | 'asset' | 'sast' | 'runtime'
+  const [xdrSortOrder, setXdrSortOrder] = useState('desc')       // 'desc' | 'asc'
   
   // Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -218,11 +255,26 @@ export default function Dashboard() {
   const [usersList, setUsersList] = useState([])
   const [usersLoading, setUsersLoading] = useState(false)
   const [currentUserRole, setCurrentUserRole] = useState('Viewer')
+  const [correlationsData, setCorrelationsData] = useState({ hybrid_incidents: [], correlated_assets: [], recent_runtime_events: [] })
+  const [correlationsLoading, setCorrelationsLoading] = useState(false)
+
+  const fetchCorrelations = async () => {
+    try {
+      setCorrelationsLoading(true)
+      const res = await axios.get(`${API_BASE}/correlations/sast-runtime`)
+      if (res.data) setCorrelationsData(res.data)
+    } catch (e) {
+      console.error("Error fetching correlations", e)
+    } finally {
+      setCorrelationsLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (auth.isAuthenticated) {
       fetchData()
       fetchUsers()
+      fetchCorrelations()
       const interval = setInterval(fetchData, 5000)
       return () => clearInterval(interval)
     }
@@ -858,6 +910,44 @@ export default function Dashboard() {
   // "recent alerts" widget) rather than replacing it outright, so free-text search/sort scoped
   // to the Búsqueda de Amenazas panel doesn't leak into that other, unrelated widget.
   const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 }
+  const SOAR_SEV_RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 }
+
+  const handleSoarSort = (field) => {
+    if (soarSortField === field) {
+      setSoarSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSoarSortField(field)
+      setSoarSortOrder(field === 'cve' || field === 'asset' || field === 'status' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleThreatSort = (field) => {
+    if (threatSortField === field) {
+      setThreatSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setThreatSortField(field)
+      setThreatSortOrder(field === 'asset' || field === 'rule' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleInventorySort = (field) => {
+    if (inventorySortField === field) {
+      setInventorySortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setInventorySortField(field)
+      setInventorySortOrder(field === 'name' || field === 'type' || field === 'endpoint' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleXdrSort = (field) => {
+    if (xdrSortField === field) {
+      setXdrSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setXdrSortField(field)
+      setXdrSortOrder(field === 'incident' || field === 'asset' ? 'asc' : 'desc')
+    }
+  }
+
   const threatHuntingAlerts = (() => {
     const term = threatSearch.trim().toLowerCase()
     const searched = term ? filteredAlerts.filter(a => (
@@ -866,39 +956,108 @@ export default function Dashboard() {
       (a.asset_name || '').toLowerCase().includes(term)
     )) : filteredAlerts
     const sorted = [...searched]
-    if (threatSortBy === 'oldest') {
-      sorted.sort((a, b) => new Date(a.detected_at) - new Date(b.detected_at))
-    } else if (threatSortBy === 'severity') {
-      sorted.sort((a, b) => (SEVERITY_RANK[normSev(a.priority)] ?? 9) - (SEVERITY_RANK[normSev(b.priority)] ?? 9))
-    } else {
-      sorted.sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at))
-    }
+    sorted.sort((a, b) => {
+      let cmp = 0
+      if (threatSortField === 'severity' || threatSortBy === 'severity') {
+        const rankA = SEVERITY_RANK[normSev(a.priority)] ?? 9
+        const rankB = SEVERITY_RANK[normSev(b.priority)] ?? 9
+        cmp = rankA - rankB
+        if (cmp === 0) cmp = new Date(b.detected_at || 0) - new Date(a.detected_at || 0)
+        return threatSortOrder === 'desc' ? cmp : -cmp
+      } else if (threatSortField === 'asset') {
+        cmp = (a.asset_name || '').localeCompare(b.asset_name || '')
+      } else if (threatSortField === 'rule') {
+        cmp = (a.rule_name || '').localeCompare(b.rule_name || '')
+      } else { // 'date'
+        const dateA = new Date(a.detected_at || 0).getTime()
+        const dateB = new Date(b.detected_at || 0).getTime()
+        cmp = dateA - dateB
+      }
+      return threatSortOrder === 'desc' ? -cmp : cmp
+    })
     return sorted
   })()
 
-  const filteredRemediations = Array.isArray(remediationLog) ? remediationLog.filter(r => {
-    const targetAsset = assetFilter ? assetFilter.toLowerCase().trim() : '';
-    const logAsset = r.asset_name ? r.asset_name.toLowerCase().trim() : '';
-    const matchAsset = assetFilter ? (
-      logAsset === targetAsset ||
-      logAsset.includes(targetAsset) ||
-      targetAsset.includes(logAsset)
-    ) : true;
-    const matchSeverity = soarSeverityFilter && soarSeverityFilter !== 'ALL' ? r.severity === soarSeverityFilter : true;
-    const matchStatus = soarStatusFilter && soarStatusFilter !== 'ALL' ? (
-      soarStatusFilter === 'REMEDIADO' ? r.executed_bool === true :
-      soarStatusFilter === 'CORRELATED' ? r.status === 'CORRELATED' && !r.executed_bool :
-      soarStatusFilter === 'PENDIENTE' ? (r.status === 'NEW' || r.status === 'PENDING') && !r.executed_bool :
-      soarStatusFilter === 'AI_FAILED' ? r.status === 'AI_FAILED' && !r.executed_bool : true
-    ) : true;
-    const matchSearch = soarSearch ? (
-      r.cve_id?.toLowerCase().includes(soarSearch.toLowerCase()) ||
-      r.script_path?.toLowerCase().includes(soarSearch.toLowerCase())
-    ) : true;
-    const matchCategory = soarCategoryFilter && soarCategoryFilter !== 'ALL' ? r.finding_category === soarCategoryFilter : true;
-    const matchAssetCategory = soarAssetCategoryFilter && soarAssetCategoryFilter !== 'ALL' ? r.asset_category === soarAssetCategoryFilter : true;
-    return matchAsset && matchSeverity && matchStatus && matchSearch && matchCategory && matchAssetCategory;
-  }) : [];
+  const filteredRemediations = (() => {
+    if (!Array.isArray(remediationLog)) return []
+    const filtered = remediationLog.filter(r => {
+      const targetAsset = assetFilter ? assetFilter.toLowerCase().trim() : '';
+      const logAsset = r.asset_name ? r.asset_name.toLowerCase().trim() : '';
+      const matchAsset = assetFilter ? (
+        logAsset === targetAsset ||
+        logAsset.includes(targetAsset) ||
+        targetAsset.includes(logAsset)
+      ) : true;
+      const matchSeverity = soarSeverityFilter && soarSeverityFilter !== 'ALL' ? r.severity === soarSeverityFilter : true;
+      const matchStatus = soarStatusFilter && soarStatusFilter !== 'ALL' ? (
+        soarStatusFilter === 'REMEDIADO' ? r.executed_bool === true :
+        soarStatusFilter === 'CORRELATED' ? r.status === 'CORRELATED' && !r.executed_bool :
+        soarStatusFilter === 'PENDIENTE' ? (r.status === 'NEW' || r.status === 'PENDING') && !r.executed_bool :
+        soarStatusFilter === 'AI_FAILED' ? r.status === 'AI_FAILED' && !r.executed_bool : true
+      ) : true;
+      const matchSearch = soarSearch ? (
+        r.cve_id?.toLowerCase().includes(soarSearch.toLowerCase()) ||
+        r.script_path?.toLowerCase().includes(soarSearch.toLowerCase()) ||
+        r.asset_name?.toLowerCase().includes(soarSearch.toLowerCase())
+      ) : true;
+      const matchCategory = soarCategoryFilter && soarCategoryFilter !== 'ALL' ? r.finding_category === soarCategoryFilter : true;
+      const matchAssetCategory = soarAssetCategoryFilter && soarAssetCategoryFilter !== 'ALL' ? r.asset_category === soarAssetCategoryFilter : true;
+      return matchAsset && matchSeverity && matchStatus && matchSearch && matchCategory && matchAssetCategory;
+    });
+
+    return [...filtered].sort((a, b) => {
+      let cmp = 0
+      if (soarSortField === 'severity') {
+        const rankA = SOAR_SEV_RANK[a.severity?.toUpperCase()] ?? 0
+        const rankB = SOAR_SEV_RANK[b.severity?.toUpperCase()] ?? 0
+        cmp = rankA - rankB
+        if (cmp === 0) {
+          cmp = (parseFloat(a.risk_score || a.crs || 0) || 0) - (parseFloat(b.risk_score || b.crs || 0) || 0)
+        }
+      } else if (soarSortField === 'crs') {
+        const crsA = parseFloat(a.risk_score || a.crs || 0) || 0
+        const crsB = parseFloat(b.risk_score || b.crs || 0) || 0
+        cmp = crsA - crsB
+      } else if (soarSortField === 'cve') {
+        cmp = (a.cve_id || '').localeCompare(b.cve_id || '')
+      } else if (soarSortField === 'asset') {
+        cmp = (a.asset_name || '').localeCompare(b.asset_name || '')
+      } else if (soarSortField === 'status') {
+        const statusA = a.executed_bool ? 'REMEDIADO' : (a.status || '')
+        const statusB = b.executed_bool ? 'REMEDIADO' : (b.status || '')
+        cmp = statusA.localeCompare(statusB)
+      } else if (soarSortField === 'date') {
+        const dateA = new Date(a.detected_at || a.created_at || 0).getTime() || parseInt(a.id || 0)
+        const dateB = new Date(b.detected_at || b.created_at || 0).getTime() || parseInt(b.id || 0)
+        cmp = dateA - dateB
+      } else {
+        cmp = (a.id || 0) - (b.id || 0)
+      }
+      return soarSortOrder === 'desc' ? -cmp : cmp
+    })
+  })()
+
+  const sortedHybridIncidents = (() => {
+    const list = Array.isArray(correlationsData?.hybrid_incidents) ? [...correlationsData.hybrid_incidents] : []
+    list.sort((a, b) => {
+      let cmp = 0
+      if (xdrSortField === 'severity') {
+        const rankA = SOAR_SEV_RANK[a.severity?.toUpperCase()] ?? 0
+        const rankB = SOAR_SEV_RANK[b.severity?.toUpperCase()] ?? 0
+        cmp = rankA - rankB
+      } else if (xdrSortField === 'sast') {
+        cmp = (parseInt(a.sast_count || 0)) - (parseInt(b.sast_count || 0))
+      } else if (xdrSortField === 'runtime') {
+        cmp = (parseInt(a.runtime_count || 0)) - (parseInt(b.runtime_count || 0))
+      } else if (xdrSortField === 'asset') {
+        cmp = (a.asset_name || a.endpoint || '').localeCompare(b.asset_name || b.endpoint || '')
+      } else {
+        cmp = String(a.incident_id || a.title || '').localeCompare(String(b.incident_id || b.title || ''))
+      }
+      return xdrSortOrder === 'desc' ? -cmp : cmp
+    })
+    return list
+  })()
 
   // CIS Benchmarks (Hardening Level 1) grade badge -- shared by the inventory grid card, the
   // table row, and the asset detail modal so the color/label logic can't drift between them.
@@ -991,10 +1150,29 @@ export default function Dashboard() {
         return matchSearch && matchType && matchStatus;
     })
     .sort((a, b) => {
-        if (inventorySortBy === 'alpha') return a.name.localeCompare(b.name);
-        if (inventorySortBy === 'vulns') return b.vulnerability_count - a.vulnerability_count;
-        if (inventorySortBy === 'alerts') return b.runtime_alerts_count - a.runtime_alerts_count;
-        return (b.max_id || 0) - (a.max_id || 0) || a.name.localeCompare(b.name);
+        let cmp = 0
+        if (inventorySortField === 'name' || inventorySortBy === 'alpha') {
+          cmp = a.name.localeCompare(b.name)
+        } else if (inventorySortField === 'type') {
+          const typeA = a.interfaces?.[0]?.asset_type || ''
+          const typeB = b.interfaces?.[0]?.asset_type || ''
+          cmp = typeA.localeCompare(typeB)
+        } else if (inventorySortField === 'endpoint') {
+          const endA = a.interfaces?.[0]?.endpoint || ''
+          const endB = b.interfaces?.[0]?.endpoint || ''
+          cmp = endA.localeCompare(endB)
+        } else if (inventorySortField === 'vulns' || inventorySortBy === 'vulns') {
+          cmp = (a.vulnerability_count || 0) - (b.vulnerability_count || 0)
+        } else if (inventorySortField === 'alerts' || inventorySortBy === 'alerts') {
+          cmp = (a.runtime_alerts_count || 0) - (b.runtime_alerts_count || 0)
+        } else if (inventorySortField === 'cis') {
+          const cisA = parseInt(a.interfaces?.[0]?.cis_percentage || 0)
+          const cisB = parseInt(b.interfaces?.[0]?.cis_percentage || 0)
+          cmp = cisA - cisB
+        } else {
+          cmp = (a.max_id || 0) - (b.max_id || 0) || b.name.localeCompare(a.name)
+        }
+        return inventorySortOrder === 'desc' ? -cmp : cmp
     }) : [];
 
   return (
@@ -1041,6 +1219,12 @@ export default function Dashboard() {
             label="Remediación con IA" 
             active={currentView === 'soar'} 
             onClick={() => setCurrentView('soar')}
+          />
+          <NavItem 
+            icon={<Layers size={20} />} 
+            label="Correlación XDR" 
+            active={currentView === 'correlations'} 
+            onClick={() => { setCurrentView('correlations'); fetchCorrelations(); }}
           />
           <NavItem 
             icon={<Activity size={20} />} 
@@ -1111,6 +1295,7 @@ export default function Dashboard() {
                currentView === 'itdr' ? 'Identidad & ITDR' :
                currentView === 'inventory' ? 'Inventario de Activos' :
                currentView === 'soar' ? 'Remediación con IA' :
+               currentView === 'correlations' ? 'Correlación SAST & Runtime' :
                currentView === 'health' ? 'Salud del Sistema' : currentView}
             </span>
           </div>
@@ -1927,12 +2112,51 @@ export default function Dashboard() {
                                 <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
                         </div>
+
+                        {/* Selector de Ordenamiento Consistente */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-2 rounded-xl border border-slate-800" title="Ordenar remediaciones y hallazgos por columna y sentido">
+                            <ArrowUpDown size={12} className="text-[#06B6D4]" />
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Ordenar:</span>
+                            <div className="relative flex items-center">
+                                <select 
+                                    value={`${soarSortField}-${soarSortOrder}`}
+                                    onChange={(e) => {
+                                        const [f, o] = e.target.value.split('-')
+                                        setSoarSortField(f)
+                                        setSoarSortOrder(o)
+                                    }}
+                                    className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
+                                >
+                                    <option value="severity-desc" className="bg-[#0F172A] text-slate-300">Severidad (Mayor a Menor)</option>
+                                    <option value="severity-asc" className="bg-[#0F172A] text-slate-300">Severidad (Menor a Mayor)</option>
+                                    <option value="crs-desc" className="bg-[#0F172A] text-slate-300">CRS Score (Mayor a Menor)</option>
+                                    <option value="crs-asc" className="bg-[#0F172A] text-slate-300">CRS Score (Menor a Mayor)</option>
+                                    <option value="cve-asc" className="bg-[#0F172A] text-slate-300">Hallazgo / CVE (A-Z)</option>
+                                    <option value="cve-desc" className="bg-[#0F172A] text-slate-300">Hallazgo / CVE (Z-A)</option>
+                                    <option value="asset-asc" className="bg-[#0F172A] text-slate-300">Activo (A-Z)</option>
+                                    <option value="asset-desc" className="bg-[#0F172A] text-slate-300">Activo (Z-A)</option>
+                                    <option value="status-asc" className="bg-[#0F172A] text-slate-300">Estado (A-Z)</option>
+                                    <option value="status-desc" className="bg-[#0F172A] text-slate-300">Estado (Z-A)</option>
+                                    <option value="date-desc" className="bg-[#0F172A] text-slate-300">Más Recientes</option>
+                                    <option value="date-asc" className="bg-[#0F172A] text-slate-300">Más Antiguos</option>
+                                </select>
+                                <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                            </div>
+                        </div>
                     </div>
 
                     <div className="flex gap-2">
-                        {(soarSearch || soarSeverityFilter !== 'ALL' || soarStatusFilter !== 'ALL' || soarCategoryFilter !== 'ALL' || soarAssetCategoryFilter !== 'ALL') && (
+                        {(soarSearch || soarSeverityFilter !== 'ALL' || soarStatusFilter !== 'ALL' || soarCategoryFilter !== 'ALL' || soarAssetCategoryFilter !== 'ALL' || soarSortField !== 'severity' || soarSortOrder !== 'desc') && (
                             <button
-                                onClick={() => { setSoarSearch(''); setSoarSeverityFilter('ALL'); setSoarStatusFilter('ALL'); setSoarCategoryFilter('ALL'); setSoarAssetCategoryFilter('ALL'); }}
+                                onClick={() => { 
+                                    setSoarSearch(''); 
+                                    setSoarSeverityFilter('ALL'); 
+                                    setSoarStatusFilter('ALL'); 
+                                    setSoarCategoryFilter('ALL'); 
+                                    setSoarAssetCategoryFilter('ALL'); 
+                                    setSoarSortField('severity');
+                                    setSoarSortOrder('desc');
+                                }}
                                 className="px-4 py-2 rounded-xl bg-slate-850 hover:bg-slate-700 text-slate-400 hover:text-white text-[11px] font-black uppercase tracking-widest transition-all"
                             >
                                 Limpiar Filtros
@@ -1958,10 +2182,38 @@ export default function Dashboard() {
                                 <table className="w-full text-left">
                                     <thead className="bg-[#0F172A]">
                                         <tr className="text-slate-500 text-[12px] font-black uppercase tracking-widest border-b border-slate-800">
-                                            <th className="p-6">Hallazgo</th>
-                                            <th className="p-6">Asset</th>
-                                            <th className="p-6">Severidad</th>
-                                            <th className="p-6">Estado</th>
+                                            <SortableHeader 
+                                                label="Hallazgo" 
+                                                field="cve" 
+                                                currentField={soarSortField} 
+                                                currentOrder={soarSortOrder} 
+                                                onSort={handleSoarSort} 
+                                                className="p-6" 
+                                            />
+                                            <SortableHeader 
+                                                label="Asset" 
+                                                field="asset" 
+                                                currentField={soarSortField} 
+                                                currentOrder={soarSortOrder} 
+                                                onSort={handleSoarSort} 
+                                                className="p-6" 
+                                            />
+                                            <SortableHeader 
+                                                label="Severidad" 
+                                                field="severity" 
+                                                currentField={soarSortField} 
+                                                currentOrder={soarSortOrder} 
+                                                onSort={handleSoarSort} 
+                                                className="p-6" 
+                                            />
+                                            <SortableHeader 
+                                                label="Estado" 
+                                                field="status" 
+                                                currentField={soarSortField} 
+                                                currentOrder={soarSortOrder} 
+                                                onSort={handleSoarSort} 
+                                                className="p-6" 
+                                            />
                                             <th className="p-6 text-right">Detalle</th>
                                         </tr>
                                     </thead>
@@ -2227,18 +2479,29 @@ export default function Dashboard() {
                             </div>
                         )}
 
-                        {/* Selector de Ordenamiento -- mismo patrón visual que Inventario de Activos */}
-                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Ordenar alertas por fecha o severidad">
+                        {/* Selector de Ordenamiento Consistente */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Ordenar alertas por fecha, severidad, activo o regla">
+                            <ArrowUpDown size={12} className="text-[#06B6D4]" />
                             <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Orden:</span>
                             <div className="relative flex items-center">
                                 <select
-                                    value={threatSortBy}
-                                    onChange={(e) => setThreatSortBy(e.target.value)}
+                                    value={`${threatSortField}-${threatSortOrder}`}
+                                    onChange={(e) => {
+                                        const [f, o] = e.target.value.split('-')
+                                        setThreatSortField(f)
+                                        setThreatSortOrder(o)
+                                        setThreatSortBy(f === 'date' && o === 'oldest' ? 'oldest' : f === 'severity' ? 'severity' : 'newest')
+                                    }}
                                     className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
                                 >
-                                    <option value="newest" className="bg-[#0F172A] text-slate-300">Más Recientes Primero</option>
-                                    <option value="oldest" className="bg-[#0F172A] text-slate-300">Más Antiguas Primero</option>
-                                    <option value="severity" className="bg-[#0F172A] text-red-400">Por Severidad</option>
+                                    <option value="date-desc" className="bg-[#0F172A] text-slate-300">Más Recientes Primero</option>
+                                    <option value="date-asc" className="bg-[#0F172A] text-slate-300">Más Antiguas Primero</option>
+                                    <option value="severity-desc" className="bg-[#0F172A] text-red-400">Severidad (Mayor a Menor)</option>
+                                    <option value="severity-asc" className="bg-[#0F172A] text-blue-400">Severidad (Menor a Mayor)</option>
+                                    <option value="asset-asc" className="bg-[#0F172A] text-slate-300">Activo (A-Z)</option>
+                                    <option value="asset-desc" className="bg-[#0F172A] text-slate-300">Activo (Z-A)</option>
+                                    <option value="rule-asc" className="bg-[#0F172A] text-slate-300">Regla / Firma (A-Z)</option>
+                                    <option value="rule-desc" className="bg-[#0F172A] text-slate-300">Regla / Firma (Z-A)</option>
                                 </select>
                                 <ChevronDown size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
@@ -2282,10 +2545,10 @@ export default function Dashboard() {
                     <table className="w-full text-left">
                         <thead>
                             <tr className="text-slate-500 text-[12px] font-black uppercase tracking-widest border-b border-slate-800">
-                                <th className="pb-4">Severidad</th>
-                                <th className="pb-4">Marca de Tiempo</th>
-                                <th className="pb-4">Activo Afectado</th>
-                                <th className="pb-4">Regla / Firma</th>
+                                <SortableHeader label="Severidad" field="severity" currentField={threatSortField} currentOrder={threatSortOrder} onSort={handleThreatSort} className="pb-4" />
+                                <SortableHeader label="Marca de Tiempo" field="date" currentField={threatSortField} currentOrder={threatSortOrder} onSort={handleThreatSort} className="pb-4" />
+                                <SortableHeader label="Activo Afectado" field="asset" currentField={threatSortField} currentOrder={threatSortOrder} onSort={handleThreatSort} className="pb-4" />
+                                <SortableHeader label="Regla / Firma" field="rule" currentField={threatSortField} currentOrder={threatSortOrder} onSort={handleThreatSort} className="pb-4" />
                                 <th className="pb-4">Detalle de Alerta</th>
                                 <th className="pb-4 text-right">Acción</th>
                             </tr>
@@ -2337,19 +2600,33 @@ export default function Dashboard() {
                         <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Gestión consolidada de infraestructura y endpoints</p>
                     </div>
                     <div className="flex flex-wrap gap-3">
-                        {/* Selector de Ordenamiento */}
-                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Ordenar lista de activos por fecha, nombre o vulnerabilidades">
+                        {/* Selector de Ordenamiento Consistente */}
+                        <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-2xl border border-slate-800 focus-within:border-[#06B6D4] transition-all" title="Ordenar lista de activos por fecha, nombre, vulnerabilidades o CIS">
+                            <ArrowUpDown size={12} className="text-[#06B6D4]" />
                             <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Orden:</span>
                             <div className="relative flex items-center">
                                 <select 
-                                    value={inventorySortBy}
-                                    onChange={(e) => setInventorySortBy(e.target.value)}
+                                    value={`${inventorySortField}-${inventorySortOrder}`}
+                                    onChange={(e) => {
+                                        const [f, o] = e.target.value.split('-')
+                                        setInventorySortField(f)
+                                        setInventorySortOrder(o)
+                                        setInventorySortBy(f === 'name' ? 'alpha' : f === 'vulns' ? 'vulns' : f === 'alerts' ? 'alerts' : 'newest')
+                                    }}
                                     className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
                                 >
-                                    <option value="newest" className="bg-[#0F172A] text-slate-300">Más Recientes Primero</option>
-                                    <option value="alpha" className="bg-[#0F172A] text-[#06B6D4]">Alfabético (A-Z)</option>
-                                    <option value="vulns" className="bg-[#0F172A] text-orange-400">Más Vulnerables</option>
-                                    <option value="alerts" className="bg-[#0F172A] text-red-400">Alertas Runtime</option>
+                                    <option value="newest-desc" className="bg-[#0F172A] text-slate-300">Más Recientes Primero</option>
+                                    <option value="newest-asc" className="bg-[#0F172A] text-slate-300">Más Antiguos Primero</option>
+                                    <option value="name-asc" className="bg-[#0F172A] text-[#06B6D4]">Alfabético (A-Z)</option>
+                                    <option value="name-desc" className="bg-[#0F172A] text-[#06B6D4]">Alfabético (Z-A)</option>
+                                    <option value="vulns-desc" className="bg-[#0F172A] text-orange-400">Más Vulnerables</option>
+                                    <option value="vulns-asc" className="bg-[#0F172A] text-orange-400">Menos Vulnerables</option>
+                                    <option value="alerts-desc" className="bg-[#0F172A] text-red-400">Alertas Runtime (Mayor a Menor)</option>
+                                    <option value="alerts-asc" className="bg-[#0F172A] text-red-400">Alertas Runtime (Menor a Mayor)</option>
+                                    <option value="endpoint-asc" className="bg-[#0F172A] text-slate-300">Endpoint / IP (A-Z)</option>
+                                    <option value="endpoint-desc" className="bg-[#0F172A] text-slate-300">Endpoint / IP (Z-A)</option>
+                                    <option value="cis-desc" className="bg-[#0F172A] text-emerald-400">CIS Hardening (Mayor a Menor)</option>
+                                    <option value="cis-asc" className="bg-[#0F172A] text-emerald-400">CIS Hardening (Menor a Mayor)</option>
                                 </select>
                                 <ChevronDown size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
@@ -2762,13 +3039,13 @@ export default function Dashboard() {
                         <table className="w-full text-left border-collapse">
                             <thead>
                                 <tr className="bg-[#1E293B] text-slate-400 text-[12px] font-black uppercase tracking-widest border-b border-slate-800">
-                                    <th className="p-4">Activo Unificado</th>
-                                    <th className="p-4">Tipo</th>
-                                    <th className="p-4">Endpoint / IP</th>
+                                    <SortableHeader label="Activo Unificado" field="name" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
+                                    <SortableHeader label="Tipo" field="type" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
+                                    <SortableHeader label="Endpoint / IP" field="endpoint" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
                                     <th className="p-4">Estado EDR / Ping</th>
-                                    <th className="p-4">Vulnerabilidades</th>
-                                    <th className="p-4">Alertas Runtime</th>
-                                    <th className="p-4">CIS Hardening</th>
+                                    <SortableHeader label="Vulnerabilidades" field="vulns" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
+                                    <SortableHeader label="Alertas Runtime" field="alerts" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
+                                    <SortableHeader label="CIS Hardening" field="cis" currentField={inventorySortField} currentOrder={inventorySortOrder} onSort={handleInventorySort} className="p-4" />
                                     <th className="p-4 text-right">Acciones</th>
                                 </tr>
                             </thead>
@@ -3226,6 +3503,159 @@ export default function Dashboard() {
                         )
                     })}
                 </div>
+            </div>
+          )}
+
+          {currentView === 'correlations' && (
+            <div className="space-y-8 animate-in fade-in duration-300">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h2 className="text-white font-bold text-2xl mb-1 flex items-center gap-3">
+                    <Layers className="text-[#06B6D4]" size={28} />
+                    Correlación Omnidireccional: SAST Repositorio vs Runtime Host (XDR)
+                  </h2>
+                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+                    Mapeo en caliente de vulnerabilidades de código fuente cruzadas con alertas de ejecución en tiempo real (Falco / Wazuh EDR / Zeek NDR)
+                  </p>
+                </div>
+                <button
+                  onClick={fetchCorrelations}
+                  className="bg-[#0F172A] border border-slate-800 text-slate-300 hover:text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2"
+                >
+                  <RefreshCw size={14} className={correlationsLoading ? "animate-spin text-[#06B6D4]" : ""} />
+                  Actualizar Matriz
+                </button>
+              </div>
+
+              {/* KPI Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-[#1E293B] rounded-[28px] border border-slate-800 p-6 space-y-2">
+                  <span className="text-[11px] font-black text-[#06B6D4] uppercase tracking-wider">Incidentes Híbridos Detectados</span>
+                  <div className="text-3xl font-black text-white">{correlationsData.count_hybrid || (correlationsData.hybrid_incidents || []).length}</div>
+                  <p className="text-xs text-slate-400">Casos que combinan vulnerabilidad en código con ejecuciones anómalas en host.</p>
+                </div>
+                <div className="bg-[#1E293B] rounded-[28px] border border-slate-800 p-6 space-y-2">
+                  <span className="text-[11px] font-black text-amber-400 uppercase tracking-wider">Activos en Riesgo Correlacionado</span>
+                  <div className="text-3xl font-black text-white">{correlationsData.count_assets || (correlationsData.correlated_assets || []).length}</div>
+                  <p className="text-xs text-slate-400">Servidores/Repositorios con hallazgos SAST abiertos y telemetría activa.</p>
+                </div>
+                <div className="bg-[#1E293B] rounded-[28px] border border-slate-800 p-6 space-y-2">
+                  <span className="text-[11px] font-black text-emerald-400 uppercase tracking-wider">Telemetría de Host Analizada</span>
+                  <div className="text-3xl font-black text-white">{(correlationsData.recent_runtime_events || []).length}</div>
+                  <p className="text-xs text-slate-400">Eventos de runtime eBPF / Wazuh Syscheck / Sudo procesados recientemente.</p>
+                </div>
+              </div>
+
+              {/* Hybrid Incidents Table */}
+              <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                  <h3 className="text-white font-bold text-lg flex items-center gap-2">
+                    <Target className="text-red-400" size={20} />
+                    Incidentes de Seguridad Correlacionados (Código + Runtime)
+                  </h3>
+                  <div className="flex items-center gap-2 bg-[#0F172A] px-3 py-1.5 rounded-xl border border-slate-800" title="Ordenar incidentes correlacionados">
+                    <ArrowUpDown size={12} className="text-[#06B6D4]" />
+                    <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Ordenar:</span>
+                    <div className="relative flex items-center">
+                      <select
+                        value={`${xdrSortField}-${xdrSortOrder}`}
+                        onChange={(e) => {
+                          const [f, o] = e.target.value.split('-')
+                          setXdrSortField(f)
+                          setXdrSortOrder(o)
+                        }}
+                        className="bg-transparent border-none text-[12px] font-black text-[#06B6D4] uppercase focus:ring-0 cursor-pointer outline-none p-0 pr-5 appearance-none"
+                      >
+                        <option value="severity-desc" className="bg-[#0F172A] text-red-400">Severidad (Mayor a Menor)</option>
+                        <option value="severity-asc" className="bg-[#0F172A] text-blue-400">Severidad (Menor a Mayor)</option>
+                        <option value="sast-desc" className="bg-[#0F172A] text-amber-400">Hallazgos SAST (Mayor a Menor)</option>
+                        <option value="sast-asc" className="bg-[#0F172A] text-amber-400">Hallazgos SAST (Menor a Mayor)</option>
+                        <option value="runtime-desc" className="bg-[#0F172A] text-red-400">Eventos Host (Mayor a Menor)</option>
+                        <option value="runtime-asc" className="bg-[#0F172A] text-red-400">Eventos Host (Menor a Mayor)</option>
+                        <option value="incident-asc" className="bg-[#0F172A] text-slate-300">Incidente / ID (A-Z)</option>
+                        <option value="asset-asc" className="bg-[#0F172A] text-slate-300">Activo (A-Z)</option>
+                      </select>
+                      <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+                {(!sortedHybridIncidents || sortedHybridIncidents.length === 0) ? (
+                  <div className="text-center py-8 text-slate-500 font-bold text-sm">
+                    ✅ No se registran incidentes híbridos activos en este momento. El estado de ejecución y repositorios está en equilibrio.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead className="text-xs text-slate-500 uppercase bg-[#0F172A]/40 border-b border-slate-800">
+                        <tr>
+                          <SortableHeader label="Incidente / Título" field="incident" currentField={xdrSortField} currentOrder={xdrSortOrder} onSort={handleXdrSort} className="py-3 px-4" />
+                          <SortableHeader label="Activo Asociado" field="asset" currentField={xdrSortField} currentOrder={xdrSortOrder} onSort={handleXdrSort} className="py-3 px-4" />
+                          <SortableHeader label="Severidad" field="severity" currentField={xdrSortField} currentOrder={xdrSortOrder} onSort={handleXdrSort} className="py-3 px-4" />
+                          <SortableHeader label="Hallazgos SAST" field="sast" currentField={xdrSortField} currentOrder={xdrSortOrder} onSort={handleXdrSort} align="center" className="py-3 px-4 text-center" />
+                          <SortableHeader label="Eventos Host" field="runtime" currentField={xdrSortField} currentOrder={xdrSortOrder} onSort={handleXdrSort} align="center" className="py-3 px-4 text-center" />
+                          <th className="py-3 px-4">Kill Chain MITRE</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {sortedHybridIncidents.map((inc, iIdx) => (
+                          <tr key={iIdx} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-4 font-bold text-white">#{inc.incident_id} {inc.title}</td>
+                            <td className="py-3 px-4 font-mono text-xs text-[#06B6D4]">{inc.asset_name || inc.endpoint}</td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-black ${SEV_BADGE_CLS[inc.severity] || 'bg-slate-700 text-slate-300'}`}>
+                                {inc.severity}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-center font-bold text-amber-400">{inc.sast_count}</td>
+                            <td className="py-3 px-4 text-center font-bold text-red-400">{inc.runtime_count}</td>
+                            <td className="py-3 px-4 text-xs font-mono text-slate-400">
+                              {Array.isArray(inc.kill_chain) ? inc.kill_chain.join(' → ') : inc.kill_chain || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Top Assets with SAST + Runtime Alerts */}
+              <div className="bg-[#1E293B] rounded-[32px] border border-slate-800 p-8 space-y-6">
+                <h3 className="text-white font-bold text-lg border-b border-slate-800 pb-4 flex items-center gap-2">
+                  <Server className="text-[#06B6D4]" size={20} />
+                  Matriz de Activos: Vulnerabilidades en Repositorio vs Alertas en Host
+                </h3>
+                {(!correlationsData.correlated_assets || correlationsData.correlated_assets.length === 0) ? (
+                  <div className="text-center py-8 text-slate-500 font-bold text-sm">
+                    Sin activos con concurrencia de alertas de código y runtime.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead className="text-xs text-slate-500 uppercase bg-[#0F172A]/40 border-b border-slate-800">
+                        <tr>
+                          <th className="py-3 px-4">Activo / Repositorio</th>
+                          <th className="py-3 px-4">Tipo</th>
+                          <th className="py-3 px-4 text-center">Vulnerabilidades Código</th>
+                          <th className="py-3 px-4 text-center">Alertas Runtime Host</th>
+                          <th className="py-3 px-4">Última Actividad Host</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {correlationsData.correlated_assets.map((ast, aIdx) => (
+                          <tr key={aIdx} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-4 font-bold text-white">{ast.asset_name}</td>
+                            <td className="py-3 px-4 text-xs text-slate-400">{ast.asset_type}</td>
+                            <td className="py-3 px-4 text-center font-bold text-amber-400">{ast.open_vulnerabilities}</td>
+                            <td className="py-3 px-4 text-center font-bold text-red-400">{ast.runtime_alerts_count}</td>
+                            <td className="py-3 px-4 text-xs text-slate-400">{ast.last_runtime_event ? new Date(ast.last_runtime_event).toLocaleString() : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

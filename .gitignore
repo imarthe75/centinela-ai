@@ -29,3 +29,4 @@ scratch/
 # anidado ya los excluye; se refuerza aquí por seguridad).
 frontend/public/descargas/*
 !frontend/public/descargas/.gitignore
+frontend/dist/

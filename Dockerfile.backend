@@ -1,4 +1,6 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
+
+ARG TARGETARCH=amd64
 
 WORKDIR /app
 
@@ -19,28 +21,32 @@ RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Trivy
+# Install Trivy (install.sh auto-detects arch)
 RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && cp /usr/local/bin/trivy /usr/bin/trivy || true
 
-# Install Nuclei
-RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_amd64.zip -o nuclei.zip \
-    && unzip nuclei.zip && mv nuclei /usr/local/bin/ && cp /usr/local/bin/nuclei /usr/bin/nuclei && rm nuclei.zip
+# Install Nuclei (multi-arch)
+RUN curl -sfL "https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_${TARGETARCH}.zip" -o nuclei.zip \
+    && unzip -o nuclei.zip nuclei -d /usr/local/bin && cp /usr/local/bin/nuclei /usr/bin/nuclei && rm nuclei.zip
 
-# Install Syft & Grype
+# Install Syft & Grype (install.sh auto-detects arch)
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-# Install TruffleHog (used by auditor_secrets.py)
+# Install ffuf (multi-arch)
+RUN curl -sfL "https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_${TARGETARCH}.tar.gz" -o ffuf.tar.gz \
+    && tar -xzf ffuf.tar.gz -C /usr/local/bin ffuf && rm ffuf.tar.gz
+
+# Install TruffleHog (install.sh auto-detects arch)
 RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir checkov
 
 COPY . /app
-
-COPY main.py .
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+

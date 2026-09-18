@@ -16,8 +16,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Dict, Any, Optional
-from psycopg2.extras import RealDictCursor
+from typing import Dict, Any, Optional, Tuple
+try:
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    RealDictCursor = None
 from core import db_manager
 from core import agent_ledger
 
@@ -325,6 +328,14 @@ class GitLabAutoFixer:
                 changed, summary = False, f"El parche generado por IA no aplicó limpiamente: {result.stderr[:500]}"
 
         if not changed:
+            # Try on-demand AI patch generation using Centinela AI Cascade
+            ai_changed, ai_summary = generate_ai_patch(repo_dir, vuln)
+            if ai_changed:
+                changed, summary = True, ai_summary
+            elif summary == "Sin acción automática disponible para este tipo de hallazgo.":
+                summary = ai_summary
+
+        if not changed:
             shutil.rmtree(repo_dir, ignore_errors=True)
             return {"status": "skipped", "message": summary}
 
@@ -369,3 +380,226 @@ class GitLabAutoFixer:
             actor="centinela-sentinel",
         )
         return mr_res
+
+
+def generate_ai_patch(repo_dir: str, vuln: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    On-demand AI-assisted patch generation when no deterministic patcher applies.
+    Extracts the source code context around the vulnerable file/line from repo_dir,
+    asks Centinela's configured AI cascade (Groq / Gemini) to produce a unified diff,
+    verifies it with git apply --check, applies it, and updates vulnerability_log.fix_patch.
+    """
+    file_hint = (vuln.get("url_path") or "").split(":")[0]
+    line_hint = 0
+    if ":" in (vuln.get("url_path") or ""):
+        try:
+            line_hint = int((vuln.get("url_path") or "").split(":")[1])
+        except (ValueError, IndexError):
+            line_hint = 0
+
+    if not file_hint:
+        return False, "No se especificó archivo objetivo (url_path) en el hallazgo."
+
+    target_file = os.path.join(repo_dir, file_hint)
+    if not os.path.exists(target_file):
+        base_name = os.path.basename(file_hint)
+        candidates = []
+        for root, _, files in os.walk(repo_dir):
+            if ".git" in root:
+                continue
+            if base_name in files:
+                candidates.append(os.path.join(root, base_name))
+        if candidates:
+            target_file = candidates[0]
+            file_hint = os.path.relpath(target_file, repo_dir)
+        else:
+            return False, f"Archivo objetivo {file_hint} no encontrado en el repositorio clonado."
+
+    try:
+        with open(target_file, "r", encoding="utf-8", errors="replace") as fh:
+            file_lines = fh.readlines()
+    except Exception as e:
+        return False, f"Error leyendo {file_hint}: {e}"
+
+    total_lines = len(file_lines)
+    if line_hint > 0:
+        start_idx = max(0, line_hint - 35)
+        end_idx = min(total_lines, line_hint + 35)
+    else:
+        start_idx = 0
+        end_idx = min(total_lines, 80)
+
+    context_snippet = "".join(file_lines[start_idx:end_idx])
+
+    prompt = f"""Eres el motor Centinela AI SOAR de remediación automática.
+Genera un parche de código en formato DIFF UNIFICADO (aplicable con `git apply`) para corregir la siguiente vulnerabilidad.
+
+INFORMACIÓN DEL HALLAZGO:
+- Regla / CVE: {vuln.get('cve_id')}
+- Severidad: {vuln.get('severity')}
+- Archivo: {file_hint}
+- Línea aproximada: {line_hint}
+- Descripción del problema: {vuln.get('description')}
+
+FRAGMENTO DEL CÓDIGO ACTUAL ({file_hint}):
+```
+{context_snippet}
+```
+
+REGLAS ESTRICTAS:
+1. Responde ÚNICAMENTE con el bloque del diff unificado comenzando con `diff --git a/{file_hint} b/{file_hint}` o `--- a/{file_hint}`.
+2. NO agregues introducciones, explicaciones, ni bloques de texto fuera del diff.
+3. El diff debe ser sintácticamente válido para `git apply`.
+4. Aplica el principio de mínimo privilegio, sanitización estricta y control de acceso.
+"""
+
+    try:
+        from centinela import call_ai_cascade
+        raw_diff = call_ai_cascade(prompt, want_json=False)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Fallo al invocar el cascade de IA: {e}"
+
+    if not raw_diff or not str(raw_diff).strip():
+        return False, "El modelo de IA no devolvió contenido para el diff."
+
+    clean_diff = str(raw_diff).strip()
+    if "```diff" in clean_diff:
+        clean_diff = clean_diff.split("```diff", 1)[1].split("```", 1)[0].strip()
+    elif "```" in clean_diff:
+        clean_diff = clean_diff.split("```", 1)[1].split("```", 1)[0].strip()
+
+    if not clean_diff.startswith("diff --git"):
+        if clean_diff.startswith("--- a/") or clean_diff.startswith("--- "):
+            clean_diff = f"diff --git a/{file_hint} b/{file_hint}\n" + clean_diff
+
+    patch_file = os.path.join(repo_dir, ".centinela_ai_patch.patch")
+    try:
+        with open(patch_file, "w", encoding="utf-8") as pf:
+            pf.write(clean_diff + "\n")
+
+        check_res = subprocess.run(
+            ["git", "-C", repo_dir, "apply", "--check", "--whitespace=fix", patch_file],
+            capture_output=True, text=True, timeout=20
+        )
+        if check_res.returncode != 0:
+            return False, f"El diff generado por IA no pudo aplicarse limpiamente: {check_res.stderr.strip()[:300]}"
+
+        apply_res = subprocess.run(
+            ["git", "-C", repo_dir, "apply", "--whitespace=fix", patch_file],
+            capture_output=True, text=True, timeout=20
+        )
+        if apply_res.returncode != 0:
+            return False, f"Error al ejecutar git apply: {apply_res.stderr.strip()[:300]}"
+    finally:
+        if os.path.exists(patch_file):
+            os.remove(patch_file)
+
+    vuln_id = vuln.get("id")
+    if vuln_id and db_manager:
+        try:
+            with db_manager.get_db_cursor() as cur:
+                cur.execute("""
+                    UPDATE public.vulnerability_log
+                    SET fix_patch = %s
+                    WHERE id = %s
+                """, (clean_diff, vuln_id))
+        except Exception as e:
+            print(f"⚠️ [GitLab-AutoFix] Error guardando fix_patch en BD: {e}")
+
+    return True, f"Parche asistido por IA aplicado con éxito en {file_hint} para {vuln.get('cve_id')}."
+
+
+def handle_mr_merged(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Called when a GitLab Merge Request webhook arrives with action in ('merge', 'merged') or state == 'merged'.
+    Closes the loop by marking the corresponding vulnerability_log as 'RESOLVED',
+    updating remediation_history, and logging an entry in agent_ledger.
+    """
+    attrs = payload.get("object_attributes", {}) or {}
+    source_branch = attrs.get("source_branch", "") or ""
+    title = attrs.get("title", "") or ""
+    desc = attrs.get("description", "") or ""
+    mr_iid = attrs.get("iid")
+    web_url = attrs.get("url") or attrs.get("web_url")
+
+    vuln_id = None
+    cve_id = None
+
+    # 1. Parse branch: centinela-fix/<rule>-<vuln_id>
+    m = re.search(r"centinela-fix/.*?-(\d+)$", source_branch)
+    if m:
+        try:
+            vuln_id = int(m.group(1))
+        except ValueError:
+            vuln_id = None
+
+    # 2. Parse title or description for explicit vuln_id
+    if not vuln_id:
+        m_id = re.search(r"vuln[_-]?id[:\s]+(\d+)", f"{title} {desc}", re.IGNORECASE)
+        if m_id:
+            try:
+                vuln_id = int(m_id.group(1))
+            except ValueError:
+                vuln_id = None
+
+    # 3. Parse CVE from branch or title
+    m_cve = re.search(r"(CVE-\d{4}-\d+|[A-Z0-9]+(?:-[A-Z0-9]+)+)", f"{source_branch} {title}")
+    if m_cve:
+        cve_id = m_cve.group(1)
+
+    resolved_count = 0
+    updated_vulns = []
+    if db_manager:
+        with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            if vuln_id:
+                cur.execute("""
+                    UPDATE public.vulnerability_log
+                    SET status = 'RESOLVED'
+                    WHERE id = %s AND status != 'RESOLVED'
+                    RETURNING id, asset_id, cve_id, severity
+                """, (vuln_id,))
+                updated_vulns = cur.fetchall()
+            elif cve_id:
+                cur.execute("""
+                    UPDATE public.vulnerability_log
+                    SET status = 'RESOLVED'
+                    WHERE cve_id = %s AND status != 'RESOLVED'
+                    RETURNING id, asset_id, cve_id, severity
+                """, (cve_id,))
+                updated_vulns = cur.fetchall()
+
+            for v in updated_vulns:
+                resolved_count += 1
+                vid = v["id"]
+                cur.execute("""
+                    UPDATE public.remediation_history
+                    SET status = 'COMPLETED',
+                        executed_bool = TRUE,
+                        executed_at = NOW(),
+                        log_output = COALESCE(log_output, '') || E'\\n[GitLab Webhook] MR fusionado exitosamente. Hallazgo cerrado.'
+                    WHERE vuln_id = %s
+                """, (vid,))
+
+                agent_ledger.record_action(
+                    agent_ledger.ACTION_GITLAB_AUTOFIX_MR,
+                    f"Auto-resuelto tras fusión de MR !{mr_iid} ({source_branch}): {v['cve_id']}",
+                    entity_type="vulnerability",
+                    entity_id=vid,
+                    asset_id=v.get("asset_id"),
+                    detail={"mr_iid": mr_iid, "source_branch": source_branch, "action": "merged", "web_url": web_url},
+                    evidence=web_url,
+                    outcome="success",
+                    actor="gitlab-webhook",
+                )
+
+    return {
+        "status": "resolved" if resolved_count > 0 else "no_match",
+        "resolved_count": resolved_count,
+        "vuln_id": vuln_id,
+        "cve_id": cve_id,
+        "mr_iid": mr_iid,
+        "source_branch": source_branch,
+    }
+

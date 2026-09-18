@@ -104,7 +104,28 @@ def _load_config(asset_name: str) -> Optional[dict]:
     except Exception:
         pass
 
-    # 3. PostgreSQL cat_asset_credentials table (fallback)
+    # 3. Database public.asset_auth_configs
+    if db_manager:
+        try:
+            from psycopg2.extras import RealDictCursor
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT config, base_url FROM public.asset_auth_configs
+                    WHERE asset_name = %s
+                    LIMIT 1
+                """, (asset_name,))
+                row = cur.fetchone()
+                if row:
+                    cfg = row["config"]
+                    if isinstance(cfg, str):
+                        cfg = json.loads(cfg)
+                    if row.get("base_url") and not cfg.get("base_url"):
+                        cfg["base_url"] = row["base_url"]
+                    return cfg
+        except Exception as e:
+            print(f"⚠️ [Authz-DAST] Error reading asset_auth_configs from DB for {asset_name}: {e}")
+
+    # 4. PostgreSQL cat_asset_credentials table (fallback)
     if db_manager:
         try:
             with db_manager.get_db_cursor() as cur:
@@ -118,6 +139,21 @@ def _load_config(asset_name: str) -> Optional[dict]:
                     return row[0] if isinstance(row[0], dict) else json.loads(row[0])
         except Exception as db_err:
             print(f"⚠️ [Authz-DAST] Could not load config from cat_asset_credentials: {db_err}")
+
+    # 5. Environment variables fallback
+    admin_token = os.getenv("AUTHZ_ADMIN_TOKEN", "").strip()
+    user_token = os.getenv("AUTHZ_USER_TOKEN", "").strip()
+    base_url = os.getenv("AUTHZ_BASE_URL", "").strip()
+    if admin_token and user_token:
+        return {
+            "base_url": base_url or "http://localhost:8000",
+            "roles": [
+                {"name": "admin", "kind": "admin", "token": admin_token},
+                {"name": "user", "kind": "user", "token": user_token}
+            ],
+            "allow_mutating_probes": False,
+            "idor_probe": True
+        }
 
     return None
 

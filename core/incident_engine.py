@@ -49,9 +49,12 @@ NOISE_RULES = frozenset({
 
 # Rule/prefix patterns that are incident-worthy on their own (a single occurrence justifies an
 # incident, no second signal required).
-STANDALONE_WORTHY_PREFIXES = ("ITDR-", "CTI-IOC-MATCH", "BLOODHOUND-PATH")
-STANDALONE_WORTHY_SUBSTRINGS = ("BRUTE-FORCE", "PASSWORD-SPRAY", "RANSOM", "REVERSE SHELL",
-                                "CLEAR LOG", "DISABLE", "EXFIL")
+STANDALONE_WORTHY_PREFIXES = ("ITDR-", "CTI-IOC-MATCH", "BLOODHOUND-PATH", "WAZUH-")
+STANDALONE_WORTHY_SUBSTRINGS = (
+    "BRUTE-FORCE", "PASSWORD-SPRAY", "RANSOM", "REVERSE SHELL",
+    "CLEAR LOG", "DISABLE", "EXFIL", "SUDO", "PRIVILEGE ESCALATION",
+    "PAM", "SSH_FAILED", "FAILED LOGIN", "RUN_AS_ROOT"
+)
 
 _SEVERITY_RANK = {"INFO": 0, "LOW": 1, "DEBUG": 0, "NOTICE": 1, "WARNING": 2, "MEDIUM": 2,
                   "HIGH": 3, "CRITICAL": 4}
@@ -119,9 +122,9 @@ def extract_indicators(rule_name: str, alert_text: str,
                 continue
             lk = str(k).lower()
             sv = str(v)
-            if "ip" in lk or "addr" in lk or lk in ("connection", "peer"):
+            if "ip" in lk or "addr" in lk or "srcip" in lk or "dstip" in lk or lk in ("connection", "peer", "host"):
                 blob += " " + sv
-            if lk in ("user.name", "user", "username", "usr.name", "subject", "actor"):
+            if lk in ("user.name", "user", "username", "usr.name", "subject", "actor", "srcuser", "dstuser", "target_user"):
                 if re.fullmatch(r"[A-Za-z0-9._\-\\@]{2,64}", sv):
                     users.add(sv)
 
@@ -144,6 +147,10 @@ def classify_tactic(rule_name: str, text: str) -> Optional[str]:
         return "Command and Control"
     if r.startswith("BLOODHOUND-PATH") or "DOMAIN ADMIN" in t:
         return "Privilege Escalation"
+    if "SUDO" in r or "SUDO" in t or "PRIVILEGE ESCALATION" in t or "PRIV_ESC" in r or "RUN_AS_ROOT" in t:
+        return "Privilege Escalation"
+    if "SSH_FAILED" in r or "FAILED LOGIN" in t or "AUTHENTICATION FAIL" in t or "PAM" in r or "PAM" in t:
+        return "Initial Access"
     if "CLEAR LOG" in r or "CLEAR LOG" in t or ("DISABLE" in t and "LOG" in t):
         return "Defense Evasion"
     if "EXFIL" in r or "EXFIL" in t:

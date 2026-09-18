@@ -15,13 +15,17 @@ python-dotenv
 groq
 httpx
 requests
-cvss
+cvss==3.6
 pandas
 typing-extensions
 WeasyPrint
 docker
-semgrep
-prowler
+# Pinned 2026-09-07: unpinned, these three send pip's resolver into hours of
+# backtracking on ARM (walking semgrep back version-by-version looking for a combo
+# compatible with medusa-security==2026.7.0). These exact versions are the ones the
+# already-built centinela-backend image resolved to and runs on.
+semgrep==1.141.0
+prowler==5.22.0
 medusa-security==2026.7.0
 neo4j
 pytest

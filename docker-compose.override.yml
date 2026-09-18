@@ -1,0 +1,126 @@
+# =====================================================================================
+# Autonomous local deployment overrides (added 2026-09-07)
+# =====================================================================================
+# This host has NO route to the CASMARTS infra (10.4.3.23 Postgres/Valkey, .208 Vault,
+# .10 GitLab). Per the deploy decision, the platform runs fully self-contained here:
+#   * centinela-postgres  -> replaces the external centinela_db on 10.4.3.23
+#   * centinela-valkey     -> replaces the external Valkey on 10.4.3.23
+# .env repoints DB_HOST / VALKEY_HOST to these service names. Everything else in
+# docker-compose.yml is unchanged.
+# =====================================================================================
+
+services:
+  centinela-postgres:
+    image: postgres:16
+    container_name: centinela-postgres
+    restart: always
+    networks:
+      - aura-network
+    environment:
+      POSTGRES_USER: ${DB_USER:?set DB_USER in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:?set DB_NAME in .env}
+      # passed through only so 10-extra-databases.sh (initdb hook) can create the
+      # SonarQube role/DB without a hard-coded password in a tracked file:
+      SONARQUBE_DB_USER: ${SONARQUBE_DB_USER:?}
+      SONARQUBE_DB_PASSWORD: ${SONARQUBE_DB_PASSWORD:?}
+    volumes:
+      - centinela-pgdata:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U centinela_user -d centinela_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  centinela-valkey:
+    image: valkey/valkey:8-alpine
+    container_name: centinela-valkey
+    restart: always
+    networks:
+      - aura-network
+    command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - centinela-valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  centinela-backend:
+    depends_on:
+      centinela-postgres:
+        condition: service_healthy
+      centinela-valkey:
+        condition: service_started
+
+  centinela-ai:
+    depends_on:
+      centinela-postgres:
+        condition: service_healthy
+      centinela-valkey:
+        condition: service_started
+
+  centinela-sentinel:
+    depends_on:
+      centinela-ai:
+        condition: service_started
+      centinela-postgres:
+        condition: service_healthy
+
+  # Vite dev server sits right at its 512M cap on this host and has OOM-killed before
+  # (CLAUDE.md, item 17). Give it real headroom.
+  centinela-frontend:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # Neo4j 5.12 mis-detects available memory under the 1G cgroup cap on this kernel and
+  # crash-loops with "Invalid memory configuration - exceeds physical memory". Pin heap
+  # and pagecache explicitly so it fits.
+  centinela-neo4j:
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_server_memory_heap_initial__size=256m
+      - NEO4J_server_memory_heap_max__size=384m
+      - NEO4J_server_memory_pagecache_size=128m
+
+  # falcosidekick ships events to Valkey; base compose hardcodes 10.4.3.23:6379.
+  # Repoint to the local Valkey so centinela.py's process_falco_alerts() actually
+  # receives them.
+  falcosidekick:
+    environment:
+      - REDIS_ADDRESS=centinela-valkey:6379
+      - REDIS_STORAGEKEY=centinela:falco
+
+  # Point SonarQube's JDBC at the local Postgres instead of the hardcoded 10.4.3.23.
+  centinela-sonarqube:
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://centinela-postgres:5432/centinela_sonarqube_db
+      - SONAR_JDBC_USERNAME=${SONARQUBE_DB_USER:?}
+      - SONAR_JDBC_PASSWORD=${SONARQUBE_DB_PASSWORD:?}
+    depends_on:
+      centinela-postgres:
+        condition: service_healthy
+
+  # wazuh/wazuh-manager:4.14.1 is published amd64-only -- no arm64 image exists, so it
+  # cannot run natively on this host. Parked behind a profile so `docker compose up -d`
+  # doesn't crash-loop trying to start it. To run it anyway (slow qemu emulation):
+  #   docker compose --profile wazuh up -d wazuh-manager   # needs binfmt/qemu-user-static
+  wazuh-manager:
+    profiles: ["wazuh"]
+
+volumes:
+  centinela-pgdata:
+  centinela-valkeydata:
