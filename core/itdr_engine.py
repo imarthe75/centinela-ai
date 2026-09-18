@@ -78,7 +78,7 @@ def process_authentik_event(payload: dict):
     alerts_generated = []
 
     # 1. Detección de Fuerza Bruta y Password Spraying
-    if "login_failed" in event_type.lower() or "auth_failed" in event_type.lower():
+    if "login_failed" in event_type.lower() or "auth_failed" in event_type.lower() or "failed" in event_type.lower():
         key = (username, client_ip)
         if key not in FAILED_LOGINS:
             FAILED_LOGINS[key] = []
@@ -88,13 +88,14 @@ def process_authentik_event(payload: dict):
         recent = [t for t in FAILED_LOGINS[key] if timestamp - t <= timedelta(seconds=60)]
         FAILED_LOGINS[key] = recent
 
-        if len(recent) >= 5:
+        # Si supera 3 intentos o evento crítico de falla, alertar
+        if len(recent) >= 3 or payload.get("severity") == "critical":
             confidence = 0.96 # Alta Confianza >= 95% -> Desencadena respuesta autónoma
             alert = {
                 "rule_name": "ITDR-AUTHENTIK-BRUTE-FORCE",
                 "severity": "CRITICAL",
                 "asset_name": f"Authentik-User ({username})",
-                "alert_text": f"Detección ITDR: Ataque de Fuerza Bruta / Password Spraying desde IP {client_ip} contra el usuario '{username}' ({len(recent)} intentos fallidos en 60s).",
+                "alert_text": f"Detección ITDR: Ataque de Fuerza Bruta / Password Spraying desde IP {client_ip} contra la cuenta '{username}' ({len(recent)} intentos fallidos en 60s).",
                 "confidence_score": confidence,
                 "autonomous_action_executed": True
             }

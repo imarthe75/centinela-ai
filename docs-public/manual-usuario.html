@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Centinela-AI — Manual de Usuario</title>
+<style>
+  :root {
+    --bg: #10161b;
+    --surface: #182129;
+    --border: #2a3640;
+    --text: #dce4e8;
+    --text-dim: #8695a0;
+    --accent: #38bdf8;
+    --font-sans: 'Inter', system-ui, sans-serif;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    margin: 0;
+    padding: 2rem;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1, h2, h3 { color: #f0f6fc; }
+  h1 { border-bottom: 2px solid var(--border); padding-bottom: 0.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  code { background: #0d1117; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Centinela-AI — Manual de Usuario</h1>
+  <p>Guía de uso para analistas de seguridad, CISO y administradores de la plataforma Centinela Omni-XDR.</p>
+  
+  <div class="card">
+    <h2>1. Dashboard Principal y Métricas de Riesgo</h2>
+    <p>El Dashboard de Centinela-AI ofrece visibilidad en tiempo real de la postura de seguridad de todos los activos registrados.</p>
+    <ul>
+      <li><b>Centinela Risk Score (CRS):</b> Calificación dinámica del riesgo basada en CVSS, probabilidad de explotación EPSS (FIRST.org) e inclusión en catálogo CISA KEV.</li>
+      <li><b>Filtros por Estado:</b> Navegue entre vulnerabilidades Pendientes, Remediadas, Silenciadas (Supresiones) e Informativas.</li>
+      <li><b>Búsqueda e Inventario:</b> Alertas diferenciadas por criticidad (Crítico, Alto, Medio, Bajo).</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>2. Detección de Amenazas de Identidad (ITDR & Authentik)</h2>
+    <p>Supervisión en tiempo real de accesos, intentos de fuerza bruta y modificaciones en el proveedor de identidad Authentik.</p>
+    <ul>
+      <li>Visualice bloqueos automáticos en respuesta a ataques de fuerza bruta (&gt;3 intentos en 60 segundos).</li>
+      <li>Revocación autónoma de sesiones activas en Authentik con SLA menor a 500ms.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>3. Informes Ejecutivos IA y Remediación Autónomas</h2>
+    <p>Cada hallazgo cuenta con un análisis didáctico estructurado en español:</p>
+    <ul>
+      <li><b>¿Qué encontramos?:</b> Explicación técnica accesible del problema detectado.</li>
+      <li><b>Riesgo al Negocio:</b> Impacto directo en las operaciones o confidencialidad de la empresa.</li>
+      <li><b>Pasos de Resolución:</b> Instrucciones paso a paso para desarrolladores y administradores con parches diff o scripts bash.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>4. Descarga de Reportes Ejecutivos PDF</h2>
+    <p>Obtenga reportes en PDF directamente desde el Dashboard o mediante la API en <code>/api/reports/executive</code>.</p>
+  </div>
+</div>
+</body>
+</html>

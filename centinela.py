@@ -1301,44 +1301,40 @@ def correlate_vulnerability(vuln):
         prompt_text = f"""
         Actúa como un Ingeniero Senior de AppSec de CASMARTS revisando un hallazgo de análisis
         estático de código (SAST/SCA) en un repositorio real.
+        
+        IMPORTANTE: Responde ÚNICA Y EXCLUSIVAMENTE EN ESPAÑOL LATINOAMERICANO. Queda estrictamente prohibido usar texto en inglés en las descripciones.
 
         HALLAZGO A CORREGIR:
         - Regla: {vuln['cve_id']}
         - Repositorio: {vuln['asset_name']}
         - Ubicación (archivo:línea): {vuln.get('url_path', 'desconocida')}
         - Severidad: {vuln['severity']}
-        - Detalle (incluye el fragmento de código real detectado): {vuln.get('description', 'Sin descripción')}
+        - Detalle: {vuln.get('description', 'Sin descripción')}
 
         {code_context_block}
 
         REGLAS:
-        1. Propón el cambio de código MÍNIMO y CORRECTO que soluciona específicamente este hallazgo
-           en la línea/archivo indicados -- no reescribas el archivo completo ni refactorices nada
-           no relacionado.
-        2. El campo 'fix_patch' DEBE ser un diff unificado válido (formato `git diff`, aplicable
-           con `git apply`), con encabezados `--- a/<ruta>` / `+++ b/<ruta>` usando la ruta relativa
-           exacta de 'Ubicación'.
-        3. Si el fragmento de código disponible es insuficiente para generar un parche seguro y
-           correcto (por ejemplo, no se conoce el contexto completo de la función), NO inventes
-           un parche: deja 'fix_patch' vacío y pon can_automate en false.
-        4. INTEGRIDAD: no inventes rutas de archivo ni asumas frameworks no mencionados en el hallazgo.
+        1. Explica el hallazgo de forma SUMAMENTE CLARA, DETALLADA Y DIDÁCTICA ("paso a paso, para fácil entendimiento").
+        2. El campo 'impacto_negocio' debe describir de forma muy explícita el Riesgo al Negocio (consecuencia operacional o de fuga de datos en lenguaje accesible).
+        3. El campo 'accion_remediacion' debe detallar las acciones concretas a realizar.
+        4. El campo 'fix_patch' DEBE ser un diff unificado válido (formato `git diff`), o vacío si no se puede generar con seguridad.
 
-        FORMATO DE SALIDA (JSON ESTRICTO):
+        FORMATO DE SALIDA (JSON ESTRICTO EN ESPAÑOL):
         {{
-            "riesgo_detectado": "Nombre técnico de la vulnerabilidad",
+            "riesgo_detectado": "Nombre claro y didáctico de la vulnerabilidad en español",
             "nivel_severidad": "Bajo/Medio/Alto/Crítico",
-            "evidencia_tecnica": "Extracto del código afectado",
-            "impacto_negocio": "Descripción del riesgo para la operación de CASMARTS",
-            "accion_remediacion": "Qué cambia el parche, en una frase, para un desarrollador que va a revisar el Merge Request",
+            "evidencia_tecnica": "Extracto o detalle del código/recurso afectado en español",
+            "impacto_negocio": "Explicación clara y comprensible del riesgo operacional o reputacional para la organización",
+            "accion_remediacion": "Instrucciones detalladas y comprensibles para resolución por parte del equipo",
             "fix_patch": "Diff unificado real, o cadena vacía si no es seguro generar uno",
             "can_automate": true/false
         }}
         """
     else:
         prompt_text = f"""
-        Actúa como el Auditor Senior de Ciberseguridad de CASMARTS, experto en infraestructura crítica,
-        entornos Linux, seguridad en la nube y servidores de aplicaciones / middleware (WildFly, Tomcat, Nginx, JBoss).
-        Tu objetivo es realizar un análisis exhaustivo de la vulnerabilidad detectada.
+        Actúa como el Auditor Senior de Ciberseguridad de CASMARTS. Tu objetivo es redactar un informe altamente didáctico, claro y profesional.
+        
+        REGLA DE ORO: Responde TOTALMENTE EN ESPAÑOL LATINOAMERICANO. No incluyas frases ni explicaciones en inglés.
 
         VULNERABILIDAD A ANALIZAR:
         - ID: {vuln['cve_id']}
@@ -1348,24 +1344,23 @@ def correlate_vulnerability(vuln):
         - Descripción inicial: {vuln.get('description', 'Sin descripción')}
         - Severidad reportada: {vuln['severity']}
 
-        REGLAS DE ANÁLISIS:
-        1. METODOLOGÍA: Clasifica el hallazgo usando el estándar CVSS v3.
-        2. CORRELACIÓN: Identifica patrones específicos del activo, middleware o tecnología.
-        3. IMPACTO AL NEGOCIO EXHAUSTIVO: Explica con lenguaje claro y profesional el riesgo operacional, reputacional o de fuga de datos para la empresa. EVITA frases vacías o genéricas como 'Sin análisis de impacto disponible' o 'Revisar la descripción'.
-        4. PASOS DE REMEDIACIÓN CLAROS Y DETALLADOS: Explica paso a paso para un desarrollador o administrador de sistemas exactamente qué debe cambiar y cómo solucionar el problema de raíz.
-        5. REMEDIACIÓN: Proporciona el comando exacto o script autónomo para mitigarla.
-        6. INTEGRIDAD Y CLARIDAD: No uses textos plantilla escuetos ni scripts ficticios no funcionales.
+        REGLAS DE ANÁLISIS Y REDACCIÓN:
+        1. ¿QUÉ ENCONTRAMOS?: Describe el problema técnico en español con máxima claridad, explicando qué ocurre sin tecnicismos innecesarios.
+        2. RIESGO AL NEGOCIO: Explica detalladamente y en lenguaje claro las consecuencias operativas, de seguridad, financieras o de fuga de información si esta vulnerabilidad llega a ser explotada.
+        3. PASOS DE RESOLUCIÓN: Proporciona instrucciones paso a paso estructuradas y comprensibles para que cualquier desarrollador o administrador pueda solucionar el problema.
+        4. SCRIPT DE REMEDIACIÓN: Incluye un script bash autónomo, seguro e idéntico para aplicar el hardening o la corrección.
 
-        FORMATO DE SALIDA (JSON ESTRICTO):
+        FORMATO DE SALIDA (JSON ESTRICTO EN ESPAÑOL):
         {{
-            "riesgo_detectado": "Nombre técnico y claro de la vulnerabilidad",
+            "riesgo_detectado": "Título descriptivo y claro de la vulnerabilidad en español",
             "nivel_severidad": "Bajo/Medio/Alto/Crítico",
-            "evidencia_tecnica": "Extracto del log, código, puerto o configuración afectada",
-            "impacto_negocio": "Análisis profundo del riesgo operacional, financiero o confidencialidad para la organización",
-            "accion_remediacion": "Instrucciones detalladas y comprensibles para resolución por parte del equipo",
-            "remediation_script": "Script bash autónomo e ejecutable específico para solucionar esta vulnerabilidad",
+            "evidencia_tecnica": "Evidencia técnica, puerto o parámetro afectado en español",
+            "impacto_negocio": "Análisis explícito y comprensible del riesgo operacional y de negocio",
+            "accion_remediacion": "Pasos detallados de resolución punto por punto en español",
+            "remediation_script": "Script bash autónomo ejecutable para mitigar la vulnerabilidad",
             "can_automate": true/false
         }}
+        """
 
         REGLAS DE SCRIPTS:
         - El campo 'remediation_script' DEBE contener un script bash completo, autónomo y ejecutable específico para la vulnerabilidad {vuln['cve_id']}. NO utilices scripts genéricos de 'ufw status'.

@@ -96,6 +96,9 @@ def scan_path(path: str, asset_id: int, asset_name: str) -> list[dict]:
             print(f"⚠️ [Semgrep] Non-zero exit {result.returncode}: {result.stderr[:200]}")
             return []
         data = json.loads(result.stdout or "{}")
+    except FileNotFoundError:
+        print(f"⚠️ [Semgrep] Binario 'semgrep' no encontrado en el sistema. Degradando hacia escáneres nativos SAST.")
+        return []
     except subprocess.TimeoutExpired:
         print(f"⏰ [Semgrep] Timeout scanning {path}")
         return []

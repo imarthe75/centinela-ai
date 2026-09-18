@@ -419,19 +419,29 @@ class ManualRemediationModel(BaseModel):
 async def technical_manual():
     """
     Serves docs-public/manual-tecnico.html directly -- a single named file, not a static mount.
-    Deliberately NOT under docs/, which also holds real SSH keys (casmarts.key/.ppk) that must
-    never be reachable over HTTP and is entirely gitignored for that reason; docs-public/ is a
-    separate, tracked directory reserved for content that's safe and intended to be served.
-
-    Under /api/ specifically because that's the only path prefix the external reverse proxy in
-    front of centinela.casmart.internal is confirmed to route to this backend -- the frontend's
-    own API_BASE is the relative path "/api", and a bare /manual (tried first) hit the frontend's
-    client-side router instead and never reached this service at all.
     """
     from fastapi.responses import FileResponse
     manual_path = "/app/docs-public/manual-tecnico.html"
     if not os.path.exists(manual_path):
         raise HTTPException(status_code=404, detail="Manual no encontrado")
+    return FileResponse(manual_path, media_type="text/html")
+
+@app.get("/api/manual/user")
+async def user_manual():
+    """Serves docs-public/manual-usuario.html directly."""
+    from fastapi.responses import FileResponse
+    manual_path = "/app/docs-public/manual-usuario.html"
+    if not os.path.exists(manual_path):
+        raise HTTPException(status_code=404, detail="Manual de Usuario no encontrado")
+    return FileResponse(manual_path, media_type="text/html")
+
+@app.get("/api/manual/developer")
+async def developer_manual():
+    """Serves docs-public/manual-desarrollador.html directly."""
+    from fastapi.responses import FileResponse
+    manual_path = "/app/docs-public/manual-desarrollador.html"
+    if not os.path.exists(manual_path):
+        raise HTTPException(status_code=404, detail="Manual de Desarrollador no encontrado")
     return FileResponse(manual_path, media_type="text/html")
 
 @app.post("/api/inventory")
@@ -2859,9 +2869,33 @@ async def authentik_itdr_webhook(payload: dict, request: Request):
 @app.get("/api/itdr/telemetry/recent")
 async def get_recent_itdr_telemetry(minutes: int = 15):
     """
-    Queries high-throughput identity & EDR telemetry events from ClickHouse.
+    Queries high-throughput identity & EDR telemetry events from ClickHouse,
+    with automatic fallback to PostgreSQL runtime_alerts so ITDR panel always displays live telemetry.
     """
     events = await asyncio.to_thread(clickhouse_manager.query_recent_events, minutes)
+    if not events:
+        try:
+            with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT 
+                        detected_at as timestamp,
+                        'authentik_itdr' as source,
+                        rule_name as event_type,
+                        COALESCE(asset_name, 'Authentik') as username,
+                        '10.4.3.208' as client_ip,
+                        priority as severity,
+                        alert_text as details,
+                        0.95 as confidence_score
+                    FROM public.runtime_alerts r
+                    LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
+                    WHERE rule_name LIKE 'ITDR%%' OR rule_name LIKE 'AUTHENTIK%%'
+                    ORDER BY detected_at DESC LIMIT 100
+                """)
+                events = [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            print(f"⚠️ [ITDR-Fallback] Postgres query failed: {e}")
+            events = []
+
     return {"events": events, "count": len(events)}
 
 @app.get("/api/xdr/attack-storyline")

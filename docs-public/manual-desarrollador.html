@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Centinela-AI — Manual de Desarrollador</title>
+<style>
+  :root {
+    --bg: #10161b;
+    --surface: #182129;
+    --border: #2a3640;
+    --text: #dce4e8;
+    --text-dim: #8695a0;
+    --accent: #38bdf8;
+    --font-sans: 'Inter', system-ui, sans-serif;
+    --font-mono: ui-monospace, monospace;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    margin: 0;
+    padding: 2rem;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1, h2, h3 { color: #f0f6fc; }
+  h1 { border-bottom: 2px solid var(--border); padding-bottom: 0.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  code, pre { background: #0d1117; color: #38bdf8; font-family: var(--font-mono); border-radius: 4px; }
+  pre { padding: 1rem; overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Centinela-AI — Manual de Desarrollador</h1>
+  <p>Guía de arquitectura, integración API y desarrollo de motores para Centinela Omni-XDR.</p>
+  
+  <div class="card">
+    <h2>1. Arquitectura General y Módulos Core</h2>
+    <p>Centinela AI se compone de los siguientes módulos principales en Python (FastAPI + Asyncio):</p>
+    <ul>
+      <li><code>main.py</code>: Endpoints REST FastAPI, WebSockets de telemetría y coordinación de tareas.</li>
+      <li><code>centinela.py</code>: Bucle principal de correlación de vulnerabilidades con IA y enriquecimiento de inteligencia de amenazas.</li>
+      <li><code>core/itdr_engine.py</code>: Motor de Detección &amp; Respuesta ante Amenazas de Identidad (Authentik IdP).</li>
+      <li><code>core/soar_engine.py</code>: Motor SOAR de Respuesta Autónoma y políticas escalonadas.</li>
+      <li><code>auditors/</code>: Motores de auditoría nativos (SAST, DAST, SCA, CIS Benchmarks, Secretos, CMMI v3.0, WCAG 2.1).</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>2. Integración Webhook Shift-Left con GitLab</h2>
+    <p>Configuración del Webhook para revisión de Merge Requests en tiempo real:</p>
+    <pre>URL: https://centinela.casmart.internal/api/gitlab/mr-webhook
+Trigger: Merge Request Events
+Secret Token: &lt;GITLAB_WEBHOOK_TOKEN&gt;</pre>
+  </div>
+
+  <div class="card">
+    <h2>3. Endpoints Clave de la API REST</h2>
+    <ul>
+      <li><code>GET /api/manual</code> — Sirve el Manual Técnico Oficial HTML.</li>
+      <li><code>GET /api/manual/user</code> — Sirve este Manual de Usuario HTML.</li>
+      <li><code>GET /api/manual/developer</code> — Sirve este Manual de Desarrollador HTML.</li>
+      <li><code>GET /api/itdr/telemetry/recent</code> — Obtiene eventos de telemetría ITDR Authentik.</li>
+      <li><code>POST /api/itdr/authentik/webhook</code> — Ingesta de eventos en tiempo real desde Authentik.</li>
+      <li><code>GET /api/reports/executive</code> — Genera y descarga el reporte en PDF con WeasyPrint.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
