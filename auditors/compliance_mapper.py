@@ -622,6 +622,24 @@ def compute_iso_control_coverage(vulns: list) -> Dict[str, Any]:
     hand-picked set of 6 pass/fail categories) that would have shown a different percentage
     for the same asset than the deep-details modal right next to it in the UI.
     """
+    iso_control_universe = [
+        "A.5.15 (Access Control)",
+        "A.5.18 (Access Rights)",
+        "A.5.24 (Incident Management)",
+        "A.8.9 (Configuration Management)",
+        "A.8.12 (Data Leakage Prevention)",
+        "A.8.15 (Logging Activities)",
+        "A.8.16 (Monitoring & Controls)",
+        "A.8.20 (Network Security)",
+        "A.8.24 (Use of Cryptography)",
+        "A.8.28 (Secure Coding)",
+        "ISO 25010 (Usability & Accessibility)",
+        "ISO 25010 (Performance & Efficiency)",
+        "ISO 25010 (Maintainability & Quality)",
+        "ISO 27001 Annex A (Supplier Relationships)",
+        "ISO 27001 Annex A (Information Security Continuity)"
+    ]
+
     violated_controls = set()
     control_findings: Dict[str, list] = {}
     for v in vulns:
@@ -631,7 +649,6 @@ def compute_iso_control_coverage(vulns: list) -> Dict[str, Any]:
         violated_controls.add(control)
         control_findings.setdefault(control, []).append(v)
 
-    iso_control_universe = sorted(set(x["ISO_27001"] for x in COMPLIANCE_MAPPING_MATRIX.values()) | {"A.8.16 (Monitoring & Controls)"})
     score = round(100 * (1 - len(violated_controls) / len(iso_control_universe)), 1)
 
     breakdown = []
