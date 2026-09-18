@@ -1,6 +1,6 @@
 # 🛡️ Guía Maestra de Auditoría y Evaluación Profunda: Centinela AI Omni-XDR
 
-Este documento detalla exhaustivamente **todo lo que evalúa Centinela AI**, tanto en la infraestructura física/virtual/cloud como en el código fuente de las aplicaciones del ecosistema (**SETAG**, **SIDECO**, **SIAT**, **Kardex**, **Starters**).
+Este documento detalla exhaustivamente **todo lo que evalúa Centinela AI**, tanto en la infraestructura física/virtual/cloud como en el código fuente de las aplicaciones del ecosistema (**SIDECO**, **SIAT**, **Kardex**, **Starters**).
 
 ---
 
