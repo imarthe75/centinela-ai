@@ -1,0 +1,30 @@
+id: centinela-superset-api-docs-exposed
+
+info:
+  name: Apache Superset - API schema served without authentication
+  author: centinela
+  severity: medium
+  description: |
+    The Superset OpenAPI document is reachable without a session. It lists every REST route and parameter, which hands an attacker a
+    complete map of the API (OWASP API9 improper inventory / WSTG-INFO-06). Restrict /swagger/ and /api/v1/_openapi at the proxy.
+  tags: superset,exposure,centinela
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/v1/_openapi"
+      - "{{BaseURL}}/swagger/v1"
+    redirects: true
+    max-redirects: 2
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - '"openapi"'
+          - '"paths"'
+        condition: and

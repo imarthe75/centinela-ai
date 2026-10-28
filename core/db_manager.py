@@ -1,0 +1,166 @@
+"""
+Centinela Database & Vault Connection Manager
+Manages PostgreSQL connection pooling, Vault secret resolution, and database transaction contexts.
+"""
+from core import org_config
+import os
+try:
+    import psycopg2
+    from psycopg2 import pool
+except ImportError:
+    psycopg2 = None
+    pool = None
+from contextlib import contextmanager
+try:
+    import hvac
+except ImportError:
+    hvac = None
+
+
+def get_vault_secrets():
+    """Fetch secrets from Vault if configured"""
+    vault_addr = os.getenv("VAULT_ADDR")
+    vault_token = os.getenv("VAULT_TOKEN")
+    
+    if not vault_addr or not vault_token:
+        return {}
+        
+    try:
+        client = hvac.Client(url=vault_addr, token=vault_token)
+        read_response = client.secrets.kv.v2.read_secret_version(path=org_config.vault_path("security"))
+        secrets = read_response['data']['data']
+        return secrets
+    except hvac.exceptions.InvalidPath:
+        print("ℹ️ [DB-Manager] No optional secret at Vault path " + org_config.vault_path("security") + "; using environment variables.")
+        return {}
+    except Exception as e:
+        print(f"⚠️ [DB-Manager] Could not fetch secrets from Vault: {e}", flush=True)
+        return {}
+
+# Load Secrets once
+VAULT_SECRETS = get_vault_secrets()
+
+def get_secret(key, default=None):
+    env_val = os.getenv(key)
+    if env_val:
+        return env_val
+    return VAULT_SECRETS.get(key, default)
+
+# DB Config
+DB_CONFIG = {
+    # No embedded infrastructure defaults: host/user/password come from Vault or the environment
+    # (.env). A default that equalled the live DB password was published in a public repo.
+    "host": get_secret("DB_HOST", "localhost"),
+    "database": get_secret("DB_NAME", "centinela_db"),
+    "user": get_secret("DB_USER", "centinela_user"),
+    "password": get_secret("DB_PASSWORD", ""),
+    # TCP keepalives so the OS holds idle pooled connections open and the DB server's own
+    # idle timeout / a network blip doesn't silently kill them between checkouts. Real incident
+    # 2026-08-27: "server closed the connection unexpectedly" during an asset-registration
+    # INSERT in gitlab_integration.py was swallowed and the whole repo scan ran with
+    # asset_id=None, producing ~2,560 orphan findings over ~13h.
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+    "connect_timeout": 10,
+}
+
+# Connection Pool Initialization
+try:
+    if psycopg2:
+        print(f"🔌 [DB-Manager] Initializing Connection Pool for {DB_CONFIG['host']}...")
+        db_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=2,
+            maxconn=20,
+            **DB_CONFIG
+        )
+        print("✅ [DB-Manager] Connection Pool initialized successfully.")
+    else:
+        db_pool = None
+except Exception as e:
+    print(f"❌ [DB-Manager] Error initializing Connection Pool: {e}")
+    db_pool = None
+
+@contextmanager
+def get_db_connection():
+    """Context manager to get a connection from the pool and return it."""
+    if not psycopg2:
+        yield None
+        return
+        
+    if not db_pool:
+        # Fallback to direct connection if pool failed to initialize
+        conn = psycopg2.connect(**DB_CONFIG)
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
+    conn = db_pool.getconn()
+
+    # Liveness check: getconn() can hand back a connection the server closed while it sat idle
+    # in the pool (keepalives above make this rare, not impossible). conn.closed only catches a
+    # locally-known close; a server-side drop isn't visible until the first real query fails.
+    # A cheap "SELECT 1" here surfaces it now, so we can discard + replace the dead one before
+    # the caller runs a real statement that would otherwise fail and (in gitlab_integration.py)
+    # get swallowed into an unattributed scan.
+    for _attempt in range(2):
+        try:
+            _probe = conn.cursor()
+            _probe.execute("SELECT 1")
+            _probe.fetchone()
+            _probe.close()
+            break
+        except Exception:
+            try:
+                db_pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = db_pool.getconn()
+    else:
+        # both attempts failed -- let the caller see it rather than yield a known-bad connection
+        pass
+
+    try:
+        yield conn
+    finally:
+        # putconn() used to run unconditionally, which recycles a dead connection right back
+        # into the pool if the server side closed it (idle timeout, network blip, Postgres
+        # restart) -- psycopg2 marks conn.closed non-zero in that case, but nothing here ever
+        # checked it. The next getconn() call would then hand that same poisoned connection to
+        # a *different* caller, who'd immediately hit "connection already closed" on their first
+        # query. This is what caused Sentinel's intermittent main-loop crashes: not a bug in
+        # Sentinel itself, but a pool that kept re-issuing a connection it should have discarded.
+        # close=True tells the pool to actually drop this slot and open a fresh connection next
+        # time instead of recycling it.
+        db_pool.putconn(conn, close=bool(conn.closed))
+
+@contextmanager
+def get_db_cursor(cursor_factory=None):
+    """Context manager to get a cursor from a pooled connection."""
+    with get_db_connection() as conn:
+        if conn is None:
+            yield None
+            return
+        cur = conn.cursor(cursor_factory=cursor_factory)
+        try:
+            yield cur
+            conn.commit()
+        except Exception as e:
+            # rollback() itself raises InterfaceError on an already-dead connection (e.g. the
+            # server closed it mid-transaction) -- guard it so that secondary failure doesn't
+            # mask the real exception `e` that callers need to see (re-raised below regardless).
+            # Still printed rather than a bare `pass`, so a genuinely unexpected rollback
+            # failure isn't invisible even though it's deliberately not re-raised (Rule #6).
+            try:
+                conn.rollback()
+            except Exception as rollback_err:
+                print(f"⚠️ [DB-Manager] rollback() failed on an already-dead connection: {rollback_err}")
+            raise e
+        finally:
+            try:
+                cur.close()
+            except Exception as close_err:
+                print(f"⚠️ [DB-Manager] cur.close() failed (connection likely already dead): {close_err}")

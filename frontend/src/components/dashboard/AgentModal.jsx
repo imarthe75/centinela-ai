@@ -1,0 +1,274 @@
+// Generated from Dashboard.jsx by scratch/extract_dashboard.mjs (ADR-0008 #2): code moved verbatim; state comes from DashboardContext.
+import { Activity, CheckCircle2, Download, FileText, XCircle } from 'lucide-react'
+import { useDashboard } from './DashboardContext'
+
+export default function AgentModal() {
+  const { agentDownloading, agentModalAsset, agentModalTab, handleDownloadAgent, setAgentModalTab, setShowAgentModal } = useDashboard()
+  return (
+<div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#0F172A]/95 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="bg-[#1E293B] w-full max-w-2xl rounded-[48px] border border-indigo-500/30 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500 flex flex-col max-h-[90vh]">
+                    {/* Header */}
+                    <div className="p-8 border-b border-white/5 bg-gradient-to-br from-indigo-500/10 to-transparent flex justify-between items-center shrink-0">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                                <Download size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-bold text-xl tracking-tight">Instalación de Agente Wazuh</h3>
+                                <p className="text-[12px] text-indigo-400 font-black uppercase tracking-widest mt-0.5">
+                                    {agentModalAsset.name} — {agentModalAsset.type?.replace('SERVER_', '').replace('_', ' ')}
+                                </p>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowAgentModal(false)} className="text-slate-500 hover:text-white transition-all">
+                            <XCircle size={28} />
+                        </button>
+                    </div>
+
+                    {/* Tabs */}
+                    <div className="flex border-b border-white/5 shrink-0">
+                        {[
+                            { id: 'download', label: '📥 Descarga', icon: Download },
+                            { id: 'guide', label: '📋 Guía', icon: FileText },
+                            { id: 'verify', label: '✅ Verificar', icon: CheckCircle2 }
+                        ].map(tab => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setAgentModalTab(tab.id)}
+                                className={`flex-1 py-4 text-xs font-bold uppercase tracking-wider transition-all border-b-2 ${
+                                    agentModalTab === tab.id
+                                        ? 'border-indigo-400 text-indigo-400 bg-indigo-500/5'
+                                        : 'border-transparent text-slate-500 hover:text-slate-300'
+                                }`}
+                            >
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                        {agentModalTab === 'download' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Descarga el script de instalación del Agente Wazuh EDR preconfigurado para conectarse automáticamente al Manager de Centinela AI.
+                                </p>
+                                <div className="grid grid-cols-1 gap-4">
+                                    {/* Linux Script */}
+                                    {['SERVER_LINUX', 'WORKSTATION'].includes(agentModalAsset.type) || !agentModalAsset.type?.includes('WINDOWS') ? (
+                                        <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-400 text-lg">🐧</div>
+                                                <div>
+                                                    <p className="text-white font-bold text-sm">Script de Instalación Linux</p>
+                                                    <p className="text-[12px] text-slate-500">Bash Script (.sh) — Ubuntu, Debian, CentOS, RHEL, AlmaLinux</p>
+                                                </div>
+                                            </div>
+                                            <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[13px] text-emerald-400">
+                                                <p className="text-slate-500 mb-1"># Paso 1: Descargar el script</p>
+                                                <p>curl -O /api/inventory/{agentModalAsset.name}/agent-installer</p>
+                                                <p className="text-slate-500 mt-2 mb-1"># Paso 2: Ejecutar como root</p>
+                                                <p>sudo bash centinela-wazuh-install-{agentModalAsset.name}.sh</p>
+                                            </div>
+                                            <button
+                                                onClick={() => handleDownloadAgent(agentModalAsset.name, 'linux')}
+                                                disabled={agentDownloading}
+                                                className="w-full py-3 bg-indigo-500 text-white font-black uppercase text-[12px] tracking-widest rounded-xl hover:bg-indigo-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                            >
+                                                {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                                Descargar Script Linux (.sh)
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                    {/* Windows Script */}
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 text-lg">🪟</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Script de Instalación Windows</p>
+                                                <p className="text-[12px] text-slate-500">PowerShell Script (.ps1) — Windows Server 2019/2022 / Windows 10/11</p>
+                                            </div>
+                                        </div>
+                                        <div className="bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 font-mono text-[13px] text-blue-400">
+                                            <p className="text-slate-500 mb-1"># Abrir PowerShell como Administrador:</p>
+                                            <p>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</p>
+                                            <p>.\\centinela-wazuh-install-{agentModalAsset.name}.ps1</p>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'windows')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-blue-500 text-white font-black uppercase text-[12px] tracking-widest rounded-xl hover:bg-blue-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Script Windows (.ps1)
+                                        </button>
+                                    </div>
+                                    {/* macOS Script */}
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-slate-500/10 flex items-center justify-center text-white text-lg">🍎</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Script de Instalación macOS</p>
+                                                <p className="text-[12px] text-slate-500">Zsh Script (.sh) — macOS Sonoma, Ventura, Monterey (M1/M2/M3 & Intel)</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'macos')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-slate-700 text-white font-black uppercase text-[12px] tracking-widest rounded-xl hover:bg-slate-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Script macOS (.sh)
+                                        </button>
+                                    </div>
+
+                                    {/* ossec.conf direct config download */}
+                                    <div className="bg-[#0F172A] p-6 rounded-2xl border border-slate-800 space-y-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-lg">⚙️</div>
+                                            <div>
+                                                <p className="text-white font-bold text-sm">Archivo de Configuración Directo (`ossec.conf`)</p>
+                                                <p className="text-[12px] text-slate-500">Pre-configurado con Manager IP: <span className="text-[#06B6D4] font-bold">192.0.2.15</span> y Puerto TCP: <span className="text-[#06B6D4] font-bold">1514</span></p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => handleDownloadAgent(agentModalAsset.name, 'conf')}
+                                            disabled={agentDownloading}
+                                            className="w-full py-3 bg-emerald-600 text-white font-black uppercase text-[12px] tracking-widest rounded-xl hover:bg-emerald-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        >
+                                            {agentDownloading ? <Activity size={14} className="animate-spin" /> : <Download size={14} />}
+                                            Descargar Configuración `ossec.conf`
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {agentModalTab === 'guide' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Sigue estos pasos para instalar el Agente Wazuh EDR en el activo <span className="text-white font-bold">{agentModalAsset.name}</span> y conectarlo a Centinela AI.
+                                </p>
+                                <div className="space-y-4">
+                                    {[
+                                        {
+                                            n: 1,
+                                            title: 'Descargar el Script de Instalación',
+                                            desc: 'Ve a la pestaña "Descarga" y descarga el script correspondiente a tu sistema operativo (.sh para Linux, .ps1 para Windows).',
+                                            note: 'El script ya incluye la IP del Manager de Wazuh y los parámetros de registro pre-configurados.',
+                                            color: 'text-[#06B6D4]', bg: 'bg-[#06B6D4]/10', border: 'border-[#06B6D4]/20'
+                                        },
+                                        {
+                                            n: 2,
+                                            title: 'Transferir el Script al Servidor',
+                                            desc: agentModalAsset.type?.includes('WINDOWS')
+                                                ? 'Copia el archivo .ps1 al servidor Windows. Puedes usar RDP, WinSCP, o compartir la carpeta de red.'
+                                                : `Transfiere el script al servidor: scp centinela-wazuh-install-${agentModalAsset.name}.sh usuario@${agentModalAsset.endpoint || 'IP_DEL_SERVIDOR'}:/tmp/`,
+                                            note: agentModalAsset.type?.includes('WINDOWS') ? 'Asegúrate de que el archivo no esté bloqueado por el antivirus durante la instalación.' : 'Asegúrate de que el archivo tiene permisos de ejecución: chmod +x /tmp/centinela-wazuh-*.sh',
+                                            color: 'text-amber-400', bg: 'bg-amber-400/10', border: 'border-amber-400/20'
+                                        },
+                                        {
+                                            n: 3,
+                                            title: 'Ejecutar como Administrador / Root',
+                                            desc: agentModalAsset.type?.includes('WINDOWS')
+                                                ? 'Abre PowerShell como Administrador y ejecuta: Set-ExecutionPolicy Bypass -Scope Process; .\\centinela-wazuh-install.ps1'
+                                                : 'En el servidor Linux, ejecuta el script con privilegios de root: sudo bash /tmp/centinela-wazuh-*.sh',
+                                            note: 'La instalación tomará entre 2 y 5 minutos. El script mostrará el progreso en la terminal.',
+                                            color: 'text-emerald-400', bg: 'bg-emerald-400/10', border: 'border-emerald-400/20'
+                                        },
+                                        {
+                                            n: 4,
+                                            title: 'Verificar Registro en el Manager',
+                                            desc: 'Tras completar la instalación, el agente se registrará automáticamente en el Wazuh Manager de Centinela AI. En 1-2 minutos el activo aparecerá como "Activo" en el Dashboard.',
+                                            note: 'Ve a la pestaña "Verificar" para ver los comandos de diagnóstico en caso de problemas.',
+                                            color: 'text-indigo-400', bg: 'bg-indigo-400/10', border: 'border-indigo-400/20'
+                                        }
+                                    ].map((step) => (
+                                        <div key={step.n} className={`flex gap-4 p-5 ${step.bg} border ${step.border} rounded-2xl`}>
+                                            <div className={`w-8 h-8 rounded-full ${step.bg} border ${step.border} flex items-center justify-center ${step.color} font-black text-sm shrink-0`}>
+                                                {step.n}
+                                            </div>
+                                            <div>
+                                                <p className={`font-black text-xs uppercase tracking-wider ${step.color} mb-1`}>{step.title}</p>
+                                                <p className="text-slate-300 text-xs leading-relaxed mb-2">{step.desc}</p>
+                                                <p className="text-slate-500 text-[12px] leading-relaxed italic">💡 {step.note}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {agentModalTab === 'verify' && (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                <p className="text-slate-400 text-sm leading-relaxed">
+                                    Usa estos comandos para verificar que el agente está correctamente instalado y conectado.
+                                </p>
+                                <div className="space-y-4">
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[12px] font-black text-emerald-400 uppercase tracking-widest">En el Servidor Linux — Estado del Servicio</p>
+                                        <pre className="font-mono text-xs text-slate-300 bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 overflow-x-auto">
+{`# Verificar estado del servicio
+systemctl status wazuh-agent
+
+# Ver logs del agente
+tail -f /var/ossec/logs/ossec.log
+
+# Verificar conexión al Manager
+/var/ossec/bin/agent-auth -m MANAGER_IP -A AGENT_NAME
+
+# Estado del control
+/var/ossec/bin/wazuh-control status`}</pre>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[12px] font-black text-blue-400 uppercase tracking-widest">En el Servidor Windows — Estado del Servicio</p>
+                                        <pre className="font-mono text-xs text-slate-300 bg-[#0a0f1a] p-4 rounded-xl border border-slate-800 overflow-x-auto">
+{`# Verificar servicio en PowerShell (como Admin)
+Get-Service WazuhSvc
+
+# Ver logs del agente
+Get-Content "C:\\Program Files (x86)\\ossec-agent\\ossec.log" -Tail 50
+
+# Reiniciar el servicio si es necesario
+Restart-Service WazuhSvc`}</pre>
+                                    </div>
+                                    <div className="bg-[#0F172A] p-5 rounded-2xl border border-slate-800 space-y-2">
+                                        <p className="text-[12px] font-black text-amber-400 uppercase tracking-widest">Indicadores de Éxito</p>
+                                        <div className="space-y-2">
+                                            {[
+                                                'El servicio wazuh-agent aparece como "active (running)" o "Running"',
+                                                'El activo cambia a estado "Activo" en el Dashboard de Inventario',
+                                                'El log muestra "Connected to Manager" sin errores de autenticación',
+                                                'El agente aparece listado en el Manager con status "Active"'
+                                            ].map((item, i) => (
+                                                <div key={i} className="flex items-start gap-2">
+                                                    <CheckCircle2 size={12} className="text-emerald-400 mt-0.5 shrink-0" />
+                                                    <p className="text-xs text-slate-400">{item}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-6 bg-[#0F172A] border-t border-white/5 flex gap-3 shrink-0">
+                        <button
+                            onClick={() => setAgentModalTab(agentModalTab === 'download' ? 'guide' : agentModalTab === 'guide' ? 'verify' : 'download')}
+                            className="flex-1 py-4 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 font-black uppercase text-[12px] tracking-widest rounded-2xl hover:bg-indigo-500/20 transition-all"
+                        >
+                            {agentModalTab === 'download' ? '→ Ver Guía de Instalación' : agentModalTab === 'guide' ? '→ Ver Verificación' : '→ Ver Descarga'}
+                        </button>
+                        <button
+                            onClick={() => setShowAgentModal(false)}
+                            className="px-8 py-4 bg-slate-800 text-white font-black uppercase text-[12px] tracking-widest rounded-2xl hover:bg-slate-700 transition-all"
+                        >
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+            </div>
+  )
+}

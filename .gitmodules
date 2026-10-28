@@ -1,0 +1,3 @@
+[submodule "libs/centinela-core"]
+	path = libs/centinela-core
+	url = ../centinela-core.git

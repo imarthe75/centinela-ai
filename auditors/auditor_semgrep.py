@@ -1,0 +1,201 @@
+"""
+auditor_semgrep.py — Centinela-AI v3
+Motor de análisis estático de código fuente (SAST) usando Semgrep.
+Escanea repositorios Git montados o rutas locales y reporta hallazgos
+en vulnerability_log con scan_engine='semgrep'.
+"""
+
+import subprocess
+import json
+import os
+import traceback
+from core import db_manager, deduplication_engine
+
+SEMGREP_BIN = os.getenv("SEMGREP_BIN", "semgrep")
+REPOS_BASE  = os.getenv("REPOS_BASE", "/app/repos")   # directorio donde se montan repos
+# Real gap found 2026-08-22 auditing 3 Java/TypeScript projects: this was ONE fixed ruleset list
+# (defaulting to p/python + p/javascript only) applied to every single repo Centinela ever scans
+# with semgrep, including the periodic automatic GitLab loop -- a Java-only repo would silently
+# never get p/java rules unless someone manually overrode SEMGREP_RULESETS globally, which would
+# then apply that same override to every OTHER repo too (Python ones wasting scan time running
+# irrelevant Java rules). SEMGREP_RULESETS is kept as a full override escape hatch (set it and it
+# wins outright, matching the exact behavior every caller already relies on), but when unset the
+# ruleset is now chosen per-scan from the real languages actually present in `path`.
+RULESETS    = os.getenv("SEMGREP_RULESETS", "")
+_LANG_RULESETS = {
+    ".py": "p/python",
+    ".js": "p/javascript", ".jsx": "p/javascript",
+    ".ts": "p/typescript", ".tsx": "p/typescript",
+    ".java": "p/java",
+    ".go": "p/golang",
+    ".php": "p/php",
+    # Extended 2026-08-25 after a real, live discovery: querying the fleet's own vulnerability_log
+    # url_path extensions found genuine Rust (.rs, 39 findings via SonarQube, proyecto-m's
+    # vendored `everything-claude-code` Rust codebase) and Terraform (.tf, 2 findings) already
+    # present in the GitLab fleet, neither ever getting a language-specific Semgrep ruleset before
+    # this. Every ruleset name below was verified live against semgrep's real registry API
+    # (https://semgrep.dev/api/registry/rulesets) before being added -- NOT guessed: a bad
+    # ruleset name fails with a real, loud "HTTP 404 configuration not found" error from semgrep
+    # itself (confirmed live with a deliberately-invalid name), so a wrong entry here would be a
+    # visible, self-disclosing failure, not a silent 0-findings gap -- but verifying first avoids
+    # ever hitting that failure in production. Deliberately NOT added: C++, HTML, Bash, Dart --
+    # confirmed live via the same registry query that semgrep has no official `p/` ruleset for
+    # any of these (each returns a real HTTP 404), so adding them would silently produce 0
+    # findings forever, indistinguishable from "clean code" -- exactly the kind of fake coverage
+    # this project's own rules prohibit. If one of these languages becomes a real audit target,
+    # the honest fix is a project-specific custom Semgrep rule pack, not a guessed registry name.
+    ".rs": "p/rust",
+    ".tf": "p/terraform",
+    ".rb": "p/ruby",
+    ".cs": "p/csharp",
+    ".c": "p/c", ".h": "p/c",
+    ".kt": "p/kotlin", ".kts": "p/kotlin",
+    ".swift": "p/swift",
+    ".scala": "p/scala",
+    ".ex": "p/elixir", ".exs": "p/elixir",
+}
+
+
+def _severity_from_semgrep(impact: str) -> str:
+    mapping = {
+        "ERROR":   "HIGH",
+        "WARNING": "MEDIUM",
+        "INFO":    "LOW",
+    }
+    return mapping.get((impact or "").upper(), "LOW")
+
+
+def detect_language_rulesets(path: str) -> list[str]:
+    """
+    Real, language-agnostic rulesets (owasp-top-ten, secrets) always run; language-specific ones
+    are added only for extensions genuinely found under `path` -- confirmed live against proyecto-k
+    (Java) and its Angular frontend (TypeScript), each correctly picks up only its own real
+    language instead of the old Python/JS-only default silently missing both.
+    """
+    found_exts = set()
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv", ".mvn", "target", "dist")]
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in _LANG_RULESETS:
+                found_exts.add(ext)
+        if len(found_exts) == len(set(_LANG_RULESETS.values())):
+            break  # every known language already found, no need to keep walking
+    lang_rulesets = sorted({_LANG_RULESETS[e] for e in found_exts})
+    return ["p/owasp-top-ten", "p/secrets"] + lang_rulesets
+
+
+class SemgrepFindings(list):
+    """List of findings that also says whether the run was complete. An empty list is ambiguous (clean code, or semgrep failed);
+    only a complete run may close findings it no longer reproduces (persist_findings -> reconcile_resolved_findings)."""
+    def __init__(self, items=(), asset_id=None, complete: bool = False):
+        super().__init__(items)
+        self.asset_id = asset_id
+        self.complete = complete
+
+
+def scan_path(path: str, asset_id: str, asset_name: str) -> list[dict]:
+    """Run semgrep on `path` and return list of normalized findings (a SemgrepFindings: .complete is False on any failure)."""
+    rulesets = RULESETS.split() if RULESETS else detect_language_rulesets(path)
+    cmd = [SEMGREP_BIN, "--json", "--quiet"] + [f"--config={r}" for r in rulesets] + [path]
+    print(f"🔍 [Semgrep] Scanning {path} with rulesets: {rulesets}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode not in (0, 1):
+            print(f"⚠️ [Semgrep] Non-zero exit {result.returncode}: {result.stderr[:200]}")
+            return SemgrepFindings(asset_id=asset_id)
+        data = json.loads(result.stdout or "{}")
+    except FileNotFoundError:
+        print(f"⚠️ [Semgrep] Binario 'semgrep' no encontrado en el sistema. Degradando hacia escáneres nativos SAST.")
+        return SemgrepFindings(asset_id=asset_id)
+    except subprocess.TimeoutExpired:
+        print(f"⏰ [Semgrep] Timeout scanning {path}")
+        return SemgrepFindings(asset_id=asset_id)
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [Semgrep] JSON parse error: {e}")
+        return SemgrepFindings(asset_id=asset_id)
+
+    findings = []
+    for r in data.get("results", []):
+        check_id  = r.get("check_id", "semgrep-finding")
+        # vulnerability_log.cve_id is VARCHAR(100); some real Java rule-ids (nested package
+        # paths, e.g. spring-actuator-non-health-enabled.*) exceed that. Found live 2026-09-11
+        # auditing proyecto-g/backend/backend-proyecto-g: a single 105-char check_id raised a DB error that
+        # persist_findings() never caught mid-loop, rolling back the ENTIRE transaction -- all
+        # 15 real Semgrep findings for that repo, silently lost, every cycle. Truncate with a
+        # hash suffix (not a bare truncate) so two different long ids that share a 90-char
+        # prefix still get distinct, stable cve_ids across re-scans.
+        if len(check_id) > 100:
+            import hashlib
+            check_id = f"{check_id[:90]}-{hashlib.sha256(check_id.encode()).hexdigest()[:8]}"
+        severity  = _severity_from_semgrep(r.get("extra", {}).get("severity"))
+        file_path = r.get("path", "unknown")
+        # semgrep echoes whatever path form it was given; scan_path passes an absolute temp
+        # dir, so `path` came back absolute -> the fingerprint (built from url_path) changed
+        # every time the clone workspace moved, silently re-inserting every finding as new.
+        # Normalize to a repo-relative path so re-scans dedupe correctly.
+        try:
+            if os.path.isabs(file_path):
+                file_path = os.path.relpath(file_path, path)
+        except ValueError:
+            pass
+        start_line = r.get("start", {}).get("line", 0)
+        message   = r.get("extra", {}).get("message", "Sin descripción")
+        findings.append({
+            "asset_id":    asset_id,
+            "asset_name":  asset_name,
+            "cve_id":      check_id,
+            "severity":    severity,
+            "description": f"[{file_path}:{start_line}] {message}",
+            "url_path":    f"{file_path}:{start_line}",
+            "scan_engine": "semgrep",
+        })
+    # Errors at level "error" (a file that failed to parse, a rule that crashed) mean part of the tree was not analyzed:
+    # the findings are still persisted, but the run cannot close findings it simply did not get to see.
+    hard_errors = [e for e in (data.get("errors") or []) if str(e.get("level", "error")).lower() == "error"]
+    if hard_errors:
+        print(f"⚠️ [Semgrep] {len(hard_errors)} error(s) during the scan of {asset_name}: findings will not be reconciled this run")
+    print(f"✅ [Semgrep] {len(findings)} findings for {asset_name} at {path}")
+    return SemgrepFindings(findings, asset_id=asset_id, complete=not hard_errors)
+
+
+def persist_findings(findings: list[dict]):
+    """
+    Persists semgrep findings via the shared cross-tool dedup engine. Previously this ran its
+    own ad-hoc `SELECT ... WHERE asset_id=%s AND cve_id=%s AND scan_engine='semgrep'` check and,
+    on a match, did nothing at all -- not even refreshing detected_at/severity -- meaning
+    re-detected findings never got their SLA due date, fingerprint_hash, or MITRE ATT&CK
+    mapping computed, because none of that lives in this ad-hoc INSERT; every other auditor in
+    this codebase already funnels through log_finding_deduplicated() for exactly that reason.
+    preserve_status=True: semgrep re-scans the same GitLab repos repeatedly via the idle loop,
+    same reasoning as ZAP's documented preserve_status bug -- without it, every re-detection
+    would reset an already-triaged finding back to OPEN.
+    """
+    asset_id = getattr(findings, "asset_id", None)
+    complete = bool(getattr(findings, "complete", False))
+    if not findings and not (complete and asset_id):
+        return
+    persisted = 0
+    with db_manager.get_db_cursor() as cur:
+        active = set()
+        for f in findings:
+            deduplication_engine.log_finding_deduplicated(
+                cur, f["asset_id"], f["cve_id"], f["severity"], f["description"],
+                "semgrep", url_path=f["url_path"], open_status="OPEN", preserve_status=True
+            )
+            active.add(deduplication_engine.calculate_fingerprint(f["asset_id"], f["cve_id"], f["url_path"]))
+            persisted += 1
+        # Until 2026-10-20 semgrep never closed anything: a fixed finding stayed open forever (seen live on proyecto-e, where a
+        # corrected path traversal kept showing as open). Only a complete run reconciles.
+        resolved = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "semgrep", active) if (complete and asset_id) else 0
+    print(f"💾 [Semgrep] Persisted {persisted} findings to vulnerability_log" + (f", {resolved} no longer reproduced -> RESOLVED" if resolved else ""))
+
+
+def run(asset_id: str, asset_name: str, repo_path: str = None):
+    """Entry point called by auditor_ext."""
+    path = repo_path or os.path.join(REPOS_BASE, asset_name.replace(" ", "_"))
+    if not os.path.isdir(path):
+        print(f"⚠️ [Semgrep] Path not found: {path} — skipping {asset_name}")
+        return
+    findings = scan_path(path, asset_id, asset_name)
+    persist_findings(findings)

@@ -1,0 +1,24 @@
+id: centinela-prometheus-metrics-exposed
+
+info:
+  name: Prometheus metrics endpoint exposed without authentication
+  author: centinela
+  severity: low
+  description: |
+    /metrics answers with Prometheus exposition text to an anonymous client. Metrics leak internal route names, versions, queue and
+    DB pool sizes that help an attacker plan (WSTG-INFO-02/05). Restrict it to the monitoring network.
+  tags: exposure,prometheus,centinela
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/metrics"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: regex
+        part: body
+        regex:
+          - '(?m)^# (HELP|TYPE) [a-zA-Z_:][a-zA-Z0-9_:]* '

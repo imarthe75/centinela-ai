@@ -1,0 +1,37 @@
+# ADR-0008 #7: CI. The backend job reproduces exactly what scripts/run_tests.sh does locally (disposable Postgres, schema from the real
+# Alembic migrations, whole suite). tests/conftest.py refuses to run unless DB_NAME == centinela_test, so this can never touch a real database.
+stages: [test]
+
+backend-tests:
+  stage: test
+  image: python:3.10-slim
+  services:
+    - name: postgres:18
+      alias: testdb
+  variables:
+    POSTGRES_DB: centinela_test
+    POSTGRES_USER: centinela_test
+    POSTGRES_PASSWORD: ci_only
+    DB_HOST: testdb
+    DB_NAME: centinela_test
+    DB_USER: centinela_test
+    DB_PASSWORD: ci_only
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    paths: [.cache/pip]
+  script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends libpq-dev gcc libcairo2 libpango-1.0-0 libpangoft2-1.0-0 libffi-dev shared-mime-info git openssh-client
+    - pip install -c locks/backend.txt -r requirements.txt
+    - python -m alembic upgrade head
+    - python scripts/check_globals.py main centinela remediation.heuristics workers.streams workers.periodic api.common core.auth core.job_queue
+    - python -m pytest tests/ -q -p no:cacheprovider
+
+frontend-checks:
+  stage: test
+  image: node:26-slim
+  script:
+    - cd frontend
+    - npm install --legacy-peer-deps
+    - npx eslint src --quiet
+    - npx vitest run
+    - npx vite build

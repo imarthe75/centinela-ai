@@ -1,0 +1,208 @@
+from core import org_config
+import docker
+import os
+import yaml
+import psycopg2
+from core import db_manager
+from psycopg2.extras import RealDictCursor
+
+# Initialize Docker Client
+docker_client = docker.from_env()
+
+def discover_core_assets():
+    print("🔍 [Centinela-AI] Starting Core Asset Discovery...")
+    
+    # Path to core compose (mounted in container)
+    core_compose_path = org_config.CORE_COMPOSE_PATH 
+    
+    if not os.path.exists(core_compose_path):
+        print(f"⚠️ Core compose not found at {core_compose_path}. Skipping discovery.")
+        return
+
+    with open(core_compose_path, 'r') as f:
+        compose_data = yaml.safe_load(f)
+
+    services = compose_data.get('services', {})
+    
+    for service_name, config in services.items():
+        image_name = config.get('image')
+        if not image_name:
+            try:
+                # Get image from container inspect
+                container = docker_client.containers.get(f"{org_config.CORE_CONTAINER_PREFIX}{service_name}")
+                image_name = container.image.tags[0] if container.image.tags else container.image.id
+            except:
+                image_name = "local-build"
+
+        print(f"📦 Found service: {service_name} (Image: {image_name})")
+        
+        if "wazuh" in service_name:
+            print(f"⏭️ Skipping security stack component: {service_name}")
+            continue
+            
+        criticality = "Medium"
+        if any(keyword in service_name for keyword in ["db", "vault", "auth", "gateway"]):
+            criticality = "High"
+        
+        try:
+            with db_manager.get_db_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status)
+                    VALUES (%s, %s, %s, %s, NOW(), 'discovered')
+                    ON CONFLICT (asset_name) DO UPDATE 
+                    SET endpoint = %s, last_audit = NOW(), status = 'rediscovered';
+                """, (service_name, "Container", image_name, criticality, image_name))
+        except Exception as e:
+            print(f"❌ Error inserting service {service_name}: {e}")
+
+    print("✅ Discovery complete.")
+
+def classify_asset_type_from_os(os_name: str) -> str:
+    """
+    Real asset-type classification from a genuine OS name string reported by Wazuh, replacing
+    the unconditional "AppServer" default every newly-discovered agent used to get regardless of
+    what it actually runs. Fixed 2026-08-14 in response to a direct live user report: a freshly
+    enrolled workstation (real hardware, a colleague's laptop, confirmed running while the
+    dashboard showed it as infrastructure) was tagged AppServer purely because
+    discover_wazuh_agents() never looked at the OS at all before this. Per explicit user
+    instruction: only Linux or a genuine Windows Server edition counts as SERVER-class
+    infrastructure -- Windows non-Server editions (10/11 Home/Pro/Enterprise) and macOS are
+    institutional endpoints/workstations, not servers, regardless of how capable the hardware is.
+    """
+    os_lower = str(os_name or "").lower()
+    if "windows server" in os_lower:
+        return "SERVER"
+    if "windows" in os_lower:
+        return "WORKSTATION"
+    if "mac" in os_lower or "darwin" in os_lower or "os x" in os_lower:
+        return "WORKSTATION"
+    if any(distro in os_lower for distro in
+           ("linux", "ubuntu", "debian", "centos", "rhel", "red hat", "fedora", "suse", "alpine")):
+        return "SERVER"
+    # Genuinely undetected/unknown OS (e.g. Wazuh hasn't reported syscheck/os data yet for a
+    # brand-new agent) -- keep the prior safe default rather than guess.
+    return "AppServer"
+
+
+def get_agent_os_name(container, agent_id: str) -> str:
+    """Real OS name for a Wazuh agent, via the same agent_control -i <id> -j call
+    main.py's GET /api/wazuh/agent/{agent_id}/info already uses. Returns "" (not a guess) if the
+    agent hasn't reported OS/syscheck data yet -- classify_asset_type_from_os() treats that as
+    genuinely unknown rather than assuming a value."""
+    try:
+        result = container.exec_run(["/var/ossec/bin/agent_control", "-i", agent_id, "-j"])
+        if result.exit_code != 0:
+            return ""
+        import json as _json
+        data = _json.loads(result.output.decode())
+        agent_data = data.get("data", {})
+        os_field = agent_data.get("os")
+        if isinstance(os_field, dict):
+            return str(os_field.get("name") or "")
+        return str(os_field or "").split("|")[0].strip()
+    except Exception as e:
+        print(f"⚠️ [Wazuh-Discovery] Could not fetch OS info for agent {agent_id}: {e}")
+        return ""
+
+
+def discover_wazuh_agents():
+    print("🔍 [Centinela-AI] Starting Wazuh Agent Discovery...")
+    try:
+        container = docker_client.containers.get(org_config.WAZUH_MANAGER_CONTAINER)
+        result = container.exec_run("/var/ossec/bin/agent_control -l")
+        
+        if result.exit_code == 0:
+            lines = result.output.decode().splitlines()
+            
+            with db_manager.get_db_cursor() as cur:
+                for line in lines:
+                    if "ID:" in line and "Name:" in line:
+                        # Parse: ID: 001, Name: proyecto-e, IP: any, Active
+                        parts = [p.strip() for p in line.split(",")]
+                        agent_id = parts[0].split(":")[1].strip()
+                        agent_name = parts[1].split(":")[1].strip()
+                        agent_ip = parts[2].split(":")[1].strip()
+                        status = parts[3].strip()
+                        
+                        if agent_name.startswith("wazuh-manager"): continue
+                        
+                        print(f"🕵️ Found agent: {agent_name} (IP: {agent_ip})")
+                        
+                        # Check if an asset with this IP or matching name already exists
+                        existing = None
+                        if agent_ip and agent_ip != "any":
+                            cur.execute("SELECT id FROM infra_inventory WHERE endpoint = %s", (agent_ip,))
+                            existing = cur.fetchone()
+                        
+                        if not existing and agent_name:
+                            # Real, ground-truth hostname captured at install time by
+                            # install_wazuh_agent_background() (main.py) -- an exact match here
+                            # is authoritative regardless of how unrelated the OS hostname looks
+                            # to the asset's business name (e.g. real hostname "host-k" for the
+                            # asset named "srv-p"), closing the gap the fuzzy tier below can't:
+                            # substring matching only works when the two names share text.
+                            cur.execute("SELECT id FROM infra_inventory WHERE LOWER(hostname) = LOWER(%s)", (agent_name,))
+                            existing = cur.fetchone()
+
+                        if not existing:
+                            # Try to match by asset_name (case-insensitive: agent hostnames
+                            # and inventory asset_name casing frequently differ)
+                            cur.execute("SELECT id FROM infra_inventory WHERE LOWER(asset_name) = LOWER(%s) OR LOWER(asset_name) = LOWER(%s)", (agent_name, f"{agent_name}-server"))
+                            existing = cur.fetchone()
+
+                        if not existing and agent_name and len(agent_name) >= 5:
+                            # Last-resort fuzzy match: asset_name contains the agent hostname
+                            # or vice versa (e.g. agent "authentik" <-> asset "app_authentik").
+                            # Avoids spawning duplicate assets when naming conventions differ
+                            # slightly between the OS hostname and the inventory record.
+                            # Restricted to SERVER/AppServer assets and a minimum name length —
+                            # short/generic agent hostnames (e.g. "host-k") can otherwise spuriously
+                            # substring-match unrelated rows (a GitLab repo path containing the
+                            # word "proyecto-d" once matched a Wazuh agent named "proyecto-d").
+                            # (Wildcard built in Python, not SQL: literal '%' in the query
+                            # string clashes with psycopg2's %s parameter substitution.)
+                            name_pattern = f"%{agent_name.lower()}%"
+                            cur.execute("""
+                                SELECT id FROM infra_inventory
+                                WHERE asset_type IN ('SERVER', 'AppServer')
+                                  AND (LOWER(asset_name) LIKE %s
+                                       OR %s LIKE '%%' || LOWER(asset_name) || '%%')
+                                LIMIT 1
+                            """, (name_pattern, agent_name.lower()))
+                            existing = cur.fetchone()
+
+                        if existing:
+                            # Backfill the ground-truth hostname on whatever matched this agent
+                            # (IP / exact asset_name / fuzzy substring) so a future run resolves
+                            # this asset via the reliable hostname tier above instead of falling
+                            # through to fuzzy matching every single cycle.
+                            cur.execute("""
+                                UPDATE infra_inventory
+                                SET agent_id = %s,
+                                    status = %s,
+                                    hostname = COALESCE(hostname, %s),
+                                    last_audit = NOW()
+                                WHERE id = %s
+                            """, (agent_id, status.lower(), agent_name, existing[0]))
+                        else:
+                            os_name = get_agent_os_name(container, agent_id)
+                            new_asset_type = classify_asset_type_from_os(os_name)
+                            print(f"🖥️ Classifying new agent {agent_name} as {new_asset_type} "
+                                  f"(OS: {os_name or 'unknown'})")
+                            cur.execute("""
+                                INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, last_audit, status, agent_id, hostname)
+                                VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s)
+                                ON CONFLICT (asset_name) DO UPDATE
+                                SET status = EXCLUDED.status,
+                                    last_audit = NOW(),
+                                    agent_id = EXCLUDED.agent_id,
+                                    hostname = COALESCE(infra_inventory.hostname, EXCLUDED.hostname);
+                            """, (agent_name, new_asset_type, agent_ip if agent_ip != "any" else "remote-agent", "High", status.lower(), agent_id, agent_name))
+            
+            print("✅ Wazuh discovery complete.")
+    except Exception as e:
+        print(f"❌ Error in Wazuh discovery: {e}")
+
+if __name__ == "__main__":
+    discover_core_assets()
+    discover_wazuh_agents()
