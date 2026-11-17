@@ -208,6 +208,20 @@ def scan_coverage_rules(file_path: str, content: str) -> List[Dict[str, Any]]:
                 continue
             if re.match(r"^[A-Za-z0-9_.\[\]-]+\s*(([<>~!]=|>|<)[^;#]*)?(\s*;.*)?(\s*#.*)?$", t) and "==" not in t:
                 add("SUPPLY-CHAIN-UNPINNED-DEPENDENCY", "LOW", idx, "Dependencia Python sin versión exacta (`==`): la instalación no es reproducible.")
+    # --- Supply chain: install hooks, URL dependencies, insecure lockfile sources, possible typosquats (ADR-0022 §3)
+    if "node_modules" not in file_path.replace("\\", "/"):
+        from auditors import supply_chain_rules
+        for rule, sev, idx, desc in supply_chain_rules.scan_file(filename, content):
+            # not add(): it appends the raw line, and these lines can carry a credential inside a URL
+            raw = lines[idx - 1].strip()[:140] if 0 < idx <= len(lines) else ""
+            out.append({"cve_id": rule, "severity": sev, "file": file_path, "line": idx,
+                        "description": f"{desc} Line {idx}: {supply_chain_rules.redact_url_credentials(raw)}"})
+        if filename == "package.json":   # yarn.lock has no extension the tree walk reads: evaluate it from its manifest
+            ylock = os.path.join(os.path.dirname(file_path), "yarn.lock")
+            if os.path.isfile(ylock) and os.path.getsize(ylock) <= 20_000_000:
+                with open(ylock, "r", encoding="utf-8", errors="replace") as fh:
+                    for rule, sev, idx, desc in supply_chain_rules.evaluate_lockfile(fh.read(), "yarn.lock"):
+                        out.append({"cve_id": rule, "severity": sev, "file": ylock, "line": idx, "description": desc})
 
     # --- ADR-0012 D10 / methodology 0B-4: institutional validations (RFC, CURP) are defined ONCE (a reusable validator of the Starter)
     # and cited, not re-written per project. A hand-written RFC/CURP pattern is a conformance gap (and a source of divergent rules),
@@ -222,6 +236,46 @@ def scan_coverage_rules(file_path: str, content: str) -> List[Dict[str, Any]]:
                     "validaciones (0B-4) define cada validación una sola vez como validador reutilizable de la base de arranque; "
                     "úsalo en lugar de reescribirlo. Si este archivo es el propio validador del catálogo, ignora este aviso.")
     return out
+
+
+
+# Names that hold a credential, matched as the END of an identifier in any case style (jwtSecret, CLIENT_SECRET, m2m-secret).
+_SECRET_NAME = r"(?:jwt[_-]?secret|secret[_-]?key|client[_-]?secret|api[_-]?key|access[_-]?key|private[_-]?key|auth[_-]?token|access[_-]?token|signing[_-]?key|hmac[_-]?secret|m2m[_-]?secret|password|passwd)"
+_SECRET_ASSIGN_RE = re.compile(r"\b[A-Za-z0-9_]*" + _SECRET_NAME + r"\s*[:=]\s*[\"']([^\"'\s]{12,})[\"']", re.IGNORECASE)
+# Spring default after the colon: @Value("${modulo-a.api-key:the-key}") -- the fallback IS the secret when the variable is missing.
+_SECRET_VALUE_DEFAULT_RE = re.compile(r"\$\{[^}:]*" + _SECRET_NAME + r"[^}:]*:([^}\s]{12,})\}", re.IGNORECASE)
+# Vendor keys with an environment marker (sk_live_..., fol_live_..., pk_prod_...), wherever they appear (ternary fallbacks, maps).
+_VENDOR_LIVE_KEY_RE = re.compile(r"\b[a-z]{2,10}_(?:live|prod)_[A-Za-z0-9]{16,}\b")
+
+
+def _looks_like_secret_value(v: str) -> bool:
+    """A credential has letters AND digits and is not a property/template name (mail.password, TEMPLATE_UPDATE_PASSWORD,
+    ${ENV}) nor prose. Measured on the fleet 2026-10-30: every real literal had both; every false positive lacked one."""
+    if v.startswith(("${", "#{", "process.env", "<", "%", "/", "classpath:", "file:")) or "://" in v:
+        return False  # a placeholder, a route or a URL, not a credential
+    if re.fullmatch(r"[A-Z0-9_]+", v) or re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+", v):
+        return False
+    return bool(re.search(r"[0-9]", v) and re.search(r"[A-Za-z]", v))
+
+
+def secret_literal_in_line(line: str) -> bool:
+    """True when the line assigns a literal credential to a credential-named variable or property default, in any naming style."""
+    if len(line) > 400:
+        return False
+    if _VENDOR_LIVE_KEY_RE.search(line):
+        return True
+    for rx in (_SECRET_ASSIGN_RE, _SECRET_VALUE_DEFAULT_RE):
+        m = rx.search(line)
+        if m and _looks_like_secret_value(m.group(1)):
+            return True
+    return False
+
+
+def mask_secret_values(text: str) -> str:
+    """Replace every quoted literal and every ${...:default} fallback with ****, so a finding names WHERE the secret is, never WHAT it is."""
+    text = re.sub(r"(\$\{[^}:]*:)[^}]*\}", r"\1****}", text)
+    text = _VENDOR_LIVE_KEY_RE.sub("****", text)
+    return re.sub(r"([\"'])[^\"']{3,}\1", r"\1****\1", text)
 
 
 def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
@@ -311,15 +365,22 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
         (r'(ghp_[A-Za-z0-9_]{36}|glpat-[A-Za-z0-9_]{20}|hvs\.[A-Za-z0-9_-]{24}|"type":\s*"service_account")', "EXPANDED-CLOUD-SECRET", "CRITICAL", "Hardcoded cloud token, PAT, or service account credential detected.")
     ]
     for idx, line in enumerate(lines, 1):
+        hit = None
         for pattern, rule_id, severity, desc in secret_patterns:
             if re.search(pattern, line, re.IGNORECASE):
-                findings.append({
-                    "cve_id": rule_id,
-                    "severity": severity,
-                    "file": file_path,
-                    "line": idx,
-                    "description": f"{desc} Line {idx}: {line.strip()}"
-                })
+                hit = (rule_id, severity, desc)
+                break
+        if hit is None and secret_literal_in_line(line):
+            hit = ("HARDCODED-SECRET", "HIGH", "Hardcoded credential or secret key detected in source code.")
+        if hit:
+            # The secret value never goes into a finding (it would end up in reports, PDFs and AI prompts).
+            findings.append({
+                "cve_id": hit[0],
+                "severity": hit[1],
+                "file": file_path,
+                "line": idx,
+                "description": f"{hit[2]} Line {idx}: {mask_secret_values(line.strip())}"
+            })
 
     # 5. Advanced Backend DB, Security & Performance (SpringBoot, Python, Deserialization, XXE, CSRF)
     backend_db_patterns = [
@@ -867,6 +928,12 @@ def scan_sast_code(file_path: str, content: str) -> List[Dict[str, Any]]:
     findings.extend(scan_arch_rules(file_path, content))
     from auditors.auditor_standards_rules import scan_standards_rules   # standards 5.4 / 5.10 / 5.11 / 6 (ADR-0012)
     findings.extend(scan_standards_rules(file_path, content))
+    # Structural confirmation of the four regex families with the highest measured false-positive rate (ADR-0022 §8).
+    # Runs only for files that have one of them; fails closed (keeps everything) if ast-grep is missing or errors.
+    from auditors import astgrep_confirm
+    findings, dropped = astgrep_confirm.confirm(file_path, findings, content)
+    if dropped:
+        print(f"🌳 [ast-grep] {dropped} regex finding(s) in {os.path.basename(file_path)} discarded: no dangerous call shape")
     return findings
 
 

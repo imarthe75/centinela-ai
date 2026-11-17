@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, BackgroundTasks, UploadFile, File, Form
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, BackgroundTasks, UploadFile, File, Form
 import shutil
 from core import agent_ledger
+from core import access_scope
 from typing import List, Dict, Set, Optional, Union, Any
 import asyncio
 import logging
@@ -101,18 +102,20 @@ from api.routers.triage import router as _router_triage
 from api.routers.test_credentials import router as _router_test_credentials
 from api.routers.ingest import router as _router_ingest
 from api.routers.functional_tests import router as _router_functional_tests
-app.include_router(_router_compliance)
-app.include_router(_router_findings)
-app.include_router(_router_gitlab)
-app.include_router(_router_inventory)
-app.include_router(_router_platform)
-app.include_router(_router_preflight)
-app.include_router(_router_reports)
-app.include_router(_router_response)
-app.include_router(_router_triage)
-app.include_router(_router_test_credentials)
-app.include_router(_router_ingest)
-app.include_router(_router_functional_tests)
+from api.routers.access import router as _router_access
+app.include_router(_router_compliance, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_findings, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_gitlab, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_inventory, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_platform, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_preflight, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_reports, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_response, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_triage, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_test_credentials, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_ingest, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_functional_tests, dependencies=[Depends(access_scope.enforce_request_scope)])
+app.include_router(_router_access, dependencies=[Depends(access_scope.enforce_request_scope)])
 
 # Backwards-compatible re-exports: tests and a few auditors import helpers from `main` (e.g. `from main import extract_clean_code`).
 import api.common as _api_common

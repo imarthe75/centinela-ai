@@ -18,8 +18,8 @@ class TestRootPolicy(unittest.TestCase):
 
 class TestParseHost(unittest.TestCase):
     def test_extracts_host_from_common_forms(self):
-        self.assertEqual(asset_probe.parse_host("192.0.2.14"), "192.0.2.14")
-        self.assertEqual(asset_probe.parse_host("http://192.0.2.14:8080/x"), "192.0.2.14")
+        self.assertEqual(asset_probe.parse_host("192.0.2.16"), "192.0.2.16")
+        self.assertEqual(asset_probe.parse_host("http://192.0.2.16:8080/x"), "192.0.2.16")
         self.assertEqual(asset_probe.parse_host("[2001:db8::1]:22"), "2001:db8::1")
 
     def test_rejects_loopback_linklocal_and_garbage(self):
@@ -30,7 +30,7 @@ class TestParseHost(unittest.TestCase):
 
 class TestProbeShortCircuits(unittest.TestCase):
     def test_root_user_fails_before_any_network_use(self):
-        r = asset_probe.probe("192.0.2.14", "SERVER_LINUX", user="root", password="x")
+        r = asset_probe.probe("192.0.2.16", "SERVER_LINUX", user="root", password="x")
         self.assertFalse(r["ok"])
         self.assertEqual([s["id"] for s in r["steps"]], ["format", "user"])
 

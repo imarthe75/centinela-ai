@@ -41,3 +41,9 @@ def test_empty_render_persists_nothing(monkeypatch):
     monkeypatch.setattr(a, "run_browser_audit", lambda urls: {"results": [_page(text_len=0, elements=34)]})
     monkeypatch.setattr(a, "persist", lambda *x: (_ for _ in ()).throw(AssertionError("must not persist")))
     assert a.scan_url_assets("00000000-0000-0000-0000-000000000000", "http://x/") is None
+
+
+def test_describe_js_errors():
+    assert a.describe_js_errors({}) == "sin errores de JavaScript registrados"
+    msg = a.describe_js_errors({"page_errors": [], "console_errors": ["Error: Cannot match any routes. URL Segment: 'x'", "Failed to load"]})
+    assert msg.startswith("2 error(es) de JavaScript") and "Cannot match any routes" in msg

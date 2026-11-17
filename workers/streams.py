@@ -314,6 +314,10 @@ def process_zeek_conn_log():
 
 def process_bloodhound_paths():
     """Query Neo4j for AD attack paths and raise vulnerabilities"""
+    from core import modules
+    if not modules.enabled("bloodhound"):
+        print("ℹ️ [Centinela-AI] Módulo BloodHound apagado (MODULE_BLOODHOUND, ADR-0019): sin datos de Active Directory que analizar.")
+        return
     try:
         from neo4j import GraphDatabase
         NEO4J_AVAILABLE = True

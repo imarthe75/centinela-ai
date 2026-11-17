@@ -47,3 +47,22 @@ def test_real_binary_finds_leaked_key_in_history(monkeypatch):
         found = sec.SecretsScanner.scan_git_history(d, 50)
     assert [f["file"] for f in found] == ["leaked.key"]
     assert found[0]["type"] == "PrivateKey" and found[0]["verified"] is None
+
+
+def test_verification_error_is_kept_and_raised_to_high():
+    rec = json.loads(REAL_SHAPE)
+    rec.update({"Verified": False, "VerificationError": "dial tcp: i/o timeout", "DetectorName": "AWS"})
+    f = sec.parse_trufflehog_output(json.dumps(rec), verify_live=True)[0]
+    assert f["verification"] == "error" and f["severity"] == "HIGH"
+    assert "podría seguir activa" in f["description"]
+
+
+def test_verification_status_values():
+    assert sec.verification_status({"Verified": True}, verify_live=False) == "not_run"
+    assert sec.verification_status({"Verified": True}, verify_live=True) == "verified"
+    assert sec.verification_status({"Verified": False}, verify_live=True) == "unconfirmed"
+    assert sec.verification_status({"VerificationError": "x"}, verify_live=True) == "error"
+
+
+def test_live_verification_requests_unknown_results():
+    assert "unknown" in sec.TRUFFLEHOG_RESULTS_VERIFY

@@ -52,15 +52,15 @@ def test_garbage_xml_and_missing_inputs_yield_nothing():
 
 
 def test_host_extraction():
-    assert t.host_from_endpoint("http://192.0.2.9:8092/citaOnline/") == "192.0.2.9"
-    assert t.host_from_endpoint("postgresql://192.0.2.13:5432") == "192.0.2.13"
-    assert t.host_from_endpoint("192.0.2.14") == "192.0.2.14"
+    assert t.host_from_endpoint("http://192.0.2.11:8092/citaOnline/") == "192.0.2.11"
+    assert t.host_from_endpoint("postgresql://192.0.2.15:5432") == "192.0.2.15"
+    assert t.host_from_endpoint("192.0.2.16") == "192.0.2.16"
     assert t.host_from_endpoint("remote-agent") is None
 
 
 def test_no_tls_finding_shape_and_guidance():
-    f = t.evaluate_no_tls("192.0.2.12", 80)
-    assert f["cve_id"] == "TLS-NOT-ENABLED" and f["severity"] == "HIGH" and f["url_path"] == "192.0.2.12:80"
+    f = t.evaluate_no_tls("192.0.2.14", 80)
+    assert f["cve_id"] == "TLS-NOT-ENABLED" and f["severity"] == "HIGH" and f["url_path"] == "192.0.2.14:80"
     import centinela
-    g = centinela._infra_hygiene_guidance({"cve_id": "TLS-NOT-ENABLED", "url_path": "192.0.2.12:80", "asset_name": "gl", "endpoint": "http://192.0.2.12"})
+    g = centinela._infra_hygiene_guidance({"cve_id": "TLS-NOT-ENABLED", "url_path": "192.0.2.14:80", "asset_name": "gl", "endpoint": "http://192.0.2.14"})
     assert g and g[4] is False and "HTTPS" in g[2]

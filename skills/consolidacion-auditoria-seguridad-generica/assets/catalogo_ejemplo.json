@@ -1,0 +1,316 @@
+{
+ "_ejemplo": "Catálogo ILUSTRATIVO. No contiene decisiones de ningún proyecto real: cada proyecto arma el suyo con el analista. Las reglas de falso positivo van acotadas a un repositorio y archivo; nunca como regla general.",
+ "group": {
+  "instance": "primary",
+  "group_path": "grupo/sistema",
+  "title": "SISTEMA",
+  "hours_per_day": 8.0,
+  "test_pct": 0.3,
+  "fp_check_hours": 0.5,
+  "areas": [
+   {
+    "name": "Gerencia de Programación",
+    "people": 1.0,
+    "dedication": 1.0
+   },
+   {
+    "name": "Gerencia de Arquitectura y BD",
+    "people": 1.0,
+    "dedication": 1.0
+   },
+   {
+    "name": "Gerencia de Infraestructura y Telecomunicaciones",
+    "people": 1.0,
+    "dedication": 1.0
+   },
+   {
+    "name": "Gerencia de Análisis / Calidad",
+    "people": 1.0,
+    "dedication": 1.0
+   }
+  ]
+ },
+ "root_causes": [
+  {
+   "code": "V-01",
+   "classification": "Vulnerabilidad",
+   "title": "Credenciales en texto claro en archivos de configuración versionados",
+   "kind": "Seguridad · manejo de secretos",
+   "severity": "Crítico",
+   "certainty": "Requiere prueba",
+   "rationale": null,
+   "how_to_confirm": "Probar (sin imprimir el valor) si la credencial abre su servicio; buscarla en el historial de git y en otros perfiles.",
+   "strategy": "1) Rotar la credencial. 2) Sustituir el literal por variable de entorno o gestor de secretos. 3) Credencial distinta por ambiente. 4) Purgar el historial. 5) Escaneo de secretos como compuerta del pipeline.",
+   "owner": "Gerencia de Arquitectura y BD (rotación) · Gerencia de Programación (configuración)",
+   "outdated": false,
+   "dedup_scope": "line",
+   "plan": {
+    "fixed_qty": null,
+    "order": 1,
+    "phase": "1 · Inmediato",
+    "activity": "Rotar credenciales, moverlas a un gestor de secretos y purgar el historial",
+    "unit": "por ocurrencia única",
+    "minutes": 60.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 4.0,
+    "extra_text": "Purga del historial y coordinación con los dueños de cada servicio",
+    "confirm_hours": 0.0,
+    "area_pct": [
+     0.4,
+     0.4,
+     0.2,
+     0.0
+    ]
+   }
+  },
+  {
+   "code": "V-02",
+   "classification": "Vulnerabilidad",
+   "title": "Endpoints sin autorización por método (falta @PreAuthorize)",
+   "kind": "Seguridad · control de acceso",
+   "severity": "Alto",
+   "certainty": "Requiere prueba",
+   "rationale": null,
+   "how_to_confirm": "Con un usuario sin el permiso, llamar al endpoint en QA: debe responder 403.",
+   "strategy": "Añadir @PreAuthorize con el permiso del recurso, dar de alta el permiso y una prueba que verifique el 403.",
+   "owner": "Gerencia de Programación",
+   "outdated": false,
+   "dedup_scope": "line",
+   "plan": {
+    "fixed_qty": null,
+    "order": 2,
+    "phase": "1 · Inmediato",
+    "activity": "Autorización por método en cada endpoint",
+    "unit": "por endpoint",
+    "minutes": 20.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 2.0,
+    "extra_text": "Alta de permisos en el catálogo de roles",
+    "confirm_hours": 2.0,
+    "area_pct": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  {
+   "code": "V-03",
+   "classification": "Vulnerabilidad",
+   "title": "Dependencias con CVE conocidas",
+   "kind": "Seguridad · dependencias",
+   "severity": "Alto",
+   "certainty": "Confirmada (versión instalada dentro del rango afectado)",
+   "rationale": null,
+   "how_to_confirm": "Confirmar en el lockfile la versión que se empaqueta y si el código usa el paquete.",
+   "strategy": "Actualizar a la versión corregida (una actualización suele cerrar varias CVE) y volver a escanear.",
+   "owner": "Gerencia de Programación",
+   "outdated": true,
+   "dedup_scope": "line",
+   "plan": {
+    "fixed_qty": null,
+    "order": 3,
+    "phase": "2 · Corto plazo",
+    "activity": "Actualizar dependencias vulnerables",
+    "unit": "por paquete",
+    "minutes": 45.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 2.0,
+    "extra_text": "Pruebas de regresión tras la actualización",
+    "confirm_hours": 0.0,
+    "area_pct": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  {
+   "code": "FP-01",
+   "classification": "Falso positivo",
+   "title": "Credencial de ejemplo en un perfil local que no se despliega",
+   "kind": "Artefacto de desarrollo",
+   "severity": null,
+   "certainty": "Requiere prueba",
+   "rationale": "El valor vive en un perfil local que no se activa en QA ni producción y no se repite en perfiles superiores.",
+   "how_to_confirm": "Reclasificar a V-01 si el valor abre un servicio real o aparece en otro perfil.",
+   "strategy": null,
+   "owner": null,
+   "outdated": false,
+   "dedup_scope": "line"
+  },
+  {
+   "code": "C-01",
+   "classification": "Calidad",
+   "title": "Contenedores que corren como root (Dockerfile sin USER)",
+   "kind": "Endurecimiento",
+   "severity": null,
+   "certainty": null,
+   "rationale": "No abre una vía de ataque por sí solo; amplía el daño si el contenedor ya fue comprometido.",
+   "how_to_confirm": null,
+   "strategy": "Crear un usuario sin privilegios y declarar USER antes de ENTRYPOINT o CMD.",
+   "owner": "Gerencia de Programación · Gerencia de Infraestructura y Telecomunicaciones",
+   "outdated": false,
+   "dedup_scope": "file",
+   "plan": {
+    "fixed_qty": null,
+    "order": 10,
+    "phase": "3 · Mediano plazo",
+    "activity": "Usuario sin privilegios en las imágenes",
+    "unit": "por imagen",
+    "minutes": 15.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 1.0,
+    "extra_text": "Probar arranque y permisos de volúmenes",
+    "confirm_hours": 0.0,
+    "area_pct": [
+     0.5,
+     0.0,
+     0.5,
+     0.0
+    ],
+    "default_criticality": "Medio"
+   }
+  },
+  {
+   "code": "C-02",
+   "classification": "Calidad",
+   "title": "Entidades editables sin bloqueo optimista (@Version)",
+   "kind": "Integridad de datos",
+   "severity": null,
+   "certainty": null,
+   "rationale": "Dos usuarios que editan el mismo registro pierden cambios en silencio; no es explotable por un atacante.",
+   "how_to_confirm": null,
+   "strategy": "Añadir @Version a la entidad y su columna por migración; responder 409 ante conflicto.",
+   "owner": "Gerencia de Programación · Gerencia de Arquitectura y BD",
+   "outdated": false,
+   "dedup_scope": "line",
+   "plan": {
+    "fixed_qty": null,
+    "order": 11,
+    "phase": "3 · Mediano plazo",
+    "activity": "Bloqueo optimista en entidades editables",
+    "unit": "por entidad",
+    "minutes": 20.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 1.0,
+    "extra_text": "Migración de la columna de versión",
+    "confirm_hours": 0.0,
+    "area_pct": [
+     0.6,
+     0.4,
+     0.0,
+     0.0
+    ],
+    "default_criticality": "Medio"
+   }
+  },
+  {
+   "code": "C-03",
+   "classification": "Calidad",
+   "title": "Accesibilidad WCAG 2.1 (etiquetas, textos alternativos, foco)",
+   "kind": "Accesibilidad",
+   "severity": null,
+   "certainty": null,
+   "rationale": "Requisito de cumplimiento, no una vía de ataque; conserva su plazo propio.",
+   "how_to_confirm": null,
+   "strategy": "Asociar cada control a su etiqueta, dar texto alternativo a imágenes y nombre a botones de icono, foco visible.",
+   "owner": "Gerencia de Programación · Gerencia de Análisis / Calidad",
+   "outdated": false,
+   "dedup_scope": "line",
+   "plan": {
+    "fixed_qty": null,
+    "order": 12,
+    "phase": "3 · Mediano plazo",
+    "activity": "Corrección de accesibilidad en plantillas",
+    "unit": "por ocurrencia única",
+    "minutes": 5.0,
+    "minutes_source": "Supuesto del analista (ajústalo)",
+    "extra_hours": 2.0,
+    "extra_text": "Revisión con lector de pantalla",
+    "confirm_hours": 0.0,
+    "area_pct": [
+     0.8,
+     0.0,
+     0.0,
+     0.2
+    ],
+    "default_criticality": "Bajo"
+   }
+  }
+ ],
+ "rules": [
+  {
+   "rule_regex": "^(CONFIG-SECRET-LITERAL|CONFIG-JWT-SECRET-LITERAL|HARDCODED-SECRET)$",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "V-01",
+   "priority": 0,
+   "note": null
+  },
+  {
+   "rule_regex": "^AUTHZ-(NO-METHOD-AUTHZ|PREAUTHORIZE-COMMENTED-OUT)$",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "V-02",
+   "priority": 0,
+   "note": null
+  },
+  {
+   "rule_regex": "^SCA-CVE-",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "V-03",
+   "priority": 0,
+   "note": "Revisar alcanzabilidad por repositorio antes de planear."
+  },
+  {
+   "rule_regex": "^DOCKER-(MISSING-NON-ROOT-USER|ROOT-USER)$",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "C-01",
+   "priority": 0,
+   "note": null
+  },
+  {
+   "rule_regex": "^JPA-ENTITY-MISSING-VERSION$",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "C-02",
+   "priority": 0,
+   "note": null
+  },
+  {
+   "rule_regex": "^(WCAG-|ACCESSIBILITY-WCAG-)",
+   "engine": null,
+   "asset_regex": null,
+   "path_regex": null,
+   "line": null,
+   "root_cause_code": "C-03",
+   "priority": 0,
+   "note": null
+  },
+  {
+   "rule_regex": "^CONFIG-SECRET-LITERAL$",
+   "engine": null,
+   "asset_regex": "/servicio-a$",
+   "path_regex": "^src/main/resources/application-local\\.properties(:\\d+)?$",
+   "line": null,
+   "root_cause_code": "FP-01",
+   "priority": 10,
+   "note": "Ejemplo de falso positivo ACOTADO a un repositorio y archivo: decisión del analista de ese proyecto."
+  }
+ ]
+}

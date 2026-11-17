@@ -1,5 +1,5 @@
 import psycopg2
-from core import db_manager
+from core import db_manager, asset_types
 import subprocess
 import json
 import os
@@ -8,6 +8,7 @@ from auditors import auditor_trivy_config
 from auditors import nuclei_custom
 from auditors import auditor_a11y_render
 from auditors import auditor_api_fuzz
+from auditors import auditor_nuclei_dast
 import queue
 import threading
 
@@ -377,7 +378,7 @@ def scan_appserver(asset_id, endpoint):
 
     # Real bug fixed here: nmap returns returncode 0 whether the target genuinely has 0 open
     # ports OR the host is completely unreachable (DNS failure, no route to host, firewalled) --
-    # confirmed live: "nmap ... 192.0.2.17" (a real host with "No route to host" confirmed via a
+    # confirmed live: "nmap ... 192.0.2.19" (a real host with "No route to host" confirmed via a
     # direct TCP test) prints "Note: Host seems down... 0 hosts up" with exit code 0, and a
     # bogus target like "remote-agent" prints "Failed to resolve... 0 hosts scanned", also exit
     # code 0. `if nm_result.returncode == 0: open_ports = [...]` treated both cases identically
@@ -510,7 +511,15 @@ def _dispatch_asset_scan(data):
     asset_id = data["id"]
     a_type = data["type"]
     endpoint = data["endpoint"]
+    if a_type in ('URL', 'API-Gateway', 'Identity-IdP'):
+        endpoint = asset_types.url_scan_target(data.get("name", ""), endpoint)
+    allowed, reason = asset_types.scan_target_allowed(endpoint)
+    if not allowed:
+        print(f"⛔ [Auditor-Ext] Escaneo omitido para el activo {asset_id}: {reason}")
+        log_audit(asset_id, f"Escaneo activo NO ejecutado: {reason}")
+        return
     auditor_api_fuzz.run_for_asset(asset_id, endpoint)      # no-op unless the endpoint is an opted-in SCHEMATHESIS_TARGETS entry
+    auditor_nuclei_dast.run_for_asset(asset_id, endpoint)   # no-op unless the endpoint is an opted-in NUCLEI_DAST_TARGETS entry
     
     if a_type == 'IP':
         scan_ip(asset_id, endpoint)
@@ -528,7 +537,7 @@ def _dispatch_asset_scan(data):
         scan_cache(asset_id, endpoint)
     elif a_type == 'Container':
         scan_container(asset_id, endpoint)
-    elif a_type in ('AppServer', 'SERVER', 'KUBERNETES', 'Datacenter'):
+    elif a_type in asset_types.NETWORK_HOST_TYPES:
         scan_appserver(asset_id, endpoint)
         _run_authz_dast(asset_id, endpoint)
         _run_runtime_session(asset_id, endpoint)
@@ -588,8 +597,10 @@ def handle_osint_enrichment(data):
 
 
 ASSET_SCAN_JOB_KIND = "asset_scan"
-_SCANNABLE_TYPES_SQL = "SELECT id, asset_type, endpoint FROM infra_inventory WHERE asset_type IN %s"
-_SCANNABLE_TYPES = tuple(('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container', 'AppServer', 'SERVER', 'KUBERNETES', 'Datacenter', 'AI-LLM-Endpoint', 'API-Gateway', 'CICD-Pipeline', 'Cloud-Serverless', 'Identity-IdP'))
+_SCANNABLE_TYPES_SQL = "SELECT id, asset_type, endpoint, asset_name FROM infra_inventory WHERE asset_type IN %s"
+_SCANNABLE_TYPES = tuple(dict.fromkeys(('IP', 'URL', 'Repository', 'Database (SQL)', 'NoSQL', 'Cache/Memory', 'Container',
+                                        'AI-LLM-Endpoint', 'API-Gateway', 'CICD-Pipeline', 'Cloud-Serverless', 'Identity-IdP')
+                                       + asset_types.NETWORK_HOST_TYPES))
 
 
 def _scannable_assets():
@@ -603,8 +614,10 @@ def enqueue_asset_scans(assets, min_interval_hours: float) -> int:
     min_interval_hours ago, is skipped. Returns how many jobs were created."""
     from core import job_queue
     n = 0
-    for asset_id, a_type, endpoint in assets:
+    for asset_id, a_type, endpoint, *rest in assets:
         data = {"id": str(asset_id), "type": a_type, "endpoint": endpoint}
+        if rest and rest[0]:
+            data["name"] = rest[0]
         if job_queue.enqueue(ASSET_SCAN_JOB_KIND, str(asset_id), data, min_interval_hours=min_interval_hours):
             n += 1
     return n

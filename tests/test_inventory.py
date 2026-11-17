@@ -16,7 +16,7 @@ from core.db_manager import get_db_cursor
 client = TestClient(app)
 
 class TestInventoryDuplicateIP(unittest.TestCase):
-    TEST_IP = "192.0.2.30"
+    TEST_IP = "192.0.2.33"
 
     def tearDown(self):
         with get_db_cursor() as cur:

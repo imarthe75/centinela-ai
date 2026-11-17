@@ -269,7 +269,7 @@ export default function InventoryView() {
                                   
                                   {group.has_vault_secret ? (
                                     <span 
-                                      title="Credenciales de conexión Sudo/SSH almacenadas y encriptadas de forma segura en HashiCorp Vault"
+                                      title="Credenciales de conexión Sudo/SSH almacenadas y encriptadas de forma segura en OpenBao"
                                       className="text-[10px] bg-amber-500/10 text-amber-400 font-black px-2 py-0.5 rounded border border-amber-400/20 uppercase tracking-wider"
                                     >
                                       Credenciales Vault: Configurada
@@ -370,6 +370,11 @@ export default function InventoryView() {
                                                 )}
                                             </span>
                                         </div>
+                                        {group.compliance_count > 0 && (
+                                            <p className="text-[11px] text-sky-400 font-bold mt-1" title="Hallazgos de accesibilidad (WCAG 2.1) abiertos: requisito de cumplimiento, no se suman a las vulnerabilidades">
+                                                + {group.compliance_count} de accesibilidad
+                                            </p>
+                                        )}
                                     </div>
                                     <div 
                                       className={`p-4 rounded-2xl border transition-all ${group.runtime_alerts_count > 0 ? 'bg-red-500/5 border-red-500/20' : 'bg-slate-800/20 border-slate-800'}`}
@@ -481,7 +486,7 @@ export default function InventoryView() {
                                     </button>
                                     <button
                                         onClick={() => handleOpenVaultModal(group.name)}
-                                        title="Configurar credenciales Sudo o llaves SSH en HashiCorp Vault"
+                                        title="Configurar credenciales Sudo o llaves SSH en OpenBao"
                                         className="py-3 px-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-400/20 font-black uppercase text-[11px] tracking-[0.05em] rounded-xl transition-all flex items-center justify-center gap-1 min-w-0"
                                     >
                                         <KeyRound size={13} />
@@ -536,7 +541,7 @@ export default function InventoryView() {
                                             </span>
                                         </td>
                                         <td className="p-4 font-mono text-xs text-[#06B6D4]">
-                                            {group.interfaces[0]?.endpoint || '192.0.2.15'}
+                                            {group.interfaces[0]?.endpoint || '192.0.2.17'}
                                         </td>
                                         <td className="p-4 text-xs font-bold">
                                             {String(group.status).toLowerCase() === 'active' || pingResults[group.name]?.ping_ok ? (

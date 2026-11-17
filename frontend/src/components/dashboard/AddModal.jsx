@@ -134,21 +134,21 @@ export default function AddModal() {
                                             className="w-full bg-[#0F172A] border border-slate-800 rounded-2xl p-4 text-white font-bold text-sm focus:ring-2 focus:ring-[#06B6D4] outline-none"
                                             placeholder={
                                                 newAsset.asset_type === 'GITLAB'
-                                                    ? 'ej. http://192.0.2.12 o https://gitlab.example.internal'
+                                                    ? 'ej. http://192.0.2.14 o https://gitlab.example.internal'
                                                     : newAsset.asset_type === 'WORKSTATION'
-                                                    ? 'ej. 192.0.2.27, 2001:db8::1 o mi-laptop.local'
+                                                    ? 'ej. 192.0.2.30, 2001:db8::1 o mi-laptop.local'
                                                     : newAsset.asset_type === 'CISCO_NETWORK'
-                                                    ? 'ej. 192.0.2.26 o [2001:db8::1] (IP del Switch)'
+                                                    ? 'ej. 192.0.2.29 o [2001:db8::1] (IP del Switch)'
                                                     : newAsset.asset_type === 'VMWARE_ESXI'
-                                                    ? 'ej. 192.0.2.7 o 2001:db8::10 (IP del host ESXi)'
-                                                    : 'ej. 192.0.2.28, [2001:db8::1], postgres://db..., https://api...'
+                                                    ? 'ej. 192.0.2.9 o 2001:db8::10 (IP del host ESXi)'
+                                                    : 'ej. 192.0.2.31, [2001:db8::1], postgres://db..., https://api...'
                                             }
                                             value={newAsset.endpoint}
                                             onChange={(e) => setNewAsset({...newAsset, endpoint: e.target.value})}
                                         />
                                         <p className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-2 font-medium">
                                             <Globe size={10} className="text-[#06B6D4]" />
-                                            Soporta <span className="text-[#06B6D4]">IPv4</span> (192.0.2.26), <span className="text-[#06B6D4]">IPv6</span> (2001:db8::1 o [::1]) y <span className="text-[#06B6D4]">FQDN</span> (servidor.local)
+                                            Soporta <span className="text-[#06B6D4]">IPv4</span> (192.0.2.29), <span className="text-[#06B6D4]">IPv6</span> (2001:db8::1 o [::1]) y <span className="text-[#06B6D4]">FQDN</span> (servidor.local)
                                         </p>
                                     </div>
 
@@ -259,7 +259,7 @@ export default function AddModal() {
                                                             </p>
                                                         )}
                                                         <p className="text-[11px] text-slate-500 mt-1.5 font-medium">
-                                                            Credencial almacenada de forma encriptada en HashiCorp Vault. Nunca se guarda en texto plano.
+                                                            Credencial almacenada de forma encriptada en OpenBao. Nunca se guarda en texto plano.
                                                         </p>
                                                     </div>
 
@@ -302,7 +302,7 @@ export default function AddModal() {
                                                                 />
                                                                 <p className="text-[11px] text-[#06B6D4]/70 mt-2 flex items-center gap-1 font-medium">
                                                                     <CheckCircle2 size={10} />
-                                                                    La llave privada se cifra con AES-256 y se almacena exclusivamente en HashiCorp Vault.
+                                                                    La llave privada se cifra con AES-256 y se almacena exclusivamente en OpenBao.
                                                                 </p>
                                                             </div>
                                                         ) : (

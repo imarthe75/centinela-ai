@@ -221,7 +221,7 @@ class GitLabIntegrator:
                 raise RuntimeError(f"GitLab devolvió {res.status_code} al listar ramas de {project_id}: {res.text[:200]}")
             for b in res.json():
                 out.append({"name": b.get("name"), "default": bool(b.get("default")), "protected": bool(b.get("protected")),
-                            "last_commit_at": (b.get("commit") or {}).get("committed_date")})
+                            "last_commit_at": (b.get("commit") or {}).get("committed_date"), "commit_sha": (b.get("commit") or {}).get("id")})
             nxt = res.headers.get("X-Next-Page")
             if not nxt:
                 break
@@ -297,8 +297,9 @@ class GitLabIntegrator:
 
         print(f"🔍 [GitLab-Integrator] Auditing GitLab Project: {path_ns} ({effective_branch or 'default'}) [asset_id={asset_id}]...")
         # Baseline of what was open before this scan: feeds the "última versión vs anterior" comparison (core/scan_comparison.py).
-        from core import scan_comparison
-        scan_run_id = scan_comparison.open_run(asset_id, f"gitlab:{self.instance.key}", scan_comparison.git_head(target_dir))
+        from core import scan_comparison, change_detection
+        scan_run_id = scan_comparison.open_run(asset_id, f"gitlab:{self.instance.key}", scan_comparison.git_head(target_dir),
+                                               engine_version=change_detection.engine_version())
         sast_findings = auditor_master_vulnerabilities.run_master_vulnerability_scan(target_dir, asset_id=asset_id)
         sca_findings = auditor_sca_dependencies.run_sca_audit(target_dir, asset_id=asset_id)
         std_findings = auditor_compliance_standards.run_compliance_standards_audit(target_dir, asset_id=asset_id)
@@ -401,6 +402,10 @@ class GitLabIntegrator:
             traceback.print_exc()
             print(f"⚠️ [GitLab-Integrator] trivy config audit error for {path_ns}: {e}")
             trivy_cfg_findings = []
+
+        # CycloneDX SBOM of the branch (ADR-0022 §6): best effort, never blocks the scan.
+        from auditors import sbom_export
+        sbom_export.generate_sbom(target_dir, self.instance.asset_name(path_ns, effective_branch))
 
         # Project-level checks (GitLab settings / CI file, CMMI process evidence) describe the project, not a branch: a branch asset skips them.
         gitlab_cfg_findings = []
@@ -520,12 +525,19 @@ def enqueue_fleet_scan(min_interval_hours: float = None) -> Dict[str, Any]:
     """Queue one scan job per project of every configured GitLab instance. Idempotent: a project already queued/running is skipped, and so
     is one already scanned in the current daily window (since the last GITLAB_SCAN_DAILY_AT, default 03:00 SCAN_TIMEZONE, see
     core.scan_schedule). With GITLAB_SCAN_DAILY_AT empty, or an explicit min_interval_hours, the rolling interval applies instead
-    (GITLAB_RESCAN_HOURS, default 24). A failure on one instance never blocks the others."""
-    from core import gitlab_instances, job_queue, scan_schedule
+    (GITLAB_RESCAN_HOURS, default 24). A failure on one instance never blocks the others.
+
+    A project that is due but whose fleet branch was already analyzed at its current commit with the current detectors is NOT scanned
+    (core.change_detection.fleet_branch_unchanged): the skip is recorded as a finished job, so it is decided once per window and a commit
+    pushed later in the day waits for the next window (or for a manual "re-analyze changes"). GITLAB_SKIP_UNCHANGED=0 disables the skip."""
+    from datetime import datetime, timedelta, timezone
+    from core import change_detection, gitlab_instances, job_queue, scan_schedule
     import traceback
     cutoff = scan_schedule.configured_fleet_cutoff() if min_interval_hours is None else None
     hours = 0 if cutoff else (float(os.getenv("GITLAB_RESCAN_HOURS", "24")) if min_interval_hours is None else min_interval_hours)
-    summary: Dict[str, Any] = {"projects_seen": 0, "enqueued": 0, "skipped": 0, "instances_failed": []}
+    window_start = cutoff or (datetime.now(timezone.utc) - timedelta(hours=hours))
+    skip_unchanged = os.getenv("GITLAB_SKIP_UNCHANGED", "1").strip() != "0"
+    summary: Dict[str, Any] = {"projects_seen": 0, "enqueued": 0, "skipped": 0, "unchanged": 0, "instances_failed": []}
     for inst in gitlab_instances.configured_instances():
         try:
             projects = GitLabIntegrator(instance=inst.key).fetch_projects()
@@ -540,11 +552,47 @@ def enqueue_fleet_scan(min_interval_hours: float = None) -> Dict[str, Any]:
             if gitlab_instances.is_scan_excluded(inst, proj.get("path_with_namespace") or "", exclusions):
                 summary["excluded"] = summary.get("excluded", 0) + 1
                 continue
-            target = f"{inst.key}:{proj.get('path_with_namespace') or proj.get('id')}"
+            path_ns = proj.get("path_with_namespace") or ""
+            target = f"{inst.key}:{path_ns or proj.get('id')}"
+            if skip_unchanged and path_ns and not job_queue.finished_since(GITLAB_JOB_KIND, target, window_start):
+                unchanged, reason = change_detection.fleet_branch_unchanged(inst, path_ns, fresh_after=window_start)
+                if unchanged:
+                    job_queue.record_skipped(GITLAB_JOB_KIND, target, f"sin cambios ({reason})", {"instance": inst.key, "path": path_ns})
+                    summary["unchanged"] += 1
+                    continue
             job_id = job_queue.enqueue(GITLAB_JOB_KIND, target, {"instance": inst.key, "project": proj},
                                        min_interval_hours=hours, not_finished_since=cutoff)
             summary["enqueued" if job_id else "skipped"] += 1
     return summary
+
+
+def _skip_reason_at_run_time(instance, path_ns: str, payload: Dict[str, Any]) -> Optional[str]:
+    """Re-check, right before scanning, whether the branch is still unchanged since its last analysis: a job may have waited in the queue
+    while another scan of the same branch finished, or have been queued before change detection existed. Asks GitLab once (fresh head).
+    Periodic jobs skip when commit AND detectors are unchanged; jobs a person asked for (batch or chosen branch) skip on an unchanged commit.
+    Any doubt (GitLab error, no head, never analyzed) -> scan. GITLAB_SKIP_UNCHANGED=0 disables it."""
+    if os.getenv("GITLAB_SKIP_UNCHANGED", "1").strip() == "0" or not path_ns:
+        return None
+    from core import change_detection
+    try:
+        info = change_detection.refresh_project(instance, path_ns)
+    except Exception:
+        logging.getLogger(__name__).error("[GitLab-Integrator] run-time change check of %s failed; scanning anyway", path_ns, exc_info=True)
+        return None
+    branch = payload.get("branch") or info.get("fleet_branch")
+    if not branch:
+        return None
+    states = change_detection.asset_states(assets=[instance.asset_name(path_ns, branch)])
+    if not states:
+        return None
+    st = states[0]
+    manual = bool(payload.get("batch_id") or payload.get("separate_asset"))
+    if st["analyzed_commit"] and st["analyzed_commit"] == st["remote_commit"]:
+        if manual:
+            return f"sin cambios desde el último análisis ({branch}@{st['analyzed_commit'][:8]})"
+        if st["analyzed_engine"] == change_detection.engine_version():
+            return f"sin cambios desde el último análisis ({branch}@{st['analyzed_commit'][:8]}, detectores actuales)"
+    return None
 
 
 def run_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -557,6 +605,10 @@ def run_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if not payload.get("separate_asset") and gitlab_instances.is_scan_excluded(integ.instance, path_ns):
         print(f"⏭️ [GitLab-Integrator] {path_ns}: excluded from periodic scanning (config/gitlab_scan_exclude.txt); job dropped")
         return {"status": "skipped", "reason": "excluded", "name": path_ns}
+    skip = _skip_reason_at_run_time(integ.instance, path_ns, payload)
+    if skip:
+        print(f"⏭️ [GitLab-Integrator] {path_ns}: {skip}; job closed without scanning")
+        return {"status": "skipped", "reason": skip, "name": path_ns}
     res = integ.scan_single_project(
         payload["project"], branch=payload.get("branch") or "", separate_asset=bool(payload.get("separate_asset")))
     if res.get("status") == "skipped":      # e.g. empty repository: a legitimate, final outcome -> the job is DONE, not a failure
@@ -566,18 +618,39 @@ def run_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
-def enqueue_branch_scan(project_id, branch: str, instance: Optional[str] = None) -> Dict[str, Any]:
+class UnchangedSinceLastAnalysis(Exception):
+    """The branch's latest commit is the one already analyzed: re-scanning it would only spend time and AI tokens."""
+
+
+def last_analyzed_commit(asset_name: str) -> Optional[str]:
+    """Commit of the asset's last finished GitLab scan (None if never analyzed)."""
+    with db_manager.get_db_cursor() as cur:
+        cur.execute("""SELECT s.commit_sha FROM public.scan_runs s JOIN public.infra_inventory i ON i.id = s.asset_id
+                       WHERE i.asset_name = %s AND s.status = 'DONE' AND s.source LIKE 'gitlab:%%' AND s.commit_sha IS NOT NULL
+                       ORDER BY s.finished_at DESC LIMIT 1""", (asset_name,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def enqueue_branch_scan(project_id, branch: str, instance: Optional[str] = None, require_change: bool = True) -> Dict[str, Any]:
     """Queue an audit of ONE branch as its own asset ("GitLab/<path>@<branch>"). Validates the branch against GitLab first, so a typo
-    is rejected here instead of failing later in the worker. Returns the asset name the findings will appear under."""
+    is rejected here instead of failing later in the worker. Returns the asset name the findings will appear under.
+    require_change=True (default) refuses (UnchangedSinceLastAnalysis) when the branch's latest commit is the one already analyzed."""
     from core import job_queue
     integ = GitLabIntegrator(instance=instance)
     proj = integ.get_project_details(project_id)
     if not proj:
         raise LookupError(f"Proyecto {project_id} no encontrado en la instancia '{integ.instance.key}'")
-    names = {b["name"] for b in integ.list_branches(proj["id"])}
-    if branch not in names:
+    remote = {b["name"]: b for b in integ.list_branches(proj["id"])}
+    if branch not in remote:
         raise ValueError(f"La rama '{branch}' no existe en {proj.get('path_with_namespace')}")
     path_ns = proj["path_with_namespace"]
+    if require_change:
+        analyzed = last_analyzed_commit(integ.instance.asset_name(path_ns, branch))
+        head = remote[branch].get("commit_sha")
+        if analyzed and head and analyzed == head:
+            raise UnchangedSinceLastAnalysis(
+                f"La rama '{branch}' no tiene cambios desde el último análisis (commit {head[:8]}); no hace falta re-analizarla.")
     job_id = job_queue.enqueue(GITLAB_JOB_KIND, f"{integ.instance.key}:{path_ns}@{branch}",
                                {"instance": integ.instance.key, "project": proj, "branch": branch, "separate_asset": True,
                                 "priority": 10})  # asked for by a person: ahead of the periodic fleet backlog

@@ -64,6 +64,59 @@ _IMPACT_SEVERITY_MAP = {
 }
 
 
+SECRET_REDACTION_KEY = "sonar.security.secretSourceRedaction.enabled"
+# Changing a global setting needs the "Administer System" permission; the scan token
+# (centinela-scanner: provisioning + scan) cannot. Optional, set only by the owner.
+SONAR_ADMIN_TOKEN = os.getenv("SONAR_ADMIN_TOKEN", "")
+_redaction_state: Dict[str, Any] = {"checked": False, "status": None}
+
+
+def secret_redaction_status(force: bool = False) -> Dict[str, Any]:
+    """
+    Reports (and, when SONAR_ADMIN_TOKEN is set, enforces) SonarQube's "mask detected secret
+    values in source code" setting (SonarQube 26.10+). With it off, SonarQube's own source
+    view and source-returning Web API show every detected secret in clear text.
+
+    Returns {"enabled": bool|None, "changed": bool, "detail": str}. `enabled` is None when
+    the server could not be asked -- never reported as on without the server saying so.
+    Checked once per process unless `force`.
+    """
+    if _redaction_state["checked"] and not force:
+        return _redaction_state["status"]
+    status: Dict[str, Any] = {"enabled": None, "changed": False, "detail": ""}
+    try:
+        resp = requests.get(f"{SONAR_HOST_URL}/api/settings/values",
+                            params={"keys": SECRET_REDACTION_KEY},
+                            headers={"Authorization": f"Bearer {SONAR_TOKEN}"}, timeout=10)
+        resp.raise_for_status()
+        values = resp.json().get("settings", [])
+        current = values[0].get("value") if values else None
+        if current is None:
+            status["detail"] = "SonarQube no expone el ajuste (versión anterior a 26.10)."
+        else:
+            status["enabled"] = str(current).lower() == "true"
+        if status["enabled"] is False:
+            if SONAR_ADMIN_TOKEN:
+                set_resp = requests.post(f"{SONAR_HOST_URL}/api/settings/set",
+                                         data={"key": SECRET_REDACTION_KEY, "value": "true"},
+                                         headers={"Authorization": f"Bearer {SONAR_ADMIN_TOKEN}"}, timeout=10)
+                if set_resp.status_code in (200, 204):
+                    status.update(enabled=True, changed=True, detail="Activado con SONAR_ADMIN_TOKEN.")
+                else:
+                    status["detail"] = (f"SONAR_ADMIN_TOKEN no pudo activarlo (HTTP {set_resp.status_code}); "
+                                        "actívelo en Administración > Configuración > Seguridad.")
+            else:
+                status["detail"] = ("Desactivado: SonarQube muestra los secretos detectados en claro. Requiere un "
+                                    "administrador (Administración > Configuración > Seguridad) o SONAR_ADMIN_TOKEN.")
+    except Exception as e:
+        logger.error("SonarQube secret-redaction check failed", exc_info=True)
+        status["detail"] = f"No se pudo consultar SonarQube: {e}"
+    if status["enabled"] is False:
+        logger.warning("⚠️ [SonarQube-Auditor] %s", status["detail"])
+    _redaction_state.update(checked=True, status=status)
+    return status
+
+
 class SonarQubeScanError(Exception):
     """Raised when a scan could not be completed (scanner failure, CE task failure/timeout)."""
     pass
@@ -354,35 +407,76 @@ def _recently_scanned(asset_id: Optional[str], min_interval_hours: int = MIN_RES
     return bool(row) and row[0] > datetime.utcnow() - timedelta(hours=min_interval_hours)
 
 
+# Informational issues (code smells and reliability bugs) are stored ONE ROW PER RULE AND FILE, with every line listed, instead of one row
+# per occurrence (ADR-0019 phase 2): 178k occurrence rows were 66k rule/file groups and drowned every list and report. Security issues
+# (VULNERABILITY, SECURITY_HOTSPOT) keep one row per occurrence: each one is a separate thing to fix and to triage.
+SECURITY_TYPES = ("VULNERABILITY", "SECURITY_HOTSPOT")
+_SEV_ORDER = tuple(sorted(deduplication_engine._SEV_RANK, key=deduplication_engine._SEV_RANK.get))   # CRITICAL first, INFO last
+MAX_LINES_LISTED = 200
+
+
+def is_informational(issue: Dict[str, Any]) -> bool:
+    return issue.get("type") not in SECURITY_TYPES
+
+
+def file_of(url_path: str) -> str:
+    """'src/a.ts:12' -> 'src/a.ts' (a trailing number after the last colon is the line)."""
+    head, sep, tail = str(url_path or "").rpartition(":")
+    return head if sep and tail.isdigit() else str(url_path or "")
+
+
+def line_of(url_path: str) -> Optional[int]:
+    head, sep, tail = str(url_path or "").rpartition(":")
+    return int(tail) if sep and tail.isdigit() else None
+
+
+def aggregate_description(sonar_type: str, rule: str, messages: List[str], lines: List[int], efforts: List[str]) -> str:
+    lines = sorted(set(lines))
+    shown = ", ".join(str(n) for n in lines[:MAX_LINES_LISTED]) + (f" (+{len(lines) - MAX_LINES_LISTED} más)" if len(lines) > MAX_LINES_LISTED else "")
+    distinct = list(dict.fromkeys(m for m in messages if m))[:3]
+    n = max(len(messages), len(lines), 1)
+    return (f"**SonarQube {sonar_type}** ({rule}) — {n} ocurrencia(s) en este archivo\n"
+            + "\n".join(distinct or ["Sin descripción"])
+            + (f"\n**Líneas:** {shown}" if lines else "")
+            + f"\n**Esfuerzo estimado (por ocurrencia):** {efforts[0] if efforts else 'N/D'}")
+
+
+def finding_rows(issues: List[Dict[str, Any]], project_key: str) -> List[Dict[str, Any]]:
+    """What a scan stores: one row per security occurrence, one per (rule, file) for informational issues."""
+    rows: List[Dict[str, Any]] = []
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    for issue in issues:
+        cve_id = _build_cve_id(issue.get("rule"))
+        url_path = _build_url_path(issue, project_key)
+        severity = _map_sonar_severity(issue)
+        if not is_informational(issue):
+            rows.append({"cve_id": cve_id, "url_path": url_path, "severity": severity, "finding_category": "VULNERABILITY",
+                         "description": (f"**SonarQube {issue.get('type', 'ISSUE')}** ({issue.get('rule')})\n"
+                                         f"{issue.get('message', 'Sin descripción')}\n**Esfuerzo estimado:** {issue.get('effort', 'N/D')}")})
+            continue
+        key = (cve_id, file_of(url_path))
+        g = groups.setdefault(key, {"type": issue.get("type", "ISSUE"), "rule": issue.get("rule"), "messages": [], "lines": [],
+                                    "efforts": [], "severity": severity})
+        g["messages"].append(issue.get("message") or "")
+        if line_of(url_path) is not None:
+            g["lines"].append(line_of(url_path))
+        if issue.get("effort"):
+            g["efforts"].append(issue["effort"])
+        if _SEV_ORDER.index(severity) < _SEV_ORDER.index(g["severity"]):
+            g["severity"] = severity
+    for (cve_id, path), g in groups.items():
+        rows.append({"cve_id": cve_id, "url_path": path, "severity": g["severity"], "finding_category": "INFORMATIONAL",
+                     "description": aggregate_description(g["type"], g["rule"], g["messages"], g["lines"], g["efforts"])})
+    return rows
+
+
 def _persist_issues(cur, asset_id: Optional[str], project_key: str, issues: List[Dict[str, Any]]) -> int:
     count = 0
-    for issue in issues:
-        # Only real VULNERABILITY-type issues are meaningfully "attacker technique"-shaped;
-        # CODE_SMELL is code-quality, not a MITRE ATT&CK-mappable finding -- same exclusion
-        # precedent already used for STD-ISO25010-LONG-METHOD/HEURISTIC-SECURITY-DEBT in
-        # core/mitre_attack.py's own _RULES table (no SONAR- entries added there for v1).
-        cve_id = _build_cve_id(issue.get("rule"))
-        severity = _map_sonar_severity(issue)
-        url_path = _build_url_path(issue, project_key)
-        description = (
-            f"**SonarQube {issue.get('type', 'ISSUE')}** ({issue.get('rule')})\n"
-            f"{issue.get('message', 'Sin descripción')}\n"
-            f"**Esfuerzo estimado:** {issue.get('effort', 'N/D')}"
-        )
-        # Real per-issue category from SonarQube's own API "type" field. Only VULNERABILITY and
-        # SECURITY_HOTSPOT are genuinely security-relevant; CODE_SMELL is maintainability, and
-        # -- real bug fixed 2026-08-21, found live while building a report on 3 new projects --
-        # BUG is a functional-reliability defect (code that will misbehave at runtime), a
-        # different axis of SonarQube's taxonomy entirely, not a security vulnerability either.
-        # The original reasoning here ("VULNERABILITY/BUG/SECURITY_HOTSPOT are real security-
-        # relevant") was wrong -- confirmed live against a real project: 469 of 487 "vulnerabilities"
-        # reported for one Angular frontend were actually type BUG (mostly HTML/accessibility
-        # defects like InputWithoutLabelCheck), not security issues at all; the real count was 18.
-        finding_category = "VULNERABILITY" if issue.get("type") in ("VULNERABILITY", "SECURITY_HOTSPOT") else "INFORMATIONAL"
+    for row in finding_rows(issues, project_key):
         deduplication_engine.log_finding_deduplicated(
-            cur, asset_id, cve_id, severity, description, "sonarqube",
-            url_path=url_path, open_status="OPEN", preserve_status=True,
-            finding_category=finding_category
+            cur, asset_id, row["cve_id"], row["severity"], row["description"], "sonarqube",
+            url_path=row["url_path"], open_status="OPEN", preserve_status=True,
+            finding_category=row["finding_category"]
         )
         count += 1
     return count
@@ -439,6 +533,7 @@ def run_sonarqube_audit(target_dir: str, asset_id: str = None,
         print(f"⏭️  [SonarQube-Auditor] {safe_key} scanned within the last {MIN_RESCAN_INTERVAL_HOURS}h -- skipping")
         return []
 
+    secret_redaction_status()
     container_local_path = _materialize_host_visible_copy(target_dir, safe_key)
 
     try:
@@ -458,9 +553,8 @@ def run_sonarqube_audit(target_dir: str, asset_id: str = None,
             # Close findings this complete scan no longer reproduces (fixed code, or newly excluded
             # vendored paths) instead of leaving them open forever.
             active_fps = {
-                deduplication_engine.calculate_fingerprint(
-                    asset_id, _build_cve_id(i.get("rule")), _build_url_path(i, safe_key))
-                for i in issues
+                deduplication_engine.calculate_fingerprint(asset_id, r["cve_id"], r["url_path"])
+                for r in finding_rows(issues, safe_key)
             }
             resolved = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "sonarqube", active_fps)
             if resolved:
@@ -481,3 +575,71 @@ def run_sonarqube_audit(target_dir: str, asset_id: str = None,
         raise
     finally:
         shutil.rmtree(container_local_path, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# One-time consolidation of rows stored per occurrence (before ADR-0019 phase 2)
+# ---------------------------------------------------------------------------
+_DESC_RE = re.compile(r"^\*\*SonarQube (?P<type>[A-Z_]+)\*\* \((?P<rule>[^)]*)\)(?: —[^\n]*)?\n(?P<msg>[^\n]*)(?:[\s\S]*?\*\*Esfuerzo estimado[^:]*:\*\* (?P<effort>[^\n]*))?")
+_LINES_RE = re.compile(r"\*\*Líneas:\*\* ([0-9, ]+)")
+
+
+def consolidate_informational_rows(cur, asset_id: str) -> Dict[str, int]:
+    """Turns the open informational SonarQube rows of one asset into one row per (rule, file), exactly what a fresh scan now writes, so
+    the next scan updates them in place instead of 'resolving' thousands of per-line rows. The survivor of each group keeps its id and
+    analysis; the rest are deleted with their remediation_history and comparison-baseline rows. Rows with a human decision are never
+    touched. Returns counts; the caller owns the transaction."""
+    cur.execute("""
+        SELECT v.id::text, v.cve_id, v.url_path, UPPER(v.severity), v.description, v.status, v.detected_at, v.fingerprint_hash
+          FROM public.vulnerability_log v
+         WHERE v.asset_id = %s AND v.scan_engine = 'sonarqube' AND v.finding_category = 'INFORMATIONAL'
+           AND v.status NOT IN ('RESOLVED', 'SUPPRESSED')
+           AND NOT EXISTS (SELECT 1 FROM public.remediation_history r WHERE r.vuln_id = v.id AND r.approval_token <> 'PENDING_APPROVAL')
+    """, (asset_id,))
+    groups: Dict[tuple, List[tuple]] = {}
+    for row in cur.fetchall():
+        groups.setdefault((row[1], file_of(row[2])), []).append(row)
+    stats = {"groups": 0, "rows_before": sum(len(g) for g in groups.values()), "deleted": 0, "updated": 0}
+    doomed: List[str] = []
+    for (cve_id, path), rows in groups.items():
+        target_fp = deduplication_engine.calculate_fingerprint(asset_id, cve_id, path)
+        cur.execute("SELECT id::text, status FROM public.vulnerability_log WHERE fingerprint_hash = %s", (target_fp,))
+        holder = cur.fetchone()
+        ids = [r[0] for r in rows]
+        if holder and holder[0] in ids:
+            survivor_id = holder[0]
+        elif holder:                                  # an existing (e.g. resolved) row already has the aggregated identity: reuse it
+            survivor_id = holder[0]
+        else:
+            survivor_id = max(rows, key=lambda r: (r[6] is not None, r[6]))[0]
+        messages, lines, efforts, sev, stype, rule = [], [], [], "INFO", "CODE_SMELL", cve_id
+        for r in rows:
+            m = _DESC_RE.match(r[4] or "")
+            if m:
+                stype, rule = m.group("type"), m.group("rule")
+                messages.append(m.group("msg"))
+                if m.group("effort"):
+                    efforts.append(m.group("effort"))
+            listed = _LINES_RE.search(r[4] or "")
+            if listed:
+                lines += [int(x) for x in listed.group(1).replace(" ", "").split(",") if x.isdigit()]
+            if line_of(r[2]) is not None:
+                lines.append(line_of(r[2]))
+            s = r[3] if r[3] in _SEV_ORDER else "MEDIUM"
+            if _SEV_ORDER.index(s) < _SEV_ORDER.index(sev):
+                sev = s
+        others = [i for i in ids if i != survivor_id]
+        doomed += others
+        if others:
+            cur.execute("DELETE FROM public.remediation_history WHERE vuln_id = ANY(%s::uuid[])", (others,))
+            cur.execute("DELETE FROM public.scan_run_baseline WHERE finding_id = ANY(%s::uuid[])", (others,))
+            cur.execute("DELETE FROM public.vulnerability_log WHERE id = ANY(%s::uuid[])", (others,))
+        cur.execute("""UPDATE public.vulnerability_log
+                          SET url_path = %s, description = %s, severity = %s, fingerprint_hash = %s,
+                              status = CASE WHEN status = 'RESOLVED' THEN 'OPEN' ELSE status END
+                        WHERE id = %s::uuid""",
+                    (path, aggregate_description(stype, rule, messages, lines, efforts), sev, target_fp, survivor_id))
+        stats["groups"] += 1
+        stats["updated"] += 1
+    stats["deleted"] = len(doomed)
+    return stats

@@ -35,6 +35,8 @@ ACTION_ASSET_DELETED       = "asset_deleted"
 ACTION_SOURCE_ZIP_UPLOADED = "source_zip_uploaded"
 ACTION_AI_DATA_INCIDENT    = "ai_data_incident"
 ACTION_PROMPT_INJECTION    = "prompt_injection_detected"
+ACTION_AI_VERIFICATION     = "ai_downgrade_verification"  # ADR-0021: adversarial check of an AI severity reduction
+ACTION_SUPPRESSION_EXPIRED = "suppression_expired"         # ADR-0022: an accepted risk/suppression reached its expiry
 ACTION_TEST_CREDENTIALS    = "test_credentials_changed"
 ACTION_SMART_TESTS_INGEST  = "smart_tests_ingest"
 

@@ -17,7 +17,7 @@ services:
     - "${DOCKER_GID:-136}"
     environment:
     - PYTHONPATH=/app/libs/centinela-core
-    - VAULT_ADDR=${VAULT_ADDR:-http://192.0.2.18:8200}
+    - VAULT_ADDR=${VAULT_ADDR:-https://vault.example.internal}
     - VAULT_TOKEN=${VAULT_TOKEN}
     - GOOGLE_APPLICATION_CREDENTIALS=***REMOVED-SECRET***
     - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
@@ -31,12 +31,12 @@ services:
     - DB_NAME=${DB_NAME:-centinela_db}
     - DB_USER=${DB_USER:-centinela_user}
     - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in .env}
-    - VALKEY_HOST=${VALKEY_HOST:-192.0.2.13}
+    - VALKEY_HOST=${VALKEY_HOST:-192.0.2.15}
     - AUTHENTIK_URL=${AUTHENTIK_URL:-https://auth.example.internal}
     - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-centinela-ai}
     - AUTHENTIK_CLIENT_SECRET=${AUTHENTIK_CLIENT_SECRET}
     - AUTHENTIK_INTERNAL_URL=${AUTHENTIK_INTERNAL_URL:-https://auth.example.internal}
-    - GITLAB_URL=${GITLAB_URL:-http://192.0.2.12}
+    - GITLAB_URL=${GITLAB_URL:-http://192.0.2.14}
     - GITLAB_TOKEN=${GITLAB_TOKEN}
     - SONAR_HOST_URL=${SONAR_HOST_URL:-http://centinela-sonarqube:9000}
     - SONAR_TOKEN=${SONAR_TOKEN}
@@ -76,7 +76,7 @@ services:
     - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in .env}
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=${VAULT_ADDR:-http://192.0.2.18:8200}
+    - VAULT_ADDR=${VAULT_ADDR:-https://vault.example.internal}
     - VAULT_TOKEN=${VAULT_TOKEN}
     - AUTHENTIK_URL=${AUTHENTIK_URL:-https://auth.example.internal}
     - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-centinela-ai}
@@ -122,13 +122,15 @@ services:
         VITE_AUTH_APP_SLUG: ${AUTHENTIK_CLIENT_ID:-centinela-ai}
         VITE_PASSWORD_RECOVERY_URL: ${PASSWORD_RECOVERY_URL:-}
         VITE_BRAND_NAME: ${BRAND_NAME:-}
+        # true only once the Authentik provider has the offline_access scope mapping (refresh token -> silent session renewal)
+        VITE_AUTH_OFFLINE_ACCESS: ${AUTH_OFFLINE_ACCESS:-false}
     container_name: centinela-frontend
     restart: always
     networks:
     - aura-network
     ports:
     # REVERTED 2026-08-11, RE-ATTEMPTED DIFFERENTLY 2026-08-14: the 08-11 attempt bound to the
-    # host's specific external interface IP (192.0.2.15), which silently excluded VPN-tunnel
+    # host's specific external interface IP (192.0.2.17), which silently excluded VPN-tunnel
     # traffic arriving on a different interface -- that failure mode does not apply to loopback,
     # since nginx (host-level, /etc/nginx/sites-available/centinela) always reaches 127.0.0.1
     # regardless of which interface a request actually arrived on. Confirmed live 2026-08-14:
@@ -209,7 +211,7 @@ services:
     - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in .env}
     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     - GROQ_API_KEY=${GROQ_API_KEY}
-    - VAULT_ADDR=${VAULT_ADDR:-http://192.0.2.18:8200}
+    - VAULT_ADDR=${VAULT_ADDR:-https://vault.example.internal}
     - VAULT_TOKEN=${VAULT_TOKEN}
     - ANSIBLE_REMOTE_USER=${ANSIBLE_REMOTE_USER:-proyecto-e}
     - ANSIBLE_BECOME_PASS=${ANSIBLE_BECOME_PASS:-}
@@ -275,10 +277,10 @@ services:
     container_name: falcosidekick
     restart: always
     environment:
-    # Matches the real Valkey instance this whole ecosystem already uses (192.0.2.13, see
+    # Matches the real Valkey instance this whole ecosystem already uses (192.0.2.15, see
     # core/db_manager.py / VALKEY_HOST) -- "***REMOVED-SECRET***" is not a resolvable hostname
     # inside aura-network.
-    - REDIS_ADDRESS=192.0.2.13:6379
+    - REDIS_ADDRESS=192.0.2.15:6379
     # REDIS_STORAGEKEY is set here to document intent, but this falcosidekick build does not
     # actually honor it -- confirmed live that every real event still lands in a plain "falco"
     # list regardless of this value. centinela.py's process_falco_alerts() consumes from "falco"
@@ -292,7 +294,7 @@ services:
           memory: 256M
 
   wazuh-manager:
-    image: wazuh/wazuh-manager:4.14.1
+    image: wazuh/wazuh-manager:4.14.10
     container_name: ${WAZUH_MANAGER_CONTAINER:-wazuh-manager}
     hostname: wazuh-manager
     restart: always
@@ -320,6 +322,8 @@ services:
           memory: 2G
 
   centinela-neo4j:
+    # Optional module, OFF by default (ADR-0019: no data source). Start with: docker compose --profile xdr up -d centinela-neo4j
+    profiles: ["xdr"]
     image: neo4j:5.12.0-community
     container_name: centinela-neo4j
     restart: always
@@ -338,6 +342,8 @@ services:
           memory: 1G
 
   centinela-clickhouse:
+    # Optional module, OFF by default (ADR-0019: no data source). Start with: docker compose --profile xdr up -d centinela-clickhouse
+    profiles: ["xdr"]
     image: clickhouse/clickhouse-server:24.8
     container_name: centinela-clickhouse
     restart: always
@@ -364,18 +370,18 @@ services:
 
   # SonarQube Community Edition -- real code quality/security analysis for GitLab repos
   # (auditors/auditor_sonarqube.py), separate from the SonarQube instance already running on
-  # another server (different DB: centinela_sonarqube_db on 192.0.2.13, not sonarqube_db, to
+  # another server (different DB: centinela_sonarqube_db on 192.0.2.15, not sonarqube_db, to
   # avoid colliding with that unrelated instance). Requires vm.max_map_count>=262144 on the
   # real host for its bundled Elasticsearch -- see .agent/STATE.md / CLAUDE.md for the
   # one-time sysctl step; this service will crash-loop without it.
   centinela-sonarqube:
-    image: sonarqube:26.8.0.126808-community
+    image: sonarqube:26.11.0.134175-community
     container_name: centinela-sonarqube
     restart: always
     networks:
       - aura-network
     environment:
-      - SONAR_JDBC_URL=jdbc:postgresql://192.0.2.13:5432/centinela_sonarqube_db
+      - SONAR_JDBC_URL=jdbc:postgresql://192.0.2.15:5432/centinela_sonarqube_db?options=-c%20idle_in_transaction_session_timeout%3D0
       - SONAR_JDBC_USERNAME=${SONARQUBE_DB_USER:-centinela_sonarqube_user}
       - SONAR_JDBC_PASSWORD=${SONARQUBE_DB_PASSWORD}
     # No nproc ulimit here -- confirmed live this is a real Docker footgun, not a SonarQube

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
 import ReactMarkdown from 'react-markdown'
 import { useAuth } from 'react-oidc-context'
+import { OFFLINE_ACCESS } from '../authConfig'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import {
@@ -73,19 +74,55 @@ export default function Dashboard() {
   // ADR-0008 #8: every API call carries the Authentik access token (the backend validates it, see core/auth.py).
   if (auth.user?.access_token) axios.defaults.headers.common['Authorization'] = `Bearer ${auth.user.access_token}`
   else delete axios.defaults.headers.common['Authorization']
-  // The Authentik access token lives 1 h and there is no silent renew: when it expires, sign in again instead of polling the API for
-  // hours with a dead token (which enforce mode would turn into a broken dashboard). Authentik's SSO session makes this a quick redirect.
+  // The Authentik access token lives 1 h. With OFFLINE_ACCESS the library renews it silently with the refresh token before it expires;
+  // this handler only fires when that renewal failed (or is disabled), and then the SSO redirect signs the user in again.
   useEffect(() => {
     if (!auth.events || !auth.isAuthenticated) return undefined
-    return auth.events.addAccessTokenExpired(() => { auth.signinRedirect() })
+    const offExpired = auth.events.addAccessTokenExpired(() => { auth.signinRedirect() })
+    const offRenewError = auth.events.addSilentRenewError((e) => console.error('Silent session renewal failed:', e))
+    return () => { offExpired(); offRenewError() }
   }, [auth.events, auth.isAuthenticated])
+  // A 401 from the API (enforce mode, expired or revoked token): renew once and retry the request; if renewal is not possible, sign in
+  // again. Requests already retried, and the auth status endpoint itself, are never retried (no loops).
+  const authRef = useRef(auth)
+  useEffect(() => { authRef.current = auth }, [auth])
+  useEffect(() => {
+    let renewing = null
+    const id = axios.interceptors.response.use((r) => r, async (error) => {
+      const cfg = error.config
+      if (error.response?.status === 403 && error.response?.data?.required_role) {
+        // Role-based permissions (core/roles.py): tell the user why, instead of a silent failure.
+        const d = error.response.data
+        alert(`⛔ Tu rol (${d.your_role}) no permite esta acción; se requiere ${d.required_role}.`)
+        throw error
+      }
+      if (error.response?.status !== 401 || !cfg || cfg._authRetried || String(cfg.url || '').includes('/auth/status')) throw error
+      cfg._authRetried = true
+      const a = authRef.current
+      try {
+        if (OFFLINE_ACCESS) {
+          renewing = renewing || a.signinSilent().finally(() => { renewing = null })
+          const user = await renewing
+          if (user?.access_token) {
+            cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${user.access_token}` }
+            return axios(cfg)
+          }
+        }
+      } catch (e) {
+        console.error('Session renewal after a 401 failed:', e)
+      }
+      a.signinRedirect()
+      throw error
+    })
+    return () => axios.interceptors.response.eject(id)
+  }, [])
   // ADR-0008 #2: the active view lives in the URL (/soar, /inventory...), so reload, back/forward and shared links work.
   const location = useLocation()
   const navigate = useNavigate()
   const requestedView = location.pathname.replace(/^\/+|\/+$/g, '') || 'dashboard'
   const setCurrentView = (v) => navigate(v === 'dashboard' ? '/' : `/${v}`)
   const [stats, setStats] = useState({ alerts: 0, endpoints: 0, users: 0, private_hosts: 0, public_hosts: 0 })
-  const [vulnStats, setVulnStats] = useState({ total: 0, real_vulnerabilities_total: 0, infra_vulnerabilities: 0, code_vulnerabilities: 0, infra_informational: 0, code_informational: 0, critical: 0, high: 0, pending_ia: 0, pending_approval: 0 })
+  const [vulnStats, setVulnStats] = useState({ total: 0, real_vulnerabilities_total: 0, infra_vulnerabilities: 0, code_vulnerabilities: 0, infra_informational: 0, code_informational: 0, infra_compliance: 0, code_compliance: 0, compliance_total: 0, critical: 0, high: 0, pending_ia: 0, pending_approval: 0 })
   const [soarCategoryFilter, setSoarCategoryFilter] = useState('ALL')
   const [soarAssetCategoryFilter, setSoarAssetCategoryFilter] = useState('ALL')
   const [mapData, setMapData] = useState([])
@@ -205,29 +242,16 @@ export default function Dashboard() {
   const fetchUsers = async () => {
     try {
       setUsersLoading(true)
-      const res = await axios.get(`${API_BASE}/users`)
-      if (Array.isArray(res.data)) {
-        setUsersList(res.data)
-        // Detect current user role accurately
-        const profile = auth.user?.profile || {}
-        const usernameCandidates = [
-          profile.preferred_username,
-          profile.nickname,
-          profile.sub,
-          profile.name
-        ].filter(Boolean).map(s => s.toLowerCase())
-        const emailCandidate = (profile.email || '').toLowerCase()
-
-        const match = res.data.find(u => {
-          const uName = (u.username || '').toLowerCase()
-          const uEmail = (u.email || '').toLowerCase()
-          return usernameCandidates.includes(uName) || (emailCandidate && uEmail === emailCandidate)
-        })
-        if (match) {
-          setCurrentUserRole(match.role)
-        }
-        setRoleChecked(true)
-        setRoleError(null)
+      // The role comes from the session token itself (/users/me), not from matching names in the user list:
+      // duplicate accounts sharing an e-mail made that match pick the wrong role. Only an Admin may read the full list.
+      const me = await axios.get(`${API_BASE}/users/me`)
+      const role = me.data?.role || 'Disabled'
+      setCurrentUserRole(role)
+      setRoleChecked(true)
+      setRoleError(null)
+      if (role === 'Admin') {
+        const res = await axios.get(`${API_BASE}/users`)
+        if (Array.isArray(res.data)) setUsersList(res.data)
       }
     } catch (e) {
       console.error("Error fetching Authentik users:", e)
@@ -341,9 +365,12 @@ export default function Dashboard() {
     let disposed = false   // set by the cleanup so a late onclose does not schedule a reconnect for a dead effect
     // ADR-0008 #8: browsers cannot set headers on a WebSocket, so the Authentik token travels as a subprotocol (see core/auth.py).
     const token = auth.user?.access_token
+    // No session yet (first render before the OIDC user loads): do not open an anonymous socket the API would reject; this effect
+    // runs again as soon as the token arrives.
+    if (!token) return undefined
 
     const connect = () => {
-      ws = new WebSocket(wsUrl, token ? ['centinela.bearer', token] : undefined);
+      ws = new WebSocket(wsUrl, ['centinela.bearer', token]);
 
       ws.onmessage = (event) => {
         try {
@@ -403,7 +430,9 @@ export default function Dashboard() {
   // core/ueba_engine.py) when the tab is opened. Was previously 100% hardcoded zeros/placeholder
   // text with no API calls at all.
   useEffect(() => {
-    if (currentView !== 'itdr') return
+    // Wait for the OIDC session: on a direct load of /itdr this effect runs before the user is restored from storage, the requests went
+    // out without a token, got 401 and the interceptor sent the user back to the login page.
+    if (currentView !== 'itdr' || !auth.isAuthenticated) return
     let cancelled = false
     setItdrLoading(true)
     Promise.all([
@@ -418,7 +447,7 @@ export default function Dashboard() {
     }).catch(err => console.error("Error fetching ITDR telemetry:", err))
       .finally(() => { if (!cancelled) setItdrLoading(false) })
     return () => { cancelled = true }
-  }, [currentView]);
+  }, [currentView, auth.isAuthenticated]);
 
   // ADR-0008 #8: reports are fetched with axios (which sends the Authorization header) and handed to the browser as a Blob; plain
   // window.location navigation cannot carry a bearer token and would be rejected once API auth is enforced.
@@ -592,7 +621,8 @@ export default function Dashboard() {
         <ShieldAlert size={64} className="mb-6" />
         <h2 className="text-2xl font-black mb-2 uppercase tracking-tighter">Acceso deshabilitado</h2>
         <p className="max-w-md text-slate-500 font-bold text-sm mb-8">Tu cuenta no tiene un rol activo en Centinela. Solicita a un administrador que te habilite.</p>
-        <button onClick={handleLogout} className="px-8 py-4 bg-slate-800 text-white font-black uppercase text-xs tracking-widest rounded-2xl hover:bg-slate-700 transition-all">Cerrar sesión</button>
+        {/* handleLogout is declared further down: referencing it here crashed this screen (TDZ) for every disabled user */}
+        <button onClick={() => auth.signoutRedirect()} className="px-8 py-4 bg-slate-800 text-white font-black uppercase text-xs tracking-widest rounded-2xl hover:bg-slate-700 transition-all">Cerrar sesión</button>
       </div>
     )
   }
@@ -1057,6 +1087,7 @@ export default function Dashboard() {
         name: item.asset_name,
         max_id: item.max_id || item.id || '',
         vulnerability_count: 0,
+        compliance_count: 0,
         resolved_count: 0,
         runtime_alerts_count: 0,
         interfaces: [],
@@ -1073,6 +1104,7 @@ export default function Dashboard() {
       if (candidateId > acc[item.asset_name].max_id) acc[item.asset_name].max_id = candidateId
     }
     acc[item.asset_name].vulnerability_count += parseInt(item.vulnerability_count || 0)
+    acc[item.asset_name].compliance_count += parseInt(item.compliance_count || 0)
     acc[item.asset_name].resolved_count += parseInt(item.resolved_count || 0)
     acc[item.asset_name].runtime_alerts_count += parseInt(item.runtime_alerts_count || 0)
     acc[item.asset_name].interfaces.push(item)
@@ -1316,12 +1348,14 @@ export default function Dashboard() {
             active={currentView === 'health'} 
             onClick={() => setCurrentView('health')}
           />
-          <NavItem 
-            icon={<Users size={20} />} 
-            label="Gestión Usuarios" 
-            active={currentView === 'users'} 
-            onClick={() => { setCurrentView('users'); fetchUsers(); }}
-          />
+          {currentUserRole === 'Admin' && (
+            <NavItem
+              icon={<Users size={20} />}
+              label="Gestión Usuarios"
+              active={currentView === 'users'}
+              onClick={() => { setCurrentView('users'); fetchUsers(); }}
+            />
+          )}
           {currentUserRole === 'Admin' && (
             <NavItem
               icon={<Cpu size={20} />}

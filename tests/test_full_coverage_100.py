@@ -13,7 +13,7 @@ class TestFullCoverage100(unittest.TestCase):
         self.assertIn("misp_key", creds)
 
     def test_cti_audit(self):
-        findings = audit_asset_against_cti("TestServer", "192.0.2.13")
+        findings = audit_asset_against_cti("TestServer", "192.0.2.15")
         self.assertIsInstance(findings, list)
 
     def test_binary_firmware_iot_rules(self):

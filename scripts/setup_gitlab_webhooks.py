@@ -119,6 +119,7 @@ def main() -> int:
     ap.add_argument("--no-ssl-verify", action="store_true", help="create hooks with TLS verification disabled (not recommended)")
     ap.add_argument("--enable-local-requests", action="store_true", help="admin: allow webhooks to private addresses")
     ap.add_argument("--send-test", action="store_true", help="after creating, ask GitLab to deliver a test event and report the result")
+    ap.add_argument("--only", choices=("push", "mr"), help="create just one of the two hooks (e.g. --only mr: MR review without push re-scans)")
     a = ap.parse_args()
 
     token = os.getenv("GITLAB_ADMIN_TOKEN", "")
@@ -156,6 +157,8 @@ def main() -> int:
     tally: Dict[str, int] = {}
     for p in projects:
         for kind, path in (("push", PUSH_PATH), ("mr", MR_PATH)):
+            if a.only and kind != a.only:
+                continue
             res = ensure_hook(gl, p, a.centinela_url.rstrip("/") + path, secret, kind, not a.no_ssl_verify, a.apply)
             if a.send_test and a.apply and res.get("hook_id"):
                 res["test"] = test_hook(gl, p, res["hook_id"], kind)

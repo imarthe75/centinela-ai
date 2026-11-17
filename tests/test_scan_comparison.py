@@ -149,6 +149,25 @@ class TestComparisonAgainstDb(unittest.TestCase):
         cur.execute(q, (aid, old["cve_id"]))
         self.assertEqual(cur.fetchone()[0], "RESOLVED")
 
+    def test_semgrep_keeps_findings_of_files_that_timed_out(self):
+        from auditors import auditor_semgrep
+        cur = self.conn.cursor()
+        cur.execute("INSERT INTO infra_inventory (asset_name, asset_type, endpoint) VALUES ('test-semgrep-timeout@x', 'GitLab-Repo', 'test') RETURNING id")
+        aid = str(cur.fetchone()[0])
+        slow = {"asset_id": aid, "cve_id": "java.spring.security.audit.spring-sqli", "severity": "HIGH",
+                "description": "d", "url_path": "src/FumpModel.java:40", "scan_engine": "semgrep"}
+        fixed = {"asset_id": aid, "cve_id": "java.lang.security.x.weak-random", "severity": "MEDIUM",
+                 "description": "d", "url_path": "src/Other.java:7", "scan_engine": "semgrep"}
+        auditor_semgrep.persist_findings(auditor_semgrep.SemgrepFindings([slow, fixed], asset_id=aid, complete=True))
+        # next complete run: FumpModel.java timed out (not analyzed), Other.java analyzed and clean
+        auditor_semgrep.persist_findings(auditor_semgrep.SemgrepFindings(
+            [], asset_id=aid, complete=True, skipped_files={"src/FumpModel.java"}))
+        q = "SELECT status FROM vulnerability_log WHERE asset_id = %s AND cve_id = %s"
+        cur.execute(q, (aid, slow["cve_id"]))
+        self.assertEqual(cur.fetchone()[0], "OPEN")
+        cur.execute(q, (aid, fixed["cve_id"]))
+        self.assertEqual(cur.fetchone()[0], "RESOLVED")
+
 
 if __name__ == "__main__":
     unittest.main()

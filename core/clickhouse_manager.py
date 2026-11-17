@@ -4,6 +4,8 @@ Proporciona almacenamiento y consulta analítica de alto rendimiento para evento
 """
 
 import os
+
+from core import modules
 import requests
 import json
 from datetime import datetime
@@ -20,6 +22,8 @@ def init_clickhouse():
     """
     Inicializa la base de datos y la tabla de telemetría analítica en ClickHouse.
     """
+    if not modules.enabled("clickhouse"):
+        return False   # module off (ADR-0019): nothing is stored or read
     try:
         # Crear base de datos de telemetría
         q_db = "CREATE DATABASE IF NOT EXISTS centinela_telemetry;"
@@ -60,6 +64,8 @@ def insert_telemetry_event(source: str, event_type: str, username: str, client_i
     string with no escaping at all: a genuine, exploitable SQL injection, not a hypothetical one,
     fixed here before this module is wired to any live webhook.
     """
+    if not modules.enabled("clickhouse"):
+        return False   # module off (ADR-0019): nothing is stored or read
     try:
         q = """
         INSERT INTO centinela_telemetry.telemetry_events
@@ -88,6 +94,8 @@ def query_recent_events(minutes: int = 15, event_type: str = None):
     (event_type is caller-controlled today, but treating it as trusted was the same class of
     assumption that made the INSERT path genuinely exploitable).
     """
+    if not modules.enabled("clickhouse"):
+        return []   # module off (ADR-0019): nothing is stored or read
     try:
         params = {"param_minutes": str(minutes)}
         where_clause = "WHERE timestamp >= now() - INTERVAL {minutes:UInt32} MINUTE"

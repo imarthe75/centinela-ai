@@ -30,13 +30,20 @@ from starlette.responses import JSONResponse
 logger = logging.getLogger("centinela.auth")
 
 EXEMPT_PREFIXES = ("/api/health", "/api/manual", "/api/glosario", "/api/gitlab/push-webhook", "/api/gitlab/mr-webhook", "/api/xdr/soar/evaluate", "/api/auth/status",
-                   "/api/ingest/smart-tests")   # own service token, fail-closed (api/routers/ingest.py)
+                   "/api/ingest/smart-tests",   # own service token, fail-closed (api/routers/ingest.py)
+                   "/api/agent/install-script")  # signed, expiring link checked by the handler itself, fail-closed (api/routers/inventory.py)
 USERINFO_URL = os.getenv("AUTH_USERINFO_URL", os.getenv("AUTHENTIK_URL", "https://auth.example.internal").rstrip("/") + "/application/o/userinfo/")
 CACHE_TTL = int(os.getenv("AUTH_CACHE_SECONDS", "60"))
 
 _cache: Dict[str, Any] = {}
 _cache_lock = threading.Lock()
-_counters = {"allowed": 0, "would_reject": 0, "rejected": 0}
+# Grace store: a token Authentik already accepted stays usable until its own `exp` while Authentik is UNREACHABLE (transport error, not a
+# rejection). Without it, an Authentik outage would lock every signed-in user out of Centinela at once. Revocation cannot be seen during the
+# outage; normal validation (every CACHE_TTL seconds) resumes when Authentik answers again. Bounded by GRACE_MAX_SECONDS.
+_grace: Dict[str, Any] = {}
+GRACE_MAX_SECONDS = int(os.getenv("AUTH_GRACE_MAX_SECONDS", "3600"))
+_counters = {"allowed": 0, "would_reject": 0, "rejected": 0, "allowed_authentik_down": 0}
+_reasons: Dict[str, int] = {}   # would-reject / reject count per reason, to tell real users (expired token) from scanners (no token)
 _recent_would_reject: list = []
 
 
@@ -53,20 +60,53 @@ def _tls_verify():
 
 
 def verify_token(token: str) -> Optional[Dict[str, Any]]:
-    """Return the Authentik claims for a valid access token, None when Authentik rejects it. Raises on transport errors (callers fail closed)."""
+    """Return the Authentik claims for a valid access token, None when Authentik rejects it. When Authentik is unreachable, a token it
+    accepted before is honoured until its own expiry (grace store); any other token raises (callers fail closed)."""
     key = hashlib.sha256(token.encode()).hexdigest()
     now = time.time()
     with _cache_lock:
         hit = _cache.get(key)
         if hit and hit[0] > now:
             return hit[1]
-    r = requests.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}"}, timeout=8, verify=_tls_verify())
+    try:
+        r = requests.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}"}, timeout=8, verify=_tls_verify())
+        if r.status_code >= 500:
+            raise requests.ConnectionError(f"Authentik userinfo answered {r.status_code}")
+    except requests.RequestException:
+        with _cache_lock:
+            g = _grace.get(key)
+        if g and g[0] > now:
+            logger.warning("Authentik unreachable: accepting a token it validated before (valid until its exp)", exc_info=True)
+            _counters["allowed_authentik_down"] += 1
+            return g[1]
+        raise
     claims = r.json() if r.status_code == 200 else None
     with _cache_lock:
         if len(_cache) > 2000:
             _cache.clear()
-        _cache[key] = (now + (CACHE_TTL if claims else 10), claims)   # negative results are cached briefly too (cheap brute-force damper)
+        ttl = min(now + CACHE_TTL, _jwt_exp(token) or now + CACHE_TTL) if claims else now + 10   # never past the token's own expiry
+        _cache[key] = (ttl, claims)   # negative results are cached briefly too (cheap brute-force damper)
+        if len(_grace) > 5000:
+            for k in [k for k, v in _grace.items() if v[0] <= now]:
+                del _grace[k]
+        if claims:
+            _grace[key] = (min(_jwt_exp(token) or now + 300, now + GRACE_MAX_SECONDS), claims)
+        else:
+            _grace.pop(key, None)       # Authentik said no (revoked/expired): never honour it from the grace store again
     return claims
+
+
+def _jwt_exp(token: str) -> Optional[float]:
+    """`exp` of a JWT access token (never used on its own to ACCEPT a token: only to bound how long a token Authentik already accepted
+    may be honoured while Authentik is unreachable)."""
+    import base64
+    import json
+    try:
+        payload = token.split(".")[1]
+        exp = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))).get("exp")
+        return float(exp) if exp else None
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 def _jwt_expired(token: str) -> bool:
@@ -98,8 +138,44 @@ def is_admin(claims: Optional[Dict[str, Any]]) -> bool:
 
 
 def status() -> Dict[str, Any]:
-    return {"mode": mode(), "counters": dict(_counters), "recent_would_reject": list(_recent_would_reject[-20:]),
-            "service_token_configured": bool(os.getenv("API_SERVICE_TOKEN"))}
+    return {"mode": mode(), "counters": dict(_counters), "by_reason": dict(_reasons), "recent_would_reject": list(_recent_would_reject[-20:]),
+            "service_token_configured": bool(os.getenv("API_SERVICE_TOKEN")), "grace_max_seconds": GRACE_MAX_SECONDS,
+            "roles": {"mode": __import__("core.roles", fromlist=["mode"]).mode(), **_role_counters, "recent": list(_role_recent[-20:])}}
+
+
+def _set_scope(claims) -> None:
+    """Data scope of the caller (ADR-0019 phase 1) for the rest of this request. A failure to resolve it denies everything for a
+    non-admin caller (empty scope) instead of showing every project."""
+    from core import access_scope
+    try:
+        access_scope.set_current(access_scope.resolve(claims))
+    except Exception:
+        logger.error("could not resolve the caller's data scope: denying project data for this request", exc_info=True)
+        access_scope.set_current([])
+
+
+_role_counters: Dict[str, int] = {"denied": 0, "would_deny": 0}
+_role_recent: list = []
+
+
+def _role_denied(method: str, path: str, claims):
+    """403 when the caller's role does not reach what the route needs (core.roles); None to continue."""
+    from core import roles
+    rmode = roles.mode()
+    if rmode == "off":
+        return None
+    ok, need, have, why = roles.check(method, path, claims)
+    if ok:
+        return None
+    _role_recent.append({"t": int(time.time()), "method": method, "path": path, "need": need, "have": have, "mode": rmode})
+    del _role_recent[:-100]
+    if rmode == "log":
+        _role_counters["would_deny"] += 1
+        logger.warning("[API-ROLES log-mode] would deny %s %s: %s", method, path, why)
+        return None
+    _role_counters["denied"] += 1
+    return JSONResponse({"detail": "Tu rol no permite esta acción.", "required_role": need, "your_role": have or "Disabled"},
+                        status_code=403)
 
 
 class ApiAuthMiddleware(BaseHTTPMiddleware):
@@ -131,14 +207,20 @@ class ApiAuthMiddleware(BaseHTTPMiddleware):
 
         if reason is None:
             _counters["allowed"] += 1
+            _set_scope(getattr(request.state, "user", None))
+            denied = _role_denied(request.method, path, getattr(request.state, "user", None))
+            if denied is not None:
+                return denied
             return await call_next(request)
         if m == "log":
             _counters["would_reject"] += 1
+            _reasons[reason] = _reasons.get(reason, 0) + 1
             _recent_would_reject.append({"t": int(time.time()), "method": request.method, "path": path, "reason": reason})
             del _recent_would_reject[:-100]
             logger.warning("[API-AUTH log-mode] would reject %s %s: %s", request.method, path, reason)
             return await call_next(request)
         _counters["rejected"] += 1
+        _reasons[reason] = _reasons.get(reason, 0) + 1
         return JSONResponse({"detail": "Authentication required", "reason": reason}, status_code=401)
 
 
@@ -164,8 +246,14 @@ async def ws_authorize(websocket) -> bool:
     else:
         try:
             from starlette.concurrency import run_in_threadpool
-            if not await run_in_threadpool(verify_token, token):
+            claims = await run_in_threadpool(verify_token, token)
+            if not claims:
                 reason = _rejection_reason(token)
+            else:
+                # The alert feed is fleet-wide: a caller restricted to some projects (ADR-0019) does not get it.
+                from core import access_scope
+                if await run_in_threadpool(access_scope.resolve, claims) is not access_scope.UNRESTRICTED:
+                    reason = "alert feed not available with a restricted data scope"
         except Exception:
             logger.error("Authentik userinfo unreachable while validating a websocket token", exc_info=True)
             reason = "authentik unreachable"
@@ -175,9 +263,11 @@ async def ws_authorize(websocket) -> bool:
     path = websocket.url.path
     if m == "log":
         _counters["would_reject"] += 1
+        _reasons[reason] = _reasons.get(reason, 0) + 1
         _recent_would_reject.append({"t": int(time.time()), "method": "WS", "path": path, "reason": reason})
         del _recent_would_reject[:-100]
         logger.warning("[API-AUTH log-mode] would reject WS %s: %s", path, reason)
         return True
     _counters["rejected"] += 1
+    _reasons[reason] = _reasons.get(reason, 0) + 1
     return False

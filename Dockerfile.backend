@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && cp /usr/local/bin/trivy /usr/bin/trivy || true
 
 # Install Nuclei
-RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_amd64.zip -o nuclei.zip \
+RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip -o nuclei.zip \
     && unzip nuclei.zip && mv nuclei /usr/local/bin/ && cp /usr/local/bin/nuclei /usr/bin/nuclei && rm nuclei.zip
 
 # Install Syft (license inventory; Grype was dropped 2026-10-12: its DB never existed here and OSV covers the CVEs)
@@ -32,6 +32,12 @@ RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | 
 
 # Install TruffleHog (used by auditor_secrets.py)
 RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+# CLI security engines, each in its own virtualenv: their latest releases pin incompatible versions of shared
+# libraries (semgrep vs prowler, checkov vs both), and Centinela only calls them as commands, never imports them.
+# Exact versions here, not in locks/ (2026-11-05).
+RUN python -m venv /opt/tools/semgrep && /opt/tools/semgrep/bin/pip install --no-cache-dir semgrep==1.184.0 && ln -s /opt/tools/semgrep/bin/semgrep /usr/local/bin/semgrep \
+    && python -m venv /opt/tools/prowler && /opt/tools/prowler/bin/pip install --no-cache-dir prowler==5.47.0 && ln -s /opt/tools/prowler/bin/prowler /usr/local/bin/prowler
 
 COPY requirements.txt .
 COPY locks/backend.txt /tmp/lock-backend.txt

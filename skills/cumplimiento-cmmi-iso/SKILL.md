@@ -30,8 +30,10 @@ documento no existe, el estado es `NO EVALUADO`.
 - Consulta: `GET /api/cmmi/evidence/{activo}`. Lo que hoy mide: PR (MR con revisor distinto del autor), VV (pruebas y pipeline), CM
   (historial, tags, rama protegida, migraciones), PI (contrato OpenAPI, pruebas de integración), TS (documentos de diseño, esquema
   versionado), DAR (ADR), y evidencia organizacional (PAD, PCM, II, GOV, PQA).
-- Los artefactos de metodología (plan, estimación, riesgos, matriz de trazabilidad, actas de UAT) se generan con `resident-entregables-ca`
-  con datos reales; nunca con texto de relleno.
+- Los artefactos de metodología (plan, estimación, riesgos, matriz de trazabilidad, actas de UAT) se generan con `generador-entregables-ca`
+  (payload validado contra su esquema) y la evidencia de Centinela que llevan sale de `resident-entregables-ca`; nunca con texto de relleno.
+- El cierre de cada etapa se verifica con el checklist 0A-4 (ART-MC-02); `GET /api/checklist-evidence/{activo}` aporta la evidencia medida
+  de los puntos 3.10, 3.7 y 5.8, sin firmarlos.
 - Hallazgo medido en proyectos de la empresa: casi ningún MR tiene comentario o aprobación de otra persona, por lo que PR queda en
   `NO_CUMPLE` aunque el código se revise de palabra. La revisión se registra en el MR.
 
@@ -62,3 +64,7 @@ Los controles organizacionales, de personas y físicos (secciones 5, 6 y 7 del A
 - Ningún porcentaje de cumplimiento sin las comprobaciones que lo sustentan; nunca se ajusta el denominador.
 - La revisión por pares la hace una persona; la aprobación de un agente no cuenta como revisión.
 - Una auditoría formal CMMI exige el modelo completo de ISACA; lo que mide un escáner es un indicador interno.
+
+## Reglas del escáner que esta skill evita
+`GITLAB-PROJECT-MR-NO-PIPELINE-GATE`, `GITLAB-PROJECT-DEFAULT-BRANCH-UNPROTECTED`, `CICD-NO-PIPELINE`, `CICD-GATE-ALLOW-FAILURE`, `SCA-LICENSE-UNKNOWN`, `API-NO-CONTRACT`.
+Corrección de cada una y el resto del catálogo: skill `prevencion-hallazgos-seguridad-calidad`.

@@ -472,6 +472,34 @@ COMPLIANCE_MAPPING_MATRIX = {
         "SOC_2": "CC6.6 (Transmission Encryption)",
         "GDPR": "Art 32 (Encryption of Personal Data)"
     },
+    "DB-AUTH-TRUST": {
+        "ISO_27001": "A.8.5 (Secure Authentication)",
+        "NIST_800_53": "IA-2 (Identification and Authentication)",
+        "PCI_DSS": "Req 8.3 (Strong Authentication)",
+        "SOC_2": "CC6.1 (Logical Access)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "DB-AUTH-MD5": {
+        "ISO_27001": "A.8.5 (Secure Authentication)",
+        "NIST_800_53": "IA-5 (Authenticator Management)",
+        "PCI_DSS": "Req 8.3.2 (Strong Cryptography for Authentication)",
+        "SOC_2": "CC6.1 (Logical Access)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "DB-AUTH-CLEARTEXT-PASSWORD": {
+        "ISO_27001": "A.8.5 (Secure Authentication)",
+        "NIST_800_53": "IA-5 (Authenticator Management)",
+        "PCI_DSS": "Req 8.3.2 (Strong Cryptography for Authentication)",
+        "SOC_2": "CC6.1 (Logical Access)",
+        "GDPR": "Art 32 (Security of Processing)"
+    },
+    "DB-TLS-BELOW-BASELINE": {
+        "ISO_27001": "A.8.24 (Use of Cryptography)",
+        "NIST_800_53": "SC-8 (Transmission Confidentiality and Integrity)",
+        "PCI_DSS": "Req 4.2 (Strong Cryptography in Transit)",
+        "SOC_2": "CC6.6 (Transmission Encryption)",
+        "GDPR": "Art 32 (Encryption of Personal Data)"
+    },
     "DB-DEFAULT-PORT-EXPOSED": {
         "ISO_27001": "A.8.9 (Configuration Management)",
         "NIST_800_53": "CM-6 (Configuration Settings)",

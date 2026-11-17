@@ -217,9 +217,14 @@ def process_remediations():
                     
                     # Cargar el contenido del script
                     script_content = ""
-                    if os.path.exists(rem['script_path']):
+                    if rem['script_path'] and os.path.exists(rem['script_path']):
                         with open(rem['script_path'], 'r') as f:
                             script_content = f.read()
+                    else:
+                        # Nothing is executed without a script; the reason stays in the record (the GitLab branch
+                        # below does not need the file and overwrites this message with its own result).
+                        log_output = (f"El script de remediación no existe en disco ({rem['script_path']}). "
+                                      "No se ejecutó nada: vuelva a correlacionar el hallazgo para generar uno nuevo.")
 
                     # Lógica de Ejecución Basada en Tipo de Activo
                     asset_type = rem.get('asset_type', 'SERVER')

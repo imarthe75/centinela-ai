@@ -29,11 +29,11 @@ class TestPureLogic(unittest.TestCase):
     def test_extract_indicators(self):
         got = ie.extract_indicators(
             "ITDR-AUTHENTIK-BRUTE-FORCE",
-            "Ataque de Fuerza Bruta desde IP 192.0.2.29 contra el usuario 'admin_test'",
-            {"user.name": "svc_bot", "src_ip": "192.0.2.11"},
+            "Ataque de Fuerza Bruta desde IP 192.0.2.32 contra el usuario 'admin_test'",
+            {"user.name": "svc_bot", "src_ip": "192.0.2.13"},
         )
-        self.assertIn("192.0.2.29", got["ips"])
-        self.assertIn("192.0.2.11", got["ips"])
+        self.assertIn("192.0.2.32", got["ips"])
+        self.assertIn("192.0.2.13", got["ips"])
         self.assertIn("admin_test", got["users"])
         self.assertIn("svc_bot", got["users"])
 
@@ -101,7 +101,7 @@ class TestIncidentPersistence(unittest.TestCase):
         with get_db_cursor() as cur:
             cur.execute("""
                 INSERT INTO infra_inventory (asset_name, asset_type, endpoint, criticality, status)
-                VALUES (%s, 'SERVER', '192.0.2.25', 'LOW', 'monitored')
+                VALUES (%s, 'SERVER', '192.0.2.28', 'LOW', 'monitored')
                 ON CONFLICT (asset_name) DO UPDATE SET status = 'monitored'
                 RETURNING id
             """, (f"{self.TAG}-asset",))

@@ -59,7 +59,7 @@ CMMI_AREA_ITEMS: Dict[str, Dict[str, Any]] = {
     "TS": {"name": "Solución técnica", "items": [
         ("ts.design_docs", "Documento de arquitectura/diseño (indicio: carpeta docs con documentos)", "repo", "ASSET", NO_EVALUADO, "ts_design_docs"),
         ("ts.data_design_versioned", "Diseño de datos versionado (Liquibase/Flyway/Alembic)", "repo", "ASSET", NO_EVALUADO, "ts_data_design_versioned"),
-        ("ts.art_f2", "Documento de arquitectura y diseño detallado (ART-F2-01/02/04)", "artefacto", "ASSET", NO_EVALUADO, None)]},
+        ("ts.art_f2", "Arquitectura, diseño y especificación de campos y validaciones (ART-F2-01/02/04/08)", "artefacto", "ASSET", NO_EVALUADO, None)]},
     "PI": {"name": "Integración de producto", "items": [
         ("pi.api_contract", "Contratos de API (especificación OpenAPI o springdoc)", "repo", "ASSET", NO_EVALUADO, "pi_api_contract"),
         ("pi.integration_tests", "Pruebas de integración", "repo", "ASSET", NO_EVALUADO, "pi_integration_tests"),
@@ -67,7 +67,7 @@ CMMI_AREA_ITEMS: Dict[str, Dict[str, Any]] = {
     "EST": {"name": "Estimación", "items": [
         ("est.estimate_vs_actual", "Estimación con supuestos y registro estimado-vs-real (ART-F1-06, ART-F5-08)", "artefacto", "ASSET", NO_EVALUADO, None)]},
     "PLAN": {"name": "Planeación", "items": [
-        ("plan.project_plan_baseline", "Plan de proyecto con línea base y tailoring (ART-F1-07/08/09)", "artefacto", "ASSET", NO_EVALUADO, None)]},
+        ("plan.project_plan_baseline", "Plan de proyecto con línea base y tailoring registrado (ART-F1-07/08/09, 0A-2b)", "artefacto", "ASSET", NO_EVALUADO, None)]},
     "MC": {"name": "Monitoreo y control", "items": [
         ("mc.biweekly_report_cadence", "Seguimiento quincenal dentro del plan + bitácora (ART-MC-01)", "artefacto", "ASSET", NO_EVALUADO, None)]},
     "RSK": {"name": "Riesgo y oportunidad", "items": [
@@ -398,8 +398,12 @@ def _org_git(path: str) -> Optional[Dict[str, Any]]:
     return {"path": path, "commits": n, "last_change": last}
 
 
+# The deliverables generator (methodology skill) is the single source of the artifact catalogue, manifests and schemas since 2026-10-28.
+_DELIVERABLES_SKILL = "skills/generador-entregables-ca"
+
+
 def gov_catalog_versioned(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    info = _org_git("skills/resident-entregables-ca/references/catalogo.md")
+    info = _org_git(_DELIVERABLES_SKILL + "/references/catalogo.md")
     if not info:
         return _result(NO_EVALUADO, {"reason": "no se encontró el catálogo de artefactos en este repositorio"})
     return _result(CUMPLE if info["commits"] > 0 else NO_CUMPLE, info)
@@ -420,12 +424,12 @@ def pcm_process_assets_history(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def pad_templates_versioned(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    info = _org_git("skills/resident-entregables-ca/references/manifiestos")
-    prompts = _org_git("skills/resident-entregables-ca/prompts")
+    info = _org_git(_DELIVERABLES_SKILL + "/references/manifiestos")
+    schemas = _org_git(_DELIVERABLES_SKILL + "/schemas")
     if not info:
         return _result(NO_EVALUADO, {"reason": "no se encontró el directorio de manifiestos"})
-    ok = info["commits"] > 0 and (prompts is None or prompts["commits"] > 0)
-    return _result(CUMPLE if ok else NO_CUMPLE, {"manifests": info, "prompts": prompts})
+    ok = info["commits"] > 0 and (schemas is None or schemas["commits"] > 0)
+    return _result(CUMPLE if ok else NO_CUMPLE, {"manifests": info, "schemas": schemas})
 
 
 def pad_manifests_valid(ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -434,7 +438,7 @@ def pad_manifests_valid(ctx: Dict[str, Any]) -> Dict[str, Any]:
         import yaml
     except ImportError:
         return _result(NO_EVALUADO, {"reason": "PyYAML no está instalado"})
-    files = sorted(glob.glob(os.path.join(REPO_ROOT, "skills/resident-entregables-ca/references/manifiestos/*.manifest.yaml")))
+    files = sorted(glob.glob(os.path.join(REPO_ROOT, _DELIVERABLES_SKILL, "references/manifiestos/*.manifest.yaml")))
     if not files:
         return _result(NO_EVALUADO, {"reason": "no hay manifiestos en el repositorio"})
     bad = []

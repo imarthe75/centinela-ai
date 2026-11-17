@@ -67,12 +67,12 @@ def git_head(path: str) -> Optional[str]:
 
 
 # --------------------------------------------------------------------------------------------------------------- recording runs
-def start_run(cur, asset_id: str, source: str, commit_sha: Optional[str] = None) -> str:
+def start_run(cur, asset_id: str, source: str, commit_sha: Optional[str] = None, engine_version: Optional[str] = None) -> str:
     """Open a run and copy the findings open right now into its baseline. Call before the scan writes anything."""
     cur.execute("""UPDATE public.scan_runs SET status = 'FAILED', finished_at = now(), note = 'interrumpido: se inició otro escaneo'
                    WHERE asset_id = %s AND status = 'RUNNING'""", (asset_id,))
-    cur.execute("INSERT INTO public.scan_runs (asset_id, source, commit_sha) VALUES (%s, %s, %s) RETURNING id",
-                (asset_id, source, commit_sha))
+    cur.execute("INSERT INTO public.scan_runs (asset_id, source, commit_sha, engine_version) VALUES (%s, %s, %s, %s) RETURNING id",
+                (asset_id, source, commit_sha, engine_version))
     run_id = cur.fetchone()[0]
     cur.execute("""
         INSERT INTO public.scan_run_baseline (run_id, finding_id, cve_id, severity, finding_category, status, url_path, scan_engine)
@@ -90,12 +90,12 @@ def finish_run(cur, run_id: str, ok: bool, commit_sha: Optional[str] = None, not
                    note = COALESCE(%s, note) WHERE id = %s""", ("DONE" if ok else "FAILED", commit_sha, note, run_id))
 
 
-def open_run(asset_id: str, source: str, commit_sha: Optional[str] = None) -> Optional[str]:
+def open_run(asset_id: str, source: str, commit_sha: Optional[str] = None, engine_version: Optional[str] = None) -> Optional[str]:
     """start_run in its own transaction. Returns None (logged) when recording fails: the scan itself must go on."""
     from core import db_manager
     try:
         with db_manager.get_db_cursor() as cur:
-            return start_run(cur, asset_id, source, commit_sha)
+            return start_run(cur, asset_id, source, commit_sha, engine_version)
     except Exception:
         logger.error("[Scan-Runs] could not open a run for asset %s", asset_id, exc_info=True)
         return None
@@ -243,12 +243,22 @@ def compare_asset(cur, asset_id: str) -> Dict[str, Any]:
             "summary": summarize(classes), "baseline_total": len(baseline)}
 
 
+def item_category(it: Dict[str, Any]) -> str:
+    """VULNERABILITY / COMPLIANCE / INFORMATIONAL. Accessibility rules are COMPLIANCE even in baselines snapshotted before that
+    category existed (they were stored as VULNERABILITY), so old and new runs compare like with like."""
+    from core.deduplication_engine import is_compliance_rule
+    stored = str(it.get("finding_category") or "").upper()
+    if stored == "COMPLIANCE" or is_compliance_rule(it.get("cve_id"), it.get("scan_engine")):
+        return "COMPLIANCE"
+    return "INFORMATIONAL" if stored == "INFORMATIONAL" else "VULNERABILITY"
+
+
 def summarize(classes: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Dict[str, int]]]:
-    """{category: {class: {severity: n}}} with category VULNERABILITY / INFORMATIONAL."""
+    """{category: {class: {severity: n}}} with category VULNERABILITY / COMPLIANCE / INFORMATIONAL."""
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for cls, items in classes.items():
         for it in items:
-            cat = "INFORMATIONAL" if str(it.get("finding_category") or "").upper() == "INFORMATIONAL" else "VULNERABILITY"
+            cat = item_category(it)
             sev = norm_severity(it.get("severity"))
             out.setdefault(cat, {}).setdefault(cls, Counter())[sev] += 1
     return {c: {k: dict(v) for k, v in d.items()} for c, d in out.items()}
@@ -406,6 +416,12 @@ def render_html(comparisons: List[Dict[str, Any]], title: str, generated_at: Opt
             parts.append(f"<tr><td>{_e(label)}</td>" + "".join(f"<td class='n'>{row.get(x, 0) or ''}</td>" for x in SEVERITIES)
                          + f"<td class='n'>{sum(row.values())}</td></tr>")
         parts.append("</table>")
+        comp = c["summary"].get("COMPLIANCE", {})
+        if comp:
+            tc = lambda *cls: sum(_sev_total(comp, k) for k in cls)
+            parts.append(f"<p class='muted'>Cumplimiento de accesibilidad (WCAG 2.1, no son vulnerabilidades de seguridad): "
+                         f"{tc(*BASELINE_LABELS.keys())} antes · {tc('SOLVENTADO')} solventados · {tc('NUEVO', 'REAPARECIDO')} nuevos · "
+                         f"{tc('PERSISTE', 'MOVIDO', 'NO_REVERIFICADO', 'NUEVO', 'REAPARECIDO')} abiertos ahora.</p>")
         info = c["summary"].get("INFORMATIONAL", {})
         if info:
             ti = lambda *cls: sum(_sev_total(info, k) for k in cls)
@@ -413,7 +429,7 @@ def render_html(comparisons: List[Dict[str, Any]], title: str, generated_at: Opt
                          f"{ti('SOLVENTADO')} solventados · {ti('NUEVO', 'REAPARECIDO')} nuevos · "
                          f"{ti('PERSISTE', 'MOVIDO', 'NO_REVERIFICADO', 'NUEVO', 'REAPARECIDO')} abiertos ahora.</p>")
 
-        vul = lambda cls: [i for i in c["classes"].get(cls, []) if str(i.get("finding_category") or "").upper() != "INFORMATIONAL"]
+        vul = lambda cls: [i for i in c["classes"].get(cls, []) if item_category(i) == "VULNERABILITY"]
         parts.append("<h3 class='ok'>Solventadas</h3>" + _detail_table(vul("SOLVENTADO")))
         parts.append("<h3 class='bad'>Nuevas y reaparecidas</h3>" + _detail_table(vul("NUEVO") + vul("REAPARECIDO")))
         parts.append("<h3>Persisten</h3>" + _detail_table(vul("PERSISTE") + vul("MOVIDO"), loc_field="now_url_path"))

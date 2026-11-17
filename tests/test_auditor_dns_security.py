@@ -32,7 +32,7 @@ class TestDomainHandling(unittest.TestCase):
         self.assertEqual(r("tienda.empresa.com.mx:8443"), "empresa.com.mx")
 
     def test_ips_internal_names_and_garbage_are_not_domains(self):
-        for v in ["http://192.0.2.9:8092/x", "192.0.2.15", "centinela.example.internal", "host.local", "localhost", "", None, "http://[::1]/"]:
+        for v in ["http://192.0.2.11:8092/x", "192.0.2.17", "centinela.example.internal", "host.local", "localhost", "", None, "http://[::1]/"]:
             self.assertIsNone(D.registrable_domain(v), v)
 
 

@@ -41,7 +41,7 @@ export default function SettingsView() {
                         const categoryTitles = {
                             LLM_AGENTS: '🧠 Agentes de Inteligencia Artificial (LLM & Inference)',
                             SECURITY_AGENTS: '🛡️ Agentes de Seguridad (Wazuh EDR, Zeek NIDS, Falco)',
-                            INTEGRATIONS: '🔌 Integraciones Externas (Authentik, GitLab, HashiCorp Vault)',
+                            INTEGRATIONS: '🔌 Integraciones Externas (Authentik, GitLab, OpenBao)',
                             POLICY_RULES: '⚙️ Políticas de Autonomía & SLAs de Seguridad'
                         }
                         if (items.length === 0) return null

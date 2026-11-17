@@ -9,7 +9,7 @@ import redis
 import psycopg2
 import concurrent.futures
 from psycopg2.extras import RealDictCursor
-from core import db_manager
+from core import db_manager, asset_types
 from core import agent_ledger
 from core import deduplication_engine
 
@@ -38,8 +38,9 @@ def run_fleet_enqueue_loop(interval_seconds: int = 600):
     while True:
         try:
             s = enqueue_fleet_scan()
-            if s["enqueued"] or s["instances_failed"]:
-                print(f"📥 [Fleet-Queue] {s['enqueued']} projects queued, {s['skipped']} skipped (active/recent), {s['projects_seen']} seen"
+            if s["enqueued"] or s["instances_failed"] or s.get("unchanged"):
+                print(f"📥 [Fleet-Queue] {s['enqueued']} projects queued, {s.get('unchanged', 0)} unchanged since last analysis (not scanned), "
+                      f"{s['skipped']} skipped (active/recent), {s['projects_seen']} seen"
                       + (f", instances failed: {s['instances_failed']}" if s["instances_failed"] else ""))
         except Exception:
             logger.error("[Fleet-Queue] enqueue failed", exc_info=True)
@@ -52,6 +53,21 @@ def run_fleet_enqueue_loop(interval_seconds: int = 600):
             logger.error("[Fleet-Queue] secrets-history enqueue failed", exc_info=True)
         time.sleep(interval_seconds)
 
+
+
+def run_gitlab_heads_refresh_loop(interval_minutes: float = None):
+    """Keep gitlab_branch_heads current (latest commit of every branch with a GitLab asset), so the UI can tell which assets changed since
+    their last analysis without asking GitLab on every page view. One GitLab call per project per pass (GITLAB_HEADS_REFRESH_MINUTES, 15)."""
+    from core import change_detection
+    minutes = interval_minutes or float(os.getenv("GITLAB_HEADS_REFRESH_MINUTES", "15"))
+    while True:
+        try:
+            r = change_detection.refresh_all_inventory()
+            if r["failed"]:
+                print(f"⚠️ [Heads-Refresh] {r['projects']} projects checked, {len(r['failed'])} could not be read")
+        except Exception:
+            logger.error("[Heads-Refresh] refresh failed", exc_info=True)
+        time.sleep(minutes * 60)
 
 
 def run_scan_worker_loop(poll_seconds: int = 30, heartbeat_seconds: int = 60, kind: str = None, runner=None):
@@ -261,15 +277,15 @@ def run_cis_benchmark_loop():
                     FROM infra_inventory i
                     LEFT JOIN vulnerability_log v
                         ON v.asset_id = i.id AND v.cve_id = 'CIS-BENCHMARK-AUDIT'
-                    WHERE i.asset_type IN ('SERVER', 'AppServer', 'Database (SQL)', 'GITLAB')
+                    WHERE i.asset_type IN %s
                         AND i.endpoint != 'remote-agent'
                     GROUP BY i.id, i.asset_name, i.endpoint
                     HAVING MAX(v.detected_at) IS NULL
                         OR MAX(v.detected_at) < NOW() - (%s || ' days')::interval
                     ORDER BY MAX(v.detected_at) ASC NULLS FIRST
-                    LIMIT 5
-                """, (RECHECK_INTERVAL_DAYS,))
-                due_assets = cur.fetchall()
+                    LIMIT 20
+                """, (asset_types.LINUX_HOST_TYPES, RECHECK_INTERVAL_DAYS))
+                due_assets = [a for a in cur.fetchall() if _scan_allowed(a)][:5]
 
             if not due_assets:
                 time.sleep(3600)
@@ -294,8 +310,17 @@ def run_cis_benchmark_loop():
 
 
 
-def _due_assets_for_marker(marker_cve: str, asset_types, interval_days: int, limit: int = 5):
-    """Assets whose last completion marker for this audit is missing or older than interval_days."""
+def _scan_allowed(asset) -> bool:
+    """Active checks (SSH, nmap) only against internal addresses unless allowlisted (core.asset_types.scan_target_allowed)."""
+    ok, reason = asset_types.scan_target_allowed(asset["endpoint"])
+    if not ok:
+        print(f"⛔ [Centinela-AI] {asset['asset_name']}: {reason}")
+    return ok
+
+
+def _due_assets_for_marker(marker_cve: str, types, interval_days: int, limit: int = 5, guard: bool = True):
+    """Assets whose last completion marker for this audit is missing or older than interval_days. With guard, assets whose
+    endpoint is outside the internal network (and not allowlisted) are dropped; more rows are read so they can't starve the rest."""
     with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT i.id, i.asset_name, i.endpoint
@@ -306,8 +331,9 @@ def _due_assets_for_marker(marker_cve: str, asset_types, interval_days: int, lim
             HAVING MAX(v.detected_at) IS NULL OR MAX(v.detected_at) < NOW() - (%s || ' days')::interval
             ORDER BY MAX(v.detected_at) ASC NULLS FIRST
             LIMIT %s
-        """, (marker_cve, list(asset_types), interval_days, limit))
-        return cur.fetchall()
+        """, (marker_cve, list(types), interval_days, limit * 4 if guard else limit))
+        rows = cur.fetchall()
+    return [a for a in rows if _scan_allowed(a)][:limit] if guard else rows
 
 
 
@@ -319,8 +345,8 @@ def run_os_patch_and_tls_audit_loop():
     completion marker's own detected_at tells "never checked" from "checked recently".
     """
     from auditors import auditor_os_patches, auditor_tls, auditor_dns_security
-    host_types = ('SERVER', 'AppServer', 'Database (SQL)', 'GITLAB')
-    tls_types = ('SERVER', 'AppServer', 'GITLAB', 'URL', 'API-Gateway', 'Identity-IdP')
+    host_types = asset_types.LINUX_HOST_TYPES
+    tls_types = asset_types.TLS_TYPES
     while True:
         did_work = False
         try:
@@ -346,7 +372,7 @@ def run_os_patch_and_tls_audit_loop():
                     print(f"❌ [TLS-Audit] audit failed for {a['asset_name']}:")
                     traceback.print_exc()
                 time.sleep(5)
-            for a in _due_assets_for_marker(auditor_dns_security.MARKER_CVE, ('Domain',), 7):
+            for a in _due_assets_for_marker(auditor_dns_security.MARKER_CVE, ('Domain',), 7, guard=False):
                 did_work = True
                 try:
                     res = auditor_dns_security.run_dns_audit(a['asset_name'], a['endpoint'])
@@ -391,8 +417,9 @@ def run_wazuh_discovery_loop():
 
 
 def run_soar_expiry_loop():
-    """Lift temporary SOAR IP blocks once their TTL passes (through Sentinel, same channel that added them)."""
-    from core import soar_engine
+    """Everything with a TTL: temporary SOAR IP blocks (lifted through Sentinel, same channel that added them) and finding
+    suppressions / accepted risks (their findings reopen when they expire, ADR-0022 §1)."""
+    from core import agent_ledger, soar_engine, suppression_lifecycle
     while True:
         try:
             stats = soar_engine.reap_expired_ip_blocks()
@@ -402,8 +429,106 @@ def run_soar_expiry_loop():
             import traceback
             print("❌ [Centinela-AI] Error in SOAR expiry loop:")
             traceback.print_exc()
+        try:
+            with db_manager.get_db_cursor() as cur:
+                sstats = suppression_lifecycle.expire_due(cur)
+            if sstats["expired"]:
+                print(f"⏰ [Suppression-Expiry] {sstats}")
+                agent_ledger.record_action(agent_ledger.ACTION_SUPPRESSION_EXPIRED,
+                                           f"{sstats['expired']} supresiones vencidas; {sstats['reopened']} hallazgos reabiertos",
+                                           entity_type="batch", detail=sstats, actor="centinela-ai", outcome="success")
+        except Exception:
+            import traceback
+            print("❌ [Centinela-AI] Error expiring finding suppressions:")
+            traceback.print_exc()
         time.sleep(300)
 
+
+
+def renew_secrets_token() -> str:
+    """Renews this service's own OpenBao/Vault token (`auth/token/renew-self`). Centinela's token is periodic
+    (scripts/openbao_provision_centinela.sh): it lives as long as it is renewed within its period. Returns
+    "renewed", "not_renewable" (e.g. a root or non-periodic token: nothing to do) or "failed" (logged with traceback)."""
+    import hvac
+    addr, token = os.getenv("VAULT_ADDR"), os.getenv("VAULT_TOKEN")
+    if not addr or not token:
+        return "not_renewable"
+    try:
+        client = hvac.Client(url=addr, token=token, timeout=15)
+        info = client.auth.token.lookup_self()["data"]
+        if not info.get("renewable"):
+            return "not_renewable"
+        client.auth.token.renew_self()
+        return "renewed"
+    except hvac.exceptions.Forbidden:
+        print("❌ [Secrets] OpenBao rechaza el token de .env (permiso denegado): es un token de otro clúster o revocado. "
+              "Ejecute scripts/openbao_provision_centinela.sh y recree los servicios.")
+        return "failed"
+    except Exception:
+        import traceback
+        print("❌ [Secrets] could not renew the OpenBao/Vault token:")
+        traceback.print_exc()
+        return "failed"
+
+
+def run_secrets_token_renew_loop(interval_hours: float = 24):
+    """Daily renewal, far inside the 768h period: a missed day or a restart never lets the token lapse."""
+    while True:
+        result = renew_secrets_token()
+        if result != "not_renewable":
+            print(f"🔑 [Secrets] token renewal: {result}")
+        time.sleep(interval_hours * 3600)
+
+
+def seconds_until_next(daily_at: str, tz: str, now=None) -> float:
+    """Seconds from `now` to the next occurrence of `daily_at` (HH:MM) in zone `tz` (always > 0)."""
+    from datetime import datetime, timedelta, timezone
+    from core import scan_schedule
+    now = now or datetime.now(timezone.utc)
+    nxt = scan_schedule.daily_cutoff(now, daily_at, tz) + timedelta(days=1)
+    return max(1.0, (nxt - now).total_seconds())
+
+
+def run_reverify_loop():
+    """ADR-0021 backfill, nightly: severity reductions still without a second opinion get one, up to REVERIFY_DAILY_LIMIT per night
+    (default 1000) at REVERIFY_DAILY_AT (default 06:00, SCAN_TIMEZONE), i.e. after the 03:00 fleet pass has re-cloned the repositories the
+    verifier reads; a repository finding without its clone stays pending. Stops by itself when every free provider is out of quota.
+    REVERIFY_DAILY_AT empty -> disabled."""
+    import importlib.util
+    import sys
+    daily_at = os.getenv("REVERIFY_DAILY_AT", "06:00").strip()
+    if not daily_at:
+        print("ℹ️ [Reverify] nightly re-verification disabled (REVERIFY_DAILY_AT empty)")
+        return
+    tz = os.getenv("SCAN_TIMEZONE", "America/Mexico_City").strip() or "America/Mexico_City"
+    limit = int(os.getenv("REVERIFY_DAILY_LIMIT", "1000"))
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "reverify_ai_downgrades.py")
+    while True:
+        time.sleep(seconds_until_next(daily_at, tz))
+        try:
+            spec = importlib.util.spec_from_file_location("reverify_ai_downgrades", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            engine = sys.modules.get("__main__")
+            if not hasattr(engine, "call_ai_cascade"):
+                engine = None   # not running inside centinela.py: the script imports it itself
+            outcomes = mod.reverify_step(limit, "%", engine=engine)
+            agent_ledger.record_action("ai_reverify_nightly", f"Re-verificación nocturna: {dict(outcomes)}",
+                                       detail={"outcomes": dict(outcomes), "limit": limit}, actor="centinela",
+                                       outcome="success")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"⚠️ [Reverify] nightly run failed: {e}")
+
+
+def run_zap_reaper_loop(interval_minutes: float = 15):
+    """Orphaned zap-scan-* containers (parent restarted mid-scan) are reaped every 15 min, not only at startup: the
+    40-min age gate in reap_orphaned_zap_containers() keeps scans in flight in either service safe."""
+    from auditors.auditor_zap import reap_orphaned_zap_containers
+    while True:
+        time.sleep(interval_minutes * 60)
+        reap_orphaned_zap_containers(quiet=True)
 
 
 def run_cmmi_org_evidence_loop():

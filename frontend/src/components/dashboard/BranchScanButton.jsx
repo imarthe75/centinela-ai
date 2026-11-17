@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { GitBranch, X, RefreshCw } from 'lucide-react'
+import { CHANGE_LABELS, rulesHint, short } from './changeState'
 
 // Asset names of GitLab projects: "GitLab/<path>", "GitLab2/<path>", ... and "<that>@<branch>" for a branch audited on its own.
 export function parseGitlabAsset(name) {
@@ -16,6 +17,7 @@ export default function BranchScanButton({ assetName, compact = false }) {
   const [busy, setBusy] = useState(null)
   const [msg, setMsg] = useState(null)
 
+  const qc = useQueryClient()
   const branches = useQuery({
     queryKey: ['gitlab-branches', ref?.instance, ref?.path],
     enabled: open && !!ref,
@@ -32,6 +34,8 @@ export default function BranchScanButton({ assetName, compact = false }) {
       setMsg({ ok: true, text: r.already_queued
         ? `La rama ya estaba en cola. Resultados en el activo ${r.asset_name}.`
         : `Rama en cola. Cuando termine, sus hallazgos aparecerán como el activo ${r.asset_name}.` })
+      qc.invalidateQueries({ queryKey: ['gitlab-branches', ref.instance, ref.path] })
+      qc.invalidateQueries({ queryKey: ['gitlab-changes'] })
     } catch (e) {
       setMsg({ ok: false, text: e?.response?.data?.detail || e.message })
     } finally {
@@ -61,31 +65,39 @@ export default function BranchScanButton({ assetName, compact = false }) {
             <p className="text-slate-500 text-xs mb-4">
               Cada rama se analiza como un activo independiente (<span className="font-mono">{ref.path}@rama</span>): sus hallazgos no se mezclan con los del proyecto principal ni con los de otras ramas.
               No se repiten las revisiones del proyecto en sí (configuración de GitLab, evidencia CMMI).
+              Solo se puede analizar una rama si su último commit no es el que ya se analizó.
             </p>
             {branches.isLoading && <div className="text-slate-400 text-sm flex items-center gap-2"><RefreshCw size={14} className="animate-spin" /> Consultando ramas en GitLab…</div>}
             {branches.error && <div className="text-red-400 text-sm">{branches.error.response?.data?.detail || branches.error.message}</div>}
             <ul className="space-y-2">
-              {(branches.data?.branches || []).map((b) => (
-                <li key={b.name} className="flex items-center justify-between gap-3 bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2">
-                  <div className="min-w-0">
-                    <div className="text-white text-sm font-mono truncate">{b.name}
-                      {b.default && <span className="ml-2 text-[10px] text-cyan-300 uppercase">por defecto</span>}
-                      {b.protected && <span className="ml-2 text-[10px] text-amber-300 uppercase">protegida</span>}
+              {(branches.data?.branches || []).map((b) => {
+                const lab = CHANGE_LABELS[b.change_state] || CHANGE_LABELS.SIN_VERIFICAR
+                const allowed = b.rescan_allowed !== false
+                const hint = b.change_state === 'REGLAS_NUEVAS' ? rulesHint(b) : lab.hint
+                return (
+                  <li key={b.name} className="flex items-center justify-between gap-3 bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-white text-sm font-mono truncate">{b.name}
+                        {b.default && <span className="ml-2 text-[10px] text-cyan-300 uppercase">por defecto</span>}
+                        {b.protected && <span className="ml-2 text-[10px] text-amber-300 uppercase">protegida</span>}
+                        <span className={`ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded border ${lab.cls}`} title={hint}>{lab.text}</span>
+                      </div>
+                      <div className="text-slate-500 text-[11px]">
+                        {b.last_commit_at ? `Último commit: ${new Date(b.last_commit_at).toLocaleString()} (${short(b.commit_sha)})` : ''}
+                        {b.last_audit ? ` · Analizado: ${short(b.analyzed_commit)}, ${new Date(b.last_audit).toLocaleString()}` : ' · Sin auditar'}
+                      </div>
                     </div>
-                    <div className="text-slate-500 text-[11px]">
-                      {b.last_commit_at ? `Último commit: ${new Date(b.last_commit_at).toLocaleString()}` : ''}
-                      {b.last_audit ? ` · Última auditoría de la rama: ${new Date(b.last_audit).toLocaleString()}` : ' · Sin auditar'}
-                    </div>
-                  </div>
-                  <button
-                    disabled={busy !== null}
-                    onClick={() => scan(b.name)}
-                    className="shrink-0 px-3 py-1.5 bg-violet-500/20 text-violet-200 hover:bg-violet-500 hover:text-white rounded-lg text-xs font-bold disabled:opacity-50"
-                  >
-                    {busy === b.name ? 'Encolando…' : b.last_audit ? 'Re-analizar' : 'Analizar'}
-                  </button>
-                </li>
-              ))}
+                    <button
+                      disabled={busy !== null || !allowed}
+                      onClick={() => scan(b.name)}
+                      title={allowed ? 'Analizar el último commit de esta rama' : hint}
+                      className="shrink-0 px-3 py-1.5 bg-violet-500/20 text-violet-200 hover:bg-violet-500 hover:text-white rounded-lg text-xs font-bold disabled:opacity-40 disabled:hover:bg-violet-500/20 disabled:hover:text-violet-200 disabled:cursor-not-allowed"
+                    >
+                      {busy === b.name ? 'Encolando…' : !allowed ? (b.change_state === 'EN_COLA' ? 'En análisis' : 'Sin cambios') : b.last_audit ? 'Re-analizar' : 'Analizar'}
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
             {msg && <div className={`mt-4 text-sm ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</div>}
           </div>

@@ -353,6 +353,8 @@ def scan_standards_rules(file_path: str, content: str) -> List[Dict[str, Any]]:
     _frontend(file_path, content, lines, out)
     _ci(file_path, content, lines, out)
     _skipped(file_path, content, lines, out)
+    from auditors.auditor_business_rules import scan_business_rules     # CORE/Starter business-rule catalogue (2026-10-28)
+    out.extend(scan_business_rules(file_path, content))
     for f in out:
         f["file"] = file_path
     return out

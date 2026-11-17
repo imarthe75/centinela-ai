@@ -14,6 +14,7 @@ import psycopg2
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 import pandas as pd
+from core import modules as platform_modules
 from core import db_manager, itdr_engine, clickhouse_manager, ebpf_telemetry, attack_graph, ueba_engine, soar_engine, deduplication_engine
 from pydantic import BaseModel
 from typing import Optional
@@ -185,7 +186,7 @@ class SecurityIntegrationModel(BaseModel):
 def update_security_integrations(config: SecurityIntegrationModel):
     """
     Stores API keys and credentials for commercial security solutions
-    (VirusTotal, MISP, Qualys Cloud Platform, Tenable.io) in HashiCorp Vault.
+    (VirusTotal, MISP, Qualys Cloud Platform, Tenable.io) in OpenBao.
     """
     client = get_vault_client()
     stored_items = []
@@ -318,6 +319,8 @@ def _compute_system_health():
                 return "Unreachable"
 
         def check_neo4j():
+            if not platform_modules.enabled("bloodhound"):
+                return "Module Off (no AD data, ADR-0019)"
             try:
                 from neo4j import GraphDatabase
                 uri = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
@@ -413,7 +416,12 @@ def _compute_system_health():
             try:
                 with db_manager.get_db_cursor() as cur:
                     cur.execute("SELECT COUNT(*) FROM vulnerability_log WHERE scan_engine='sonarqube'")
-                    return "Online" if cur.fetchone()[0] > 0 else "Available (On-Demand, Not Yet Run)"
+                    if cur.fetchone()[0] == 0:
+                        return "Available (On-Demand, Not Yet Run)"
+                from auditors import auditor_sonarqube as _sq
+                if _sq.secret_redaction_status().get("enabled") is False:
+                    return "Online (Warning: secretos visibles en SonarQube)"
+                return "Online"
             except Exception:
                 return "Unreachable"
 
@@ -424,7 +432,7 @@ def _compute_system_health():
             return res, lat
 
         def check_wazuh_manager():
-            return check_http("https://192.0.2.15:55000", timeout=2)
+            return check_http("https://192.0.2.17:55000", timeout=2)
 
         def check_containment_status():
             w_status = check_wazuh_manager()
@@ -475,7 +483,9 @@ def _compute_system_health():
                 {"name": "Container Scanner (Trivy)", "status": check_tool("trivy"), "latency": "6ms"},
                 {"name": "NDR (Zeek)", "status": check_zeek_ingestion(), "latency": "2ms"},
                 {"name": "ITDR (Neo4j/BloodHound)", "status": check_neo4j(), "latency": "15ms"},
-                {"name": "Secrets Backend (Vault)", "status": vault_st, "latency": vault_lat},
+                {"name": "Telemetría ClickHouse (ITDR/UEBA)", "status": "Online" if platform_modules.enabled("clickhouse")
+                    else "Module Off (no events ever stored, ADR-0019)", "latency": "-"},
+                {"name": "Secrets Backend (OpenBao)", "status": vault_st, "latency": vault_lat},
                 {"name": "EDR (Wazuh Manager)", "status": wazuh_st, "latency": wazuh_lat},
                 {"name": "Identity (Authentik)", "status": auth_st, "latency": auth_lat},
                 {"name": "Risk Intel (EPSS/CISA KEV)", "status": check_threat_intel(), "latency": "10ms"},
@@ -633,6 +643,18 @@ def engines_status():
     return {"summary": engine_status.health_summary(entries), "counts": counts, "engines": entries}
 
 
+@router.get("/api/users/me", summary="Rol y datos del usuario actual")
+def get_current_user(request: Request):
+    """The caller's identity and Centinela role, taken from the validated session token (no Authentik round trip).
+    role: Admin / Analyst / Auditor / Viewer, or Disabled when the token carries no Centinela group. The dashboard uses this to
+    decide what it shows; the API enforces the same role in core.roles."""
+    from core import roles
+    claims = getattr(request.state, "user", None) or {}
+    role = roles.role_of(claims) or "Disabled"
+    return {"username": claims.get("preferred_username") or claims.get("sub"), "email": claims.get("email"),
+            "name": claims.get("name"), "role": role, "role_mode": roles.mode()}
+
+
 @router.get("/api/users")
 def get_authentik_users():
     """Lists all non-system users from Authentik with their assigned Centinela RBAC role
@@ -683,7 +705,7 @@ class UserRoleUpdateModel(BaseModel):
 
 
 @router.post("/api/users/role")
-def update_authentik_user_role(body: UserRoleUpdateModel):
+def update_authentik_user_role(body: UserRoleUpdateModel, request: Request):
     """Updates a user's RBAC role in Authentik (Centinela Admin / Analyst / Auditor / Viewer, or
     Disabled = no Centinela group, which the Authentik app policy turns into "cannot sign in")."""
     ROLE_ALLOWLIST = ("Admin", "Analyst", "Auditor", "Viewer", "Disabled")
@@ -709,6 +731,10 @@ def update_authentik_user_role(body: UserRoleUpdateModel):
         )
         proc = _run_authentik_ssh_command(remote_snippet)
         if "ROLE_UPDATED_SUCCESS" in proc.stdout:
+            caller = getattr(request.state, "user", None) or {}
+            agent_ledger.record_action("user_role_changed", f"Rol de {username} -> {new_role}", entity_type="user", entity_id=username,
+                                       actor=str(caller.get("preferred_username") or caller.get("sub") or "unknown"),
+                                       detail={"username": username, "role": new_role})
             return {"status": "success", "username": username, "role": new_role}
         if "USER_NOT_FOUND" in proc.stdout:
             raise HTTPException(status_code=404, detail="Usuario no encontrado en Authentik")
@@ -746,10 +772,10 @@ def get_system_config():
         {"key": "GOOGLE_API_KEY", "value": os.getenv("GOOGLE_API_KEY", "••••••••"), "category": "LLM_AGENTS", "description": "API Key de Google Gemini Pro"},
         {"key": "GROQ_API_KEY", "value": os.getenv("GROQ_API_KEY", "••••••••"), "category": "LLM_AGENTS", "description": "API Key de Groq Llama 3"},
         {"key": "OLLAMA_BASE_URL", "value": os.getenv("OLLAMA_BASE_URL", "***REMOVED-SECRET***"), "category": "LLM_AGENTS", "description": "URL base de Ollama local"},
-        {"key": "WAZUH_API_ENDPOINT", "value": "https://192.0.2.15:55000", "category": "SECURITY_AGENTS", "description": "Endpoint API del Manager Wazuh EDR"},
+        {"key": "WAZUH_API_ENDPOINT", "value": "https://192.0.2.17:55000", "category": "SECURITY_AGENTS", "description": "Endpoint API del Manager Wazuh EDR"},
         {"key": "ZEEK_SENSOR_INTERFACE", "value": "eth0", "category": "SECURITY_AGENTS", "description": "Interfaz de red monitoreada por Zeek NIDS"},
         {"key": "AUTHENTIK_URL", "value": org_config.AUTHENTIK_URL, "category": "INTEGRATIONS", "description": "URL Central de Authentik IDP"},
-        {"key": "GITLAB_URL", "value": os.getenv("GITLAB_URL", "http://192.0.2.12"), "category": "INTEGRATIONS", "description": "URL de Instancia GitLab/Gitea"},
+        {"key": "GITLAB_URL", "value": os.getenv("GITLAB_URL", "http://192.0.2.14"), "category": "INTEGRATIONS", "description": "URL de Instancia GitLab/Gitea"},
         {"key": "AUTO_REMEDIATION_ENABLED", "value": "true", "category": "POLICY_RULES", "description": "Auto-remediación autónoma de parches sin confirmación previa"},
         {"key": "SLA_CRITICAL_HOURS", "value": "1", "category": "POLICY_RULES", "description": "SLA máximo para remediación de hallazgos CRÍTICOS (Horas)"},
         {"key": "SCAN_CRON_SCHEDULE", "value": "0 2 * * *", "category": "POLICY_RULES", "description": "Cron para escaneo recurrente SAST/SCA nocturno"}

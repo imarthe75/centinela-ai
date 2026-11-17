@@ -43,7 +43,7 @@ def refuse_reason(url: str) -> Optional[str]:
     u = urlparse(url)
     if u.scheme not in ("http", "https") or not u.hostname:
         return "only http(s) URLs are allowed"
-    if u.hostname in _OWN_HOSTS or (u.port in _OWN_PORTS and u.hostname in ("127.0.0.1", "localhost", "192.0.2.15")):
+    if u.hostname in _OWN_HOSTS or (u.port in _OWN_PORTS and u.hostname in ("127.0.0.1", "localhost", "192.0.2.17")):
         return "target is Centinela's own stack (fuzzing it already caused an outage)"
     return None
 

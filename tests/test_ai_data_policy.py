@@ -22,7 +22,7 @@ class TestClassifier(unittest.TestCase):
         self.assertEqual(pol.classify_prompt("Explica qué es un XSS reflejado en términos simples."), pol.PUBLIC)
 
     def test_internal_signals(self):
-        self.assertEqual(pol.classify_prompt("El servidor 192.0.2.15 expone el puerto 22"), pol.INTERNAL)
+        self.assertEqual(pol.classify_prompt("El servidor 192.0.2.17 expone el puerto 22"), pol.INTERNAL)
         self.assertEqual(pol.classify_prompt("host auth.example.internal sin HSTS"), pol.INTERNAL)
 
     def test_code_signals_win_over_internal(self):

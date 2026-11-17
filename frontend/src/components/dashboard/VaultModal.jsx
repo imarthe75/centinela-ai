@@ -75,7 +75,7 @@ export default function VaultModal() {
                                 />
                                 <p className="text-[11px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
                                     <CheckCircle2 size={10} />
-                                    Cifrado AES-256 en HashiCorp Vault. La llave privada se guarda de forma totalmente confidencial.
+                                    Cifrado AES-256 en OpenBao. La llave privada se guarda de forma totalmente confidencial.
                                 </p>
                             </div>
                         ) : (
@@ -99,7 +99,7 @@ export default function VaultModal() {
                                 </div>
                                 <p className="text-[11px] text-amber-400/60 mt-2 flex items-center gap-1 font-medium">
                                     <CheckCircle2 size={10} />
-                                    Cifrado AES-256 en HashiCorp Vault. No se almacena en la BD ni en el frontend.
+                                    Cifrado AES-256 en OpenBao. No se almacena en la BD ni en el frontend.
                                 </p>
                             </div>
                         )}

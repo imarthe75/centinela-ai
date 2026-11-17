@@ -95,3 +95,5 @@ Cada migración que crea o cambia un objeto lleva su `COMMENT ON`; el diccionari
 - [ ] README del módulo y ADR actualizados si aplica.
 
 Detectores de Centinela relacionados: `API-NO-CONTRACT` (repositorio con rutas y sin contrato OpenAPI), `API-ENDPOINT-UNDOCUMENTED` (controlador con endpoints sin `@Operation`).
+
+Corrección de cada regla y el resto del catálogo: skill `prevencion-hallazgos-seguridad-calidad`.

@@ -13,6 +13,7 @@ import psycopg2
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 import pandas as pd
+from core import access_scope, suppression_lifecycle
 from core import db_manager, itdr_engine, clickhouse_manager, ebpf_telemetry, attack_graph, ueba_engine, soar_engine, deduplication_engine
 from pydantic import BaseModel
 from typing import Optional
@@ -50,8 +51,10 @@ class ManualRemediationModel(BaseModel):
 def get_stats():
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            # ADR-0019: every count below is limited to the caller's projects ("" for an unrestricted caller).
+            VF, VP = access_scope.vuln_filter("v")
             # Hallazgos totales de vulnerabilidades
-            cur.execute("SELECT COUNT(id) as total FROM public.vulnerability_log")
+            cur.execute("SELECT COUNT(v.id) as total FROM public.vulnerability_log v WHERE TRUE" + VF, VP)
             total = cur.fetchone()["total"]
             
             # Cola de IA
@@ -59,8 +62,7 @@ def get_stats():
                 SELECT COUNT(*) as count 
                 FROM public.vulnerability_log v 
                 LEFT JOIN public.remediation_history r ON v.id = r.vuln_id 
-                WHERE r.id IS NULL
-            """)
+                WHERE r.id IS NULL""" + VF, VP)
             pending_ia = cur.fetchone()["count"]
             
             # Críticos y Altos -- UPPER() here because severity casing isn't guaranteed uniform
@@ -72,10 +74,10 @@ def get_stats():
             # narrower, context-aware verdict when one exists (see
             # deduplication_engine.assess_real_risk_verdict()), NULL otherwise (falls back to the
             # raw value, so this is a no-op for any row never re-assessed).
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(COALESCE(real_severity, severity)) = 'CRITICAL' AND status <> 'SUPPRESSED'")
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log v WHERE UPPER(COALESCE(v.real_severity, v.severity)) = 'CRITICAL' AND v.status <> 'SUPPRESSED'" + VF, VP)
             critical = cur.fetchone()["count"]
 
-            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log WHERE UPPER(COALESCE(real_severity, severity)) = 'HIGH' AND status <> 'SUPPRESSED'")
+            cur.execute("SELECT COUNT(*) as count FROM public.vulnerability_log v WHERE UPPER(COALESCE(v.real_severity, v.severity)) = 'HIGH' AND v.status <> 'SUPPRESSED'" + VF, VP)
             high = cur.fetchone()["count"]
 
             # Real breakdown by asset category (Infraestructura vs Código) x finding category
@@ -94,19 +96,26 @@ def get_stats():
                     COUNT(*) as count
                 FROM public.vulnerability_log v
                 LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
-                WHERE v.status <> 'SUPPRESSED'
+                WHERE v.status <> 'SUPPRESSED'""" + VF + """
                 GROUP BY asset_category, v.finding_category
-            """)
+            """, VP)
             breakdown = {"infra_vulnerabilities": 0, "code_vulnerabilities": 0,
+                         "infra_compliance": 0, "code_compliance": 0,
                          "infra_informational": 0, "code_informational": 0}
+            # COMPLIANCE = accessibility (WCAG): its own bucket, never folded into the vulnerability headline.
+            bucket_of = {"VULNERABILITY": "vulnerabilities", "COMPLIANCE": "compliance"}
             for row in cur.fetchall():
                 key = f"{'infra' if row['asset_category'] == 'INFRA' else 'code'}_" \
-                      f"{'vulnerabilities' if row['finding_category'] == 'VULNERABILITY' else 'informational'}"
-                breakdown[key] = row["count"]
+                      f"{bucket_of.get(row['finding_category'], 'informational')}"
+                breakdown[key] += row["count"]
             real_vulnerabilities_total = breakdown["infra_vulnerabilities"] + breakdown["code_vulnerabilities"]
 
             # Pendientes de aprobación
-            cur.execute("SELECT COUNT(*) as count FROM public.remediation_history WHERE approval_token = 'PENDING_APPROVAL'")
+            if VF:
+                cur.execute("""SELECT COUNT(*) as count FROM public.remediation_history r JOIN public.vulnerability_log v ON v.id = r.vuln_id
+                               WHERE r.approval_token = 'PENDING_APPROVAL'""" + VF, VP)
+            else:
+                cur.execute("SELECT COUNT(*) as count FROM public.remediation_history WHERE approval_token = 'PENDING_APPROVAL'")
             pending_approval = cur.fetchone()["count"]
 
             # Real, fleet-wide ISO 27001/25010 compliance score -- percentage of the fixed, real
@@ -118,9 +127,8 @@ def get_stats():
             # other -- see that function's docstring for the disagreeing-formula history.
             from auditors.compliance_mapper import compute_iso_control_coverage
             cur.execute("""
-                SELECT cve_id FROM public.vulnerability_log
-                WHERE status IN ('OPEN', 'NEW', 'CORRELATED', 'REOPENED')
-            """)
+                SELECT v.cve_id FROM public.vulnerability_log v
+                WHERE v.status IN ('OPEN', 'NEW', 'CORRELATED', 'REOPENED')""" + VF, VP)
             open_cves = [{"cve_id": row["cve_id"]} for row in cur.fetchall()]
             iso_compliance_percentage = compute_iso_control_coverage(open_cves)["score"]
 
@@ -129,6 +137,9 @@ def get_stats():
                 "real_vulnerabilities_total": real_vulnerabilities_total,
                 "infra_vulnerabilities": breakdown["infra_vulnerabilities"],
                 "code_vulnerabilities": breakdown["code_vulnerabilities"],
+                "infra_compliance": breakdown["infra_compliance"],
+                "code_compliance": breakdown["code_compliance"],
+                "compliance_total": breakdown["infra_compliance"] + breakdown["code_compliance"],
                 "infra_informational": breakdown["infra_informational"],
                 "code_informational": breakdown["code_informational"],
                 "pending_ia": pending_ia,
@@ -165,7 +176,7 @@ def get_extended_stats():
             # Cache Authentik active users count for 60s to keep /api/stats/extended ultra-fast (<10ms)
             now_ts = time.time()
             if not hasattr(get_extended_stats, "_user_cache") or (now_ts - getattr(get_extended_stats, "_user_cache_ts", 0) > 60.0):
-                users_count = getattr(get_extended_stats, "_user_cache", 26)
+                users_count = getattr(get_extended_stats, "_user_cache", None)   # unknown until Authentik answers: never a made-up number
                 try:
                     remote_snippet = (
                         "from authentik.core.models import User; "
@@ -176,7 +187,7 @@ def get_extended_stats():
                     if "JSON_DATA:" in proc.stdout:
                         users_count = int(proc.stdout.split("JSON_DATA:")[1].strip().splitlines()[0])
                 except Exception as auth_e:
-                    # Best-effort cache refresh -- falls back to the last known/default count
+                    # Best-effort cache refresh -- falls back to the last known count (None if never read)
                     # (see get_extended_stats._user_cache) rather than failing the whole
                     # /api/stats/extended response over a transient SSH/Authentik hiccup. Still
                     # printed, not silently swallowed (Rule #6).
@@ -228,11 +239,11 @@ def get_runtime_alerts():
                            CASE
                                WHEN r.rule_name LIKE 'ZEEK%' THEN 'Red interna / Sensor Zeek'
                                WHEN r.rule_name LIKE 'ITDR%' THEN 'Proveedor de identidad (Authentik)'
-                               WHEN r.rule_name LIKE 'EBPF%' THEN 'Kernel Servidor Centinela (192.0.2.15)'
-                               ELSE 'Servidor Centinela-AI (192.0.2.15)'
+                               WHEN r.rule_name LIKE 'EBPF%' THEN 'Kernel Servidor Centinela (192.0.2.17)'
+                               ELSE 'Servidor Centinela-AI (192.0.2.17)'
                            END
                        ) as asset_name,
-                       COALESCE(i.endpoint, '192.0.2.15') as endpoint
+                       COALESCE(i.endpoint, '192.0.2.17') as endpoint
                 FROM public.runtime_alerts r
                 LEFT JOIN public.infra_inventory i ON r.asset_id = i.id
                 WHERE r.rule_name NOT IN (
@@ -285,9 +296,9 @@ def get_severity_by_category():
                     COUNT(*) as count
                 FROM public.vulnerability_log v
                 LEFT JOIN public.infra_inventory i ON v.asset_id = i.id
-                WHERE v.finding_category = 'VULNERABILITY'
+                WHERE v.finding_category = 'VULNERABILITY'""" + access_scope.vuln_filter("v")[0] + """
                 GROUP BY asset_category, UPPER(COALESCE(v.real_severity, v.severity))
-            """)
+            """, access_scope.vuln_filter("v")[1])
             infra = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
             code = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
             for row in cur.fetchall():
@@ -534,17 +545,21 @@ def get_remediation_history(asset: Optional[str] = None, category: Optional[str]
                 query += " AND i.asset_name ILIKE %s"
                 params.append(f"%{asset}%")
 
-            # Optional finding_category filter (VULNERABILITY | INFORMATIONAL). The inventory
+            # Optional finding_category filter (VULNERABILITY | COMPLIANCE | INFORMATIONAL). The inventory
             # card links here with category=VULNERABILITY so the drill-in list matches the
             # exact count shown on the card -- both are then "finding_category='VULNERABILITY'
             # and open", the single source of truth. Without the param the queue returns every
             # category (matching the SOAR UI's own "CATEGORÍA: TODAS" default).
-            if category and category.upper() in ("VULNERABILITY", "INFORMATIONAL"):
+            if category and category.upper() in ("VULNERABILITY", "COMPLIANCE", "INFORMATIONAL"):
                 query += " AND v.finding_category = %s"
                 params.append(category.upper())
 
             if str(status_scope or "pending").lower() != "all":
                 query += " AND v.status <> 'RESOLVED'"
+
+            scope_sql, scope_params = access_scope.sql_filter("i.asset_name")   # ADR-0019: only the caller's projects
+            query += scope_sql
+            params += scope_params
 
             query += " ORDER BY v.id DESC NULLS LAST LIMIT 5000"
             
@@ -633,13 +648,16 @@ def get_remediation_script(vuln_id: str):
             raise HTTPException(status_code=404, detail="Script path not found")
             
         script_path = res["script_path"]
-        if os.path.exists(script_path):
+        if script_path and os.path.exists(script_path):
             with open(script_path, "r") as f:
                 content = f.read()
             return {"content": content, "filename": os.path.basename(script_path)}
         else:
             raise HTTPException(status_code=404, detail=f"Script file not found on disk: {script_path}")
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error("remediation script read failed for %s", vuln_id, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -759,9 +777,40 @@ def investigate_alert(data: dict):
 
 
 class TicketModel(BaseModel):
-    title: str
-    description: str
-    target: str # "redmine" or "gitea"
+    """Ticket for a finding. target: "gitlab" (an issue in the finding's own GitLab project), "redmine" or "gitea"."""
+    title: str = ""
+    description: str = ""
+    target: str
+
+
+def _gitlab_issue_for_finding(vuln_id: str, vuln: dict, note: str) -> dict:
+    """Issue in the finding's own GitLab project. Idempotent: a finding that already has an issue returns that one (agent_actions)."""
+    from core import ticketing
+    with db_manager.get_db_cursor() as cur:
+        cur.execute("""SELECT detail->>'url', detail->>'id' FROM public.agent_actions
+                        WHERE action_type = 'gitlab_issue_created' AND entity_type = 'vulnerability' AND entity_id = %s
+                        ORDER BY created_at DESC LIMIT 1""", (str(vuln_id),))
+        prev = cur.fetchone()
+    if prev and prev[0]:
+        return {"status": "exists", "url": prev[0], "id": prev[1]}
+    parts = [f"Hallazgo de Centinela `{vuln['cve_id']}` ({vuln['severity']}) en `{vuln['asset_name']}`."]
+    if vuln.get("url_path"):
+        parts.append(f"Ubicación: `{vuln['url_path']}`")
+    for label, key in (("Descripción", "description"), ("Resumen", "executive_summary"), ("Cómo corregirlo", "developer_steps")):
+        if vuln.get(key):
+            parts.append(f"### {label}\n{vuln[key]}")
+    if note:
+        parts.append(f"### Nota\n{note}")
+    try:
+        out = ticketing.send_gitlab_issue(vuln, "\n\n".join(parts))
+    except ticketing.TicketingNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ticketing.TicketingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    agent_ledger.record_action("gitlab_issue_created", f"Issue {out.get('project')}#{out.get('id')} para {vuln['cve_id']}",
+                               entity_type="vulnerability", entity_id=vuln_id, asset_id=str(vuln.get("asset_id")), actor="dashboard",
+                               detail={"url": out.get("url"), "id": out.get("id"), "project": out.get("project")})
+    return out
 
 
 @router.post("/api/remediation/{vuln_id}/ticket")
@@ -769,7 +818,8 @@ def create_soar_ticket(vuln_id: str, body: TicketModel):
     try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT v.cve_id, COALESCE(v.real_severity, v.severity) AS severity, i.asset_name, v.description
+                SELECT v.cve_id, COALESCE(v.real_severity, v.severity) AS severity, i.asset_name, v.description, v.url_path,
+                       v.executive_summary, v.developer_steps, i.id AS asset_id
                 FROM public.vulnerability_log v
                 JOIN public.infra_inventory i ON v.asset_id = i.id
                 WHERE v.id = %s
@@ -793,8 +843,10 @@ Manual Solution Details:
         
         from core import ticketing
         target = body.target.lower().strip()
+        if target == "gitlab":
+            return _gitlab_issue_for_finding(vuln_id, vuln, body.description)
         if target not in ticketing.TARGETS:
-            raise HTTPException(status_code=400, detail=f"target debe ser uno de {ticketing.TARGETS}")
+            raise HTTPException(status_code=400, detail=f"target debe ser uno de {('gitlab',) + ticketing.TARGETS}")
         try:
             return ticketing.send_ticket(target, vuln, desc)
         except ticketing.TicketingNotConfigured as e:
@@ -868,6 +920,10 @@ def create_suppression(body: SuppressionModel):
         raise HTTPException(status_code=400,
                             detail=f"scope must be one of {sorted(_VALID_SUPPRESSION_SCOPES)}")
     try:
+        expires_at = suppression_lifecycle.validate_expiry(scope, body.expires_at)
+    except suppression_lifecycle.SuppressionPolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 INSERT INTO public.finding_suppressions
@@ -875,7 +931,7 @@ def create_suppression(body: SuppressionModel):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
             """, (body.asset_id, body.cve_id, body.url_path_pattern, body.fingerprint_hash,
-                  body.reason.strip(), scope, body.created_by or "analyst", body.expires_at))
+                  body.reason.strip(), scope, body.created_by or "analyst", expires_at))
             row = cur.fetchone()
 
             # Retro-suppress rows already in the log that match, so the effect is immediate and
@@ -934,22 +990,22 @@ def list_suppression_proposals(status: str = "PENDING"):
                        s.created_at, s.reviewed_by, s.reviewed_at, s.review_note,
                        (SELECT COUNT(*) FROM public.vulnerability_log v
                          WHERE v.asset_id = s.asset_id AND v.cve_id = s.cve_id
-                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'ANALYST_OVERRIDDEN')
+                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW', 'ANALYST_OVERRIDDEN')
                            AND v.status NOT IN ('RESOLVED')) AS affected_count,
                        (SELECT MAX(v.severity) FROM public.vulnerability_log v
                          WHERE v.asset_id = s.asset_id AND v.cve_id = s.cve_id
-                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'ANALYST_OVERRIDDEN')) AS tool_severity,
+                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW', 'ANALYST_OVERRIDDEN')) AS tool_severity,
                        (SELECT MAX(v.business_impact) FROM public.vulnerability_log v
                          WHERE v.asset_id = s.asset_id AND v.cve_id = s.cve_id
-                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'ANALYST_OVERRIDDEN')) AS explanation,
+                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW', 'ANALYST_OVERRIDDEN')) AS explanation,
                        (SELECT (ARRAY_AGG(v.url_path))[1:6] FROM public.vulnerability_log v
                          WHERE v.asset_id = s.asset_id AND v.cve_id = s.cve_id
-                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'ANALYST_OVERRIDDEN')
+                           AND v.risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW', 'ANALYST_OVERRIDDEN')
                            AND v.status NOT IN ('RESOLVED')) AS sample_locations
                 FROM public.finding_suppressions s
                 LEFT JOIN public.infra_inventory i ON s.asset_id = i.id
                 {where}
-                ORDER BY s.created_at DESC LIMIT 500
+                ORDER BY s.created_at DESC LIMIT 5000
             """, params)
             return {"proposals": cur.fetchall()}
     except Exception as e:
@@ -996,7 +1052,7 @@ def approve_suppression_proposal(sid: str, body: SuppressionReviewModel = Suppre
                 raise HTTPException(status_code=404, detail="Propuesta no encontrada o ya revisada")
             cur.execute("""
                 SELECT id, fingerprint_hash FROM public.vulnerability_log
-                WHERE asset_id = %s AND cve_id = %s AND risk_verdict = 'CONFIRMED_NO_RISK'
+                WHERE asset_id = %s AND cve_id = %s AND risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW')
                   AND status NOT IN ('SUPPRESSED', 'RESOLVED')
             """, (row["asset_id"], row["cve_id"]))
             targets = cur.fetchall()
@@ -1047,7 +1103,7 @@ def reject_suppression_proposal(sid: str, body: SuppressionReviewModel = Suppres
                 raise HTTPException(status_code=404, detail="Propuesta no encontrada o ya revisada")
             cur.execute("""
                 SELECT id, severity, detected_at FROM public.vulnerability_log
-                WHERE asset_id = %s AND cve_id = %s AND risk_verdict = 'CONFIRMED_NO_RISK'
+                WHERE asset_id = %s AND cve_id = %s AND risk_verdict IN ('CONFIRMED_NO_RISK', 'NO_RISK_PENDING_REVIEW')
             """, (row["asset_id"], row["cve_id"]))
             reverted = 0
             for v in cur.fetchall():
@@ -1081,9 +1137,11 @@ def deactivate_suppression(sid: str):
                 "UPDATE public.finding_suppressions SET active = FALSE WHERE id = %s RETURNING id",
                 (sid,))
             row = cur.fetchone()
+            # Without this the findings it had parked stayed SUPPRESSED for good (ADR-0022 §1).
+            reopened = suppression_lifecycle.release_findings(cur, [sid]) if row else []
         if not row:
             raise HTTPException(status_code=404, detail="Suppression not found")
-        return {"status": "deactivated", "id": sid}
+        return {"status": "deactivated", "id": sid, "reopened_ids": reopened}
     except HTTPException:
         raise
     except Exception as e:
@@ -1103,6 +1161,10 @@ def suppress_from_soar(vuln_id: str, body: SuppressionModel):
         raise HTTPException(status_code=400,
                             detail=f"scope must be one of {sorted(_VALID_SUPPRESSION_SCOPES)}")
     try:
+        expires_at = suppression_lifecycle.validate_expiry(scope, body.expires_at)
+    except suppression_lifecycle.SuppressionPolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
         with db_manager.get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT v.id, v.cve_id, v.asset_id, v.fingerprint_hash, v.url_path,
@@ -1121,11 +1183,11 @@ def suppress_from_soar(vuln_id: str, body: SuppressionModel):
             reason = (body.reason or "").strip() or f"Suprimido desde SOAR para {vuln['cve_id']}"
             cur.execute("""
                 INSERT INTO public.finding_suppressions
-                (asset_id, cve_id, fingerprint_hash, reason, scope, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (asset_id, cve_id, fingerprint_hash, reason, scope, created_by, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
             """, (vuln["asset_id"], vuln["cve_id"], vuln["fingerprint_hash"],
-                  reason, scope, body.created_by or "analyst"))
+                  reason, scope, body.created_by or "analyst", expires_at))
             supp = cur.fetchone()
             cur.execute("UPDATE public.vulnerability_log SET status = 'SUPPRESSED' WHERE id = %s",
                         (vuln_id,))

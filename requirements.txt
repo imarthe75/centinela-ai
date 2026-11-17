@@ -20,9 +20,11 @@ pandas
 typing-extensions
 WeasyPrint
 docker
-semgrep
-prowler
 neo4j
 pytest
 hypothesis
 alembic
+python-multipart
+dnspython
+xlsxwriter
+ast-grep-cli

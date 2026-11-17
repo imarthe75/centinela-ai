@@ -158,7 +158,7 @@ def run_cis_audit(asset_name: str, asset_ip: str) -> Dict[str, Any]:
     from sentinel import get_ansible_user, get_ssh_private_key, get_sudo_password
 
     # Some infra_inventory endpoints are stored as full connection URIs
-    # (e.g. "postgresql://192.0.2.13:5432" for a Database asset), not a bare host -- passing that
+    # (e.g. "postgresql://192.0.2.15:5432" for a Database asset), not a bare host -- passing that
     # straight into the ansible inventory line would produce a malformed host entry and silently
     # fail every check as unreachable. Strip scheme/credentials/port/path down to a bare host,
     # same normalization already applied to `endpoint` elsewhere in this codebase (see

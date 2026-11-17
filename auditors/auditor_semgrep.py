@@ -82,16 +82,48 @@ def detect_language_rulesets(path: str) -> list[str]:
         if len(found_exts) == len(set(_LANG_RULESETS.values())):
             break  # every known language already found, no need to keep walking
     lang_rulesets = sorted({_LANG_RULESETS[e] for e in found_exts})
-    return ["p/owasp-top-ten", "p/secrets"] + lang_rulesets
+    # p/security-audit (added 2026-11-06): measured on 3 repos (Java, Angular, Python) it added
+    # 0-11 findings each, all real classes the base set misses (disabled CSRF/cert validation,
+    # weak random, XXE-prone parsers, eval()).
+    return ["p/owasp-top-ten", "p/security-audit", "p/secrets"] + lang_rulesets
 
 
 class SemgrepFindings(list):
     """List of findings that also says whether the run was complete. An empty list is ambiguous (clean code, or semgrep failed);
     only a complete run may close findings it no longer reproduces (persist_findings -> reconcile_resolved_findings)."""
-    def __init__(self, items=(), asset_id=None, complete: bool = False):
+    def __init__(self, items=(), asset_id=None, complete: bool = False, skipped_files=()):
         super().__init__(items)
         self.asset_id = asset_id
         self.complete = complete
+        # Repo-relative files semgrep reported but did not fully analyze (per-file Timeout and
+        # similar "warn"-level errors). Their open findings must survive reconciliation.
+        self.skipped_files = set(skipped_files)
+
+
+# Whole-run limit. 300 s was too short for large repos even before p/security-audit (measured
+# 2026-11-06: nomina took 16 min under load with the old rulesets), and on timeout the entire
+# run is lost -- the repo silently gets no Semgrep findings at all.
+SEMGREP_TIMEOUT_S = int(os.getenv("SEMGREP_TIMEOUT_S", "1800"))
+
+
+def run_semgrep(cmd: list, timeout_s: int) -> subprocess.CompletedProcess:
+    """
+    Runs semgrep in its own process group. subprocess.run(timeout=) kills only the direct child
+    (pysemgrep); its semgrep-core worker kept running orphaned, burning CPU for minutes after
+    the run was abandoned (seen live 2026-11-06). On timeout the whole group is killed.
+    """
+    import signal
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def scan_path(path: str, asset_id: str, asset_name: str) -> list[dict]:
@@ -100,7 +132,7 @@ def scan_path(path: str, asset_id: str, asset_name: str) -> list[dict]:
     cmd = [SEMGREP_BIN, "--json", "--quiet"] + [f"--config={r}" for r in rulesets] + [path]
     print(f"🔍 [Semgrep] Scanning {path} with rulesets: {rulesets}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = run_semgrep(cmd, SEMGREP_TIMEOUT_S)
         if result.returncode not in (0, 1):
             print(f"⚠️ [Semgrep] Non-zero exit {result.returncode}: {result.stderr[:200]}")
             return SemgrepFindings(asset_id=asset_id)
@@ -152,11 +184,34 @@ def scan_path(path: str, asset_id: str, asset_name: str) -> list[dict]:
         })
     # Errors at level "error" (a file that failed to parse, a rule that crashed) mean part of the tree was not analyzed:
     # the findings are still persisted, but the run cannot close findings it simply did not get to see.
-    hard_errors = [e for e in (data.get("errors") or []) if str(e.get("level", "error")).lower() == "error"]
+    errors = data.get("errors") or []
+    hard_errors = [e for e in errors if str(e.get("level", "error")).lower() == "error"]
     if hard_errors:
         print(f"⚠️ [Semgrep] {len(hard_errors)} error(s) during the scan of {asset_name}: findings will not be reconciled this run")
+    # A per-file Timeout is only "warn" level, but the rules that timed out never ran on that file
+    # (seen live 2026-11-06: 25 timeouts in one Java repo, on the SQL-injection rules). Treating
+    # the run as complete closed open findings in exactly the files that were not checked.
+    skipped = skipped_files_from_errors(errors, path)
+    if skipped:
+        print(f"⚠️ [Semgrep] {len(skipped)} file(s) not fully analyzed in {asset_name} (timeout): their open findings are kept")
     print(f"✅ [Semgrep] {len(findings)} findings for {asset_name} at {path}")
-    return SemgrepFindings(findings, asset_id=asset_id, complete=not hard_errors)
+    return SemgrepFindings(findings, asset_id=asset_id, complete=not hard_errors, skipped_files=skipped)
+
+
+def skipped_files_from_errors(errors: list, root: str) -> set:
+    """Repo-relative paths of files semgrep reported an error for (any level) -- not fully analyzed."""
+    out = set()
+    for e in errors or []:
+        p = e.get("path")
+        if not p:
+            continue
+        try:
+            if os.path.isabs(p):
+                p = os.path.relpath(p, root)
+        except ValueError:
+            pass
+        out.add(p)
+    return out
 
 
 def persist_findings(findings: list[dict]):
@@ -187,6 +242,14 @@ def persist_findings(findings: list[dict]):
             persisted += 1
         # Until 2026-10-20 semgrep never closed anything: a fixed finding stayed open forever (seen live on proyecto-e, where a
         # corrected path traversal kept showing as open). Only a complete run reconciles.
+        skipped = getattr(findings, "skipped_files", set())
+        if complete and asset_id and skipped:
+            cur.execute(
+                "SELECT cve_id, url_path FROM public.vulnerability_log WHERE asset_id = %s AND scan_engine = 'semgrep' "
+                "AND status NOT IN ('RESOLVED', 'SUPPRESSED')", (asset_id,))
+            for cve_id, url_path in cur.fetchall():
+                if (url_path or "").rsplit(":", 1)[0] in skipped:
+                    active.add(deduplication_engine.calculate_fingerprint(asset_id, cve_id, url_path))
         resolved = deduplication_engine.reconcile_resolved_findings(cur, asset_id, "semgrep", active) if (complete and asset_id) else 0
     print(f"💾 [Semgrep] Persisted {persisted} findings to vulnerability_log" + (f", {resolved} no longer reproduced -> RESOLVED" if resolved else ""))
 

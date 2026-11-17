@@ -1,6 +1,7 @@
 // Generated from Dashboard.jsx by scratch/extract_dashboard.mjs (ADR-0008 #2): code moved verbatim; state comes from DashboardContext.
 import { Activity, ChevronDown, Users } from 'lucide-react'
 import { useDashboard } from './DashboardContext'
+import AccessScopesPanel from './AccessScopesPanel'
 
 export default function UsersView() {
   const { currentUserRole, fetchUsers, handleUpdateUserRole, usersList, usersLoading } = useDashboard()
@@ -88,6 +89,7 @@ export default function UsersView() {
                         </table>
                     </div>
                 </div>
+                {currentUserRole === 'Admin' && <AccessScopesPanel />}
             </div>
   )
 }

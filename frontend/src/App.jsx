@@ -5,8 +5,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 10_000, refetchOnWindowFocus: false, retry: 1 } } });
 import Dashboard from './components/Dashboard';
+import { OFFLINE_ACCESS } from './authConfig';
 
 const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : "http://localhost";
+
 
 const IDP = (import.meta.env.VITE_AUTH_URL || 'https://auth.example.internal').replace(/\/$/, '');
 const APP_SLUG = import.meta.env.VITE_AUTH_APP_SLUG || 'centinela-ai';
@@ -17,8 +19,8 @@ const oidcConfig = {
   redirect_uri: currentOrigin.endsWith('/') ? currentOrigin : currentOrigin + '/',
   post_logout_redirect_uri: currentOrigin.endsWith('/') ? currentOrigin : currentOrigin + '/',
   response_type: "code",
-  scope: "openid profile email",
-  automaticSilentRenew: false,
+  scope: OFFLINE_ACCESS ? "openid profile email offline_access" : "openid profile email",
+  automaticSilentRenew: OFFLINE_ACCESS,
   metadata: {
     issuer: `${IDP}/application/o/${APP_SLUG}/`,
     authorization_endpoint: `${IDP}/application/o/authorize/`,

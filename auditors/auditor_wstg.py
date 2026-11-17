@@ -380,10 +380,12 @@ def audit_url_wstg(
     # -------------------------------------------------------------------------
     try:
         error_probe_url = _build_url(target_url, "/superset/log/?explode=events")
-        resp_err = sess.request("PATCH", error_probe_url, timeout=timeout, verify=False)
+        # No redirects: the probe evaluates THIS asset's error handling. Following a 30x sent PATCH/PURGE to another host
+        # (seen 2026-11-13: 192.0.2.20 redirecting to a name outside the inventory), i.e. probing something out of scope.
+        resp_err = sess.request("PATCH", error_probe_url, timeout=timeout, verify=False, allow_redirects=False)
 
         if resp_err.status_code not in (405, 500):
-            resp_err = sess.request("PURGE", target_url, timeout=timeout, verify=False)
+            resp_err = sess.request("PURGE", target_url, timeout=timeout, verify=False, allow_redirects=False)
 
         err_body = resp_err.text
         if resp_err.status_code in (405, 500, 502):

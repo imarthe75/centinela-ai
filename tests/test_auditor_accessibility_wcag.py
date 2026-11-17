@@ -100,7 +100,7 @@ class TestWCAGAccessibilityAudit(unittest.TestCase):
                     row = cur.fetchone()
                 self.assertIsNotNone(row, "finding was not persisted with the expected url_path")
                 self.assertIsNotNone(row[2], "fingerprint_hash must be populated for real dedup")
-                self.assertEqual(row[3], "VULNERABILITY", "a real accessibility finding must not be classified INFORMATIONAL")
+                self.assertEqual(row[3], "COMPLIANCE", "an accessibility finding is a compliance requirement: never INFORMATIONAL, never counted as a security vulnerability")
             finally:
                 with get_db_cursor() as cur:
                     cur.execute(

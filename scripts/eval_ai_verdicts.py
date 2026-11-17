@@ -21,7 +21,7 @@ sys.path.insert(0, ".")
 from core import db_manager  # noqa: E402
 from core import triage  # noqa: E402
 
-VERDICT_COLS = ["(sin veredicto)", "CONDITIONAL", "DOWNGRADED", "CONFIRMED_NO_RISK"]
+VERDICT_COLS = ["(sin veredicto)", "CONDITIONAL", "DOWNGRADED", "CONFIRMED_NO_RISK", "NO_RISK_PENDING_REVIEW", "AI_DOWNGRADE_REJECTED"]
 SMALL_SAMPLE = 30
 
 
@@ -39,7 +39,7 @@ def labelled_findings(cur, prefix_filter):
         cur.execute("""SELECT i.asset_name, v.id::text, v.cve_id, v.scan_engine, v.url_path, v.severity, COALESCE(v.real_severity, v.severity),
                               v.risk_verdict
                        FROM vulnerability_log v JOIN infra_inventory i ON i.id=v.asset_id
-                       WHERE """ + sql + """ AND v.finding_category='VULNERABILITY' AND v.status NOT IN %s""",
+                       WHERE """ + sql + """ AND v.finding_category IN ('VULNERABILITY','COMPLIANCE') AND v.status NOT IN %s""",
                     (*params, triage.CLOSED_STATUSES))
         for name, vid, rule, engine, up, sev_raw, sev_eff, verdict in cur.fetchall():
             file_, line = triage.parse_location(up)

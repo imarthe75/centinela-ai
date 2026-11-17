@@ -90,6 +90,14 @@ def register_asset(asset_name: str, criticality: str, tree: str) -> str:
         return cur.fetchone()[0]
 
 
+def _sbom(tree: str, asset_name: str) -> int:
+    from auditors import sbom_export
+    path = sbom_export.generate_sbom(tree, asset_name)
+    if not path:
+        raise RuntimeError("no se pudo generar el SBOM (ver traza de [SBOM])")
+    return sbom_export.summarize(path)["components"]
+
+
 def run_audit(asset_id, asset_name: str, tree: str) -> dict:
     """Mismos motores que GitLabIntegrator.scan_single_project, sin los que requieren la API de GitLab.
     Cada motor se aísla: uno que falle se registra con traza y no impide los demás."""
@@ -106,6 +114,7 @@ def run_audit(asset_id, asset_name: str, tree: str) -> dict:
         ("authz", lambda: auditor_authz.run_authz_audit(tree, asset_id=asset_id)),
         ("semgrep", lambda: auditor_semgrep.persist_findings(auditor_semgrep.scan_path(tree, asset_id, asset_name))),
         ("sonarqube", lambda: auditor_sonarqube.run_sonarqube_audit(tree, asset_id=asset_id, repo_display_name=asset_name)),
+        ("sbom", lambda: _sbom(tree, asset_name)),   # CycloneDX inventory (ADR-0022 §6); trivy is in this image too
     ]
     summary = {}
     from core import scan_comparison

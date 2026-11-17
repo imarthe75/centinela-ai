@@ -7,6 +7,9 @@ description: Estándar obligatorio de arquitectura, seguridad y rigor de proceso
 
 Guía técnica obligatoria para todo desarrollo dentro del ecosistema Centinela AI y para cualquier proyecto que Centinela audite (Spring Boot / Angular / Python). Su objetivo: **que el código nazca sin los hallazgos que Centinela detecta**, y que quien opera Centinela (humano o agente) **nunca presente como verificado algo que no lo está**.
 
+> **Versión para cualquier proyecto:** `prevencion-hallazgos-seguridad-calidad` (sin detalles internos de Centinela; es la que lleva el
+> kit de agente). Al añadir una regla al escáner, añade su fila a `references/catalogo-reglas.md` de esa skill: `tests/test_agent_kit.py` falla si falta.
+>
 > Última revisión: 2026-10-01. Fuente de verdad de las reglas: `auditors/` y `core/` en este repositorio; el catálogo completo vive en `docs/REGLAS_PROPIAS_CENTINELA.md` (Apéndice A lista las reglas añadidas después de su versión 3.0). **Si esta skill y el código discrepan, manda el código** (verifícalo antes de afirmar).
 
 ---
@@ -16,7 +19,7 @@ Guía técnica obligatoria para todo desarrollo dentro del ecosistema Centinela 
 1. **Severidad efectiva.** La severidad que pone la herramienta (`severity`) describe el *patrón* en abstracto. Centinela guarda aparte el veredicto sobre el caso concreto (`real_severity`, `risk_verdict`) y **nunca sobrescribe la cruda**. Todo consumidor debe usar **`COALESCE(real_severity, severity)`**; leer solo `severity` hace que dashboards, SLA y reportes discrepen entre sí.
    - Veredictos: `CONFIRMED_NO_RISK` (→ INFO), `DOWNGRADED` (nivel real estrictamente menor), `CONDITIONAL` (el riesgo bajo depende de un supuesto no verificado: **no** baja la severidad), `ANALYST_OVERRIDDEN` (un humano rechazó el veredicto; ningún proceso automático lo vuelve a tocar). La IA **nunca puede subir** una severidad.
    - Las propuestas de supresión de la IA quedan inactivas hasta revisión humana en la pantalla **Supresiones IA**. Aprobar suprime solo los hallazgos concretos evaluados (por huella), no toda la regla en el activo.
-2. **Vulnerabilidad vs. informativo.** `finding_category` separa `VULNERABILITY` de `INFORMATIONAL` (code smells, deuda ISO 25010/CMMI). No mezclar ambos en un total "de vulnerabilidades".
+2. **Vulnerabilidad, cumplimiento o informativo.** `finding_category` separa `VULNERABILITY` de `COMPLIANCE` (accesibilidad WCAG, con SLA) y de `INFORMATIONAL` (code smells, deuda ISO 25010/CMMI). No mezclarlos en un total "de vulnerabilidades": filtra con `= 'VULNERABILITY'`, no con `<> 'INFORMATIONAL'`.
 3. **Procedencia del análisis.** Un texto de remediación puede venir de: IA por hallazgo, **análisis de patrón compartido** ("heredado del hallazgo X, misma regla y activo"), **análisis de patrón redactado por el asistente**, o el motor heurístico determinístico. Los dos de patrón no revisan cada ocurrencia y lo dicen en su primera línea; **un reporte no debe presentarlos como revisados uno por uno**.
 4. **SLA.** Crítico 24 h / Alto 7 d / Medio 30 d / Bajo 90 d, calculado con la severidad **efectiva**.
 5. **Un hallazgo reabierto** (se resolvió y volvió) conserva esa marca en el texto del análisis; no lo trates como nuevo.
@@ -40,7 +43,7 @@ Reglas `OS-PATCH-SECURITY-UPDATES-PENDING`, `OS-EOL` (SO fuera de soporte), `OS-
 `TLS-CERT-EXPIRED` / `TLS-CERT-EXPIRING-SOON`, `TLS-CERT-SELF-SIGNED`, `TLS-CERT-WEAK-KEY`, `TLS-CERT-WEAK-SIGNATURE`, `TLS-LEGACY-PROTOCOL-ENABLED` (TLS 1.0/1.1), `TLS-WEAK-CIPHER-ENABLED`, `TLS-STATIC-RSA-KEX-ENABLED` (sin forward secrecy), `TLS-NOT-ENABLED` (servicio solo HTTP). Exigir TLS 1.2+/1.3, suites con ECDHE, llaves RSA ≥ 2048 o ECDSA, certificados de una CA interna válida y renovación automatizada.
 
 ### 1.4. Bases de datos (`auditor_db_hardening.py`)
-`DB-NO-TLS-ENCRYPTION` (cifrado en tránsito obligatorio), `DB-DEFAULT-PORT-EXPOSED` (puertos 5432/3306/27017/6379/7687: cambiarlos o restringir por firewall a la red privada/VPN), `DB-BANNER-LEAK`. Aplica a PostgreSQL, MySQL, Oracle, MSSQL, MongoDB, Cassandra, Neo4j, Redis/Valkey.
+`DB-NO-TLS-ENCRYPTION` (cifrado en tránsito obligatorio), `DB-DEFAULT-PORT-EXPOSED` (puertos 5432/3306/27017/6379/7687: cambiarlos o restringir por firewall a la red privada/VPN), `DB-BANNER-LEAK`. Aplica a PostgreSQL, MySQL, Oracle, MSSQL, MongoDB, Cassandra, Neo4j, Redis/Valkey. En PostgreSQL además: `DB-AUTH-TRUST` (CRITICAL: `trust` en `pg_hba.conf`), `DB-AUTH-MD5`, `DB-AUTH-CLEARTEXT-PASSWORD` (usar `scram-sha-256`) y `DB-TLS-BELOW-BASELINE` (`ssl_min_protocol_version = 'TLSv1.3'`); la sonda no envía contraseña y un servidor inalcanzable no genera hallazgos. Línea base completa: `postgres-audit/references/linea-base-servidor-postgresql.md`.
 
 ### 1.5. IaC y contenedores (`auditor_iac_k8s.py`, Checkov/Trivy)
 - **K8s:** prohibido `privileged: true` y `hostPath` sin justificación; obligatorio `readOnlyRootFilesystem: true`, `automountServiceAccountToken: false`.
@@ -86,7 +89,7 @@ Es el motor que cubre OWASP A01 / CWE-862 / ASVS V4.1.3. Entiende reglas de URL 
 - Regla práctica: mantener manifiestos al día (axios, vite, postcss…), versiones declaradas explícitas en Maven y sin dependencias muertas.
 
 ### 1.10. SAST nativo y Semgrep (`auditor_master_vulnerabilities.py`, `auditor_semgrep.py`)
-Ver §2–§4 para cada regla. Semgrep corre por lenguaje (Java, TS/JS, Python, Go, PHP, Rust, Terraform, Ruby, C#, C, Kotlin, Swift, Scala, Elixir; **no** hay ruleset oficial para C++/HTML/Bash/Dart → esos quedan sin cobertura, no "limpios").
+Ver §2–§4 para cada regla. Semgrep corre con `p/owasp-top-ten`, `p/security-audit` (desde 2026-11-06: CSRF/validación de certificados desactivados, aleatorio débil, XML sin defusedxml, `eval`) y `p/secrets`, más el conjunto de cada lenguaje (Java, TS/JS, Python, Go, PHP, Rust, Terraform, Ruby, C#, C, Kotlin, Swift, Scala, Elixir; **no** hay ruleset oficial para C++/HTML/Bash/Dart → esos quedan sin cobertura, no "limpios").
 
 ### 1.11. Configuración de GitLab (`auditor_gitlab_config.py`)
 `GITLAB-PROJECT-DEFAULT-BRANCH-UNPROTECTED`, `-BRANCH-FORCE-PUSH`, `-BRANCH-DEVELOPER-PUSH`, `-PUBLIC-VISIBILITY`, `-CI-VARIABLE-UNMASKED/-UNPROTECTED`, `-WEBHOOK-INSECURE`, `-MR-NO-PIPELINE-GATE`, `CICD-NO-PIPELINE`, y en `.gitlab-ci.yml`: `curl | sh`, imágenes `:latest`, secretos literales. Proteger la rama por defecto, prohibir force-push, enmascarar/proteger variables CI, webhooks con TLS y token, pipeline obligatorio en MR. *Con el token `monitor` (Developer) hay proyectos cuyos hooks/variables no se pueden leer: se reporta como parcial, nunca como limpio.*
@@ -106,6 +109,18 @@ Ver §2–§4 para cada regla. Semgrep corre por lenguaje (Java, TS/JS, Python, 
 | **WCAG nuevas** (`WCAG-1.4.4`, `2.4.1`, `2.4.2`, `4.1.2-IFRAME`, `1.3.5`, `2.2.2`, `1.4.2`, `1.2.2`, `4.1.1`, `2.4.6`, `2.5.3`, `2.4.7`) | Zoom bloqueado; sin enlace «saltar al contenido» en la plantilla raíz; sin `<title>`; `<iframe>` sin `title`; datos personales sin `autocomplete`; marquee/blink; audio con autoplay; video sin subtítulos; ids duplicados incondicionales; encabezados vacíos; `aria-label` que no contiene el texto visible; `:focus { outline: none }` sin alternativa | Ver §3.4 |
 
 ---
+
+### 1.13. Reglas de negocio del CORE/Starter (`auditor_business_rules.py`, 28-oct-2026; catálogo en la skill `reglas-negocio-core-starter`)
+Cada hallazgo cita el `RN` del catálogo. Son heurísticas sobre un archivo: si el bloqueo, el escape o la política viven en otra clase o en el proveedor de identidad, el hallazgo es falso positivo y se descarta con esa razón.
+| Regla | Corrección |
+|---|---|
+| `PASSWORD-MIN-LENGTH-BELOW-STANDARD` (LOW) | Mínimo **10** (RN-01-005) en `@Size`/`Validators.minLength`/`minlength`, más mayúscula, número y símbolo; también en el servidor. |
+| `ACCOUNT-ENUMERATION-RESPONSE` (MEDIUM) | La recuperación de contraseña responde igual exista o no la cuenta (RN-01-004, WSTG-IDNT-04); el detalle va solo al log. |
+| `AUDIT-LOG-MUTATION-ENDPOINT` (MEDIUM) | Bitácora/auditoría de solo consulta y solo agregar (RN-12-004, RN-13-006): sin `PUT/PATCH/DELETE` ni `repository.delete`. |
+| `SVG-UPLOAD-WITHOUT-SANITIZATION` (MEDIUM) | Sanitizar SVG antes de guardarlo o convertirlo a PNG (RN-15-015). |
+| `HTML-TEMPLATE-UNESCAPED-SUBSTITUTION` (MEDIUM) | Escapar cada valor al sustituir `{{var}}`/`[var]`/`${var}` en HTML (`HtmlUtils.htmlEscape`) o usar Thymeleaf `th:text` (RN-15-012). |
+| `SEQUENTIAL-FOLIO-FROM-MAX` (MEDIUM) | Folio con `SELECT ... FOR UPDATE`/`@Lock(PESSIMISTIC_WRITE)`, secuencia o `UPDATE ... RETURNING`, y `UNIQUE` (RN-11-011). |
+| `NUMERIC-CODE-STORED-AS-NUMBER` (INFORMATIONAL) | CP y claves geográficas como texto con máscara (`^[0-9]{5}$`), nunca `int`/`numeric` (RN-06-004/-007/-012). |
 
 ### 1.x Reglas de arquitectura y supply-chain añadidas el 12-oct-2026 (qué hacer cuando Centinela las reporta)
 | Regla | Corrección |
@@ -170,6 +185,7 @@ Ver §2–§4 para cada regla. Semgrep corre por lenguaje (Java, TS/JS, Python, 
 - Un guard (`canActivate`) o un `*ngIf` por rol **no es autorización**: el backend debe exigir el permiso (`AUTHZ-CLIENT-SIDE-*`).
 
 ### 3.4. Accesibilidad WCAG 2.1 AA (`auditor_accessibility_wcag.py`; requisito legal en proyectos de gobierno)
+Desde el 2026-10-29 estos hallazgos son de categoría **COMPLIANCE** («Cumplimiento»): conservan plazo (SLA), análisis de IA y lugar en el triage, pero no se suman a las vulnerabilidades de seguridad; en el reporte por activo tienen su propia sección.
 Reglas estáticas: `WCAG-1.1.1-IMG-MISSING-ALT`, `WCAG-1.3.1-FORM-CONTROL-NO-LABEL` (control sin `<label for>`/`aria-label`; en Angular el `id` debe coincidir con el `for` cuando se usa `formControlName`), `WCAG-2.4.4-EMPTY-INTERACTIVE-ELEMENT` (botón/enlace sin nombre), `WCAG-3.1.1-HTML-MISSING-LANG` (`<html lang="es">`), `tabindex` positivo, `div/span` clicable sin `role`/`tabindex`.
 - **Cuentan como nombre accesible:** `label="…"` y `[label]` de PrimeNG, `aria-label(ledby)`, `title`, texto visible, `th:text` de Thymeleaf. `pTooltip` **no** es nombre accesible para todos los lectores.
 - Son **cumplimiento**, no explotación: no los presentes como "vulnerabilidades críticas".
@@ -236,6 +252,12 @@ Reglas estáticas: `WCAG-1.1.1-IMG-MISSING-ALT`, `WCAG-1.3.1-FORM-CONTROL-NO-LAB
 - Webhooks de GitLab (`push-webhook`, `mr-webhook`): sin token configurado → 503; con token incorrecto → 401 (`hmac.compare_digest`). Prohibido `ignored`.
 - **Varias instancias de GitLab** (`core/gitlab_instances.py`): el payload solo aporta el `project_id`; la instancia se deduce del **host** de su URL y un host desconocido → 403. Nunca inyectar `oauth2:<token>@` en una URL controlada por el cliente; `clone_or_pull`, `GitLabAutoFixer` y `MRReviewer` se niegan a clonar de un host ajeno. Un `project_id` solo es único **por instancia**.
 
+### 6.3.1. Alcance de datos por proyecto (ADR-0019)
+- Toda ruta nueva de la API que devuelva datos de activos o hallazgos filtra por el alcance del usuario (`core/access_scope.allows()`,
+  `sql_filter()` o `vuln_filter()`) y se añade a `SCOPE_AWARE_PREFIXES`; si no filtra, queda cerrada para usuarios restringidos (es lo que hace
+  la dependencia común por omisión). Un agregado de toda la flota nunca se muestra a quien solo debe ver un proyecto.
+- Al llamar a la API desde un script o una sesión de agente: `Authorization: Bearer $API_SERVICE_TOKEN` (la API está en `enforce`).
+
 ### 6.4. Aislamiento de pruebas
 - Ningún test inserta en `vulnerability_log`, `agent_actions`, `infra_inventory` con nombres/IPs ficticios que distorsionen el inventario. Persistencia → **una conexión con `ROLLBACK` obligatorio** (parchear `db_manager.get_db_cursor`) o esquema temporal; limpiar con `addCleanup` (no `tearDown`, que no corre si `setUp` falla). Verificar después que no quedaron filas (`WHERE fingerprint_hash LIKE 'test-%'`).
 
@@ -291,12 +313,12 @@ Reglas estáticas: `WCAG-1.1.1-IMG-MISSING-ALT`, `WCAG-1.3.1-FORM-CONTROL-NO-LAB
 | OWASP API Security Top 10:2023 | 10 | 9 | Sin detector: API6 (flujos de negocio sensibles; no automatizable) |
 | OWASP LLM Top 10:2025 | 10 | 3 | Solo LLM01, LLM02, LLM06 |
 | OWASP ASVS 4.0 | 14 capítulos | 14 | A nivel de capítulo, no de los 286 requisitos |
-| OWASP WSTG v4.2 | 97 pruebas | 50 | Más 2 solo con motores externos; 45 sin detector (muchas exigen juicio o pruebas activas) |
-| WCAG 2.1 A+AA | 50 | 19 | Los 19 criterios verificables en código tienen regla; 7 exigen navegador y 24 juicio humano |
-| ISO/IEC 27001:2022 Anexo A | 93 | 26 | 37 organizativos, 8 de personas, 14 físicos y el resto tecnológico; los no técnicos no se miden |
+| OWASP WSTG v4.2 | 97 pruebas | 51 | Más 2 solo con motores externos; 44 sin detector (muchas exigen juicio o pruebas activas) |
+| WCAG 2.1 A+AA | 50 | 23 | 19 desde el código y 4 más con el navegador sin cabeza (axe-core, solo la página de entrada de activos URL); el resto exige juicio humano |
+| ISO/IEC 27001:2022 Anexo A | 93 | 29 | 37 organizativos, 8 de personas, 14 físicos y el resto tecnológico; los no técnicos no se miden |
 | CMMI V3.0 (19 áreas) | 19 | 11 con ≥1 ítem medible | 8 sin colector; ver §5.2 |
 
-**Sin cobertura hoy:** licencias de dependencias; SPF/DKIM/DMARC; pruebas de fuerza bruta/límite de intentos (excluidas por política); **DAST autenticado multi-rol** (faltan credenciales en Vault); datos reales de Active Directory para BloodHound; C++/HTML/Bash/Dart en Semgrep; incoherencia de caché entre réplicas (no verificable estáticamente); reglas de aprobación de MR de GitLab CE; WCAG de render (contraste, reflujo) hasta incorporar un navegador sin cabeza con axe-core; webhooks de la segunda instancia de GitLab. Un «0 hallazgos» solo significa algo donde el motor correspondiente **corrió** y tiene cobertura para ese lenguaje.
+**Sin cobertura hoy:** pruebas de fuerza bruta/límite de intentos (excluidas por política); **DAST autenticado multi-rol** (faltan credenciales en Vault); datos reales de Active Directory para BloodHound; C++/HTML/Bash/Dart en Semgrep; incoherencia de caché entre réplicas (no verificable estáticamente); reglas de aprobación de MR de GitLab CE; WCAG renderizado detrás del inicio de sesión (el motor solo audita la página de entrada); reglas de negocio del CORE que solo se verifican ejecutando la aplicación (ver §1.13); webhooks de la segunda instancia de GitLab. Un «0 hallazgos» solo significa algo donde el motor correspondiente **corrió** y tiene cobertura para ese lenguaje.
 
 ---
 
@@ -305,6 +327,7 @@ Reglas estáticas: `WCAG-1.1.1-IMG-MISSING-ALT`, `WCAG-1.3.1-FORM-CONTROL-NO-LAB
 - **Pruebas:** nunca `pytest` directo; `scripts/run_tests.sh [args]` (Postgres desechable + Alembic). Hay pruebas con binarios reales (nuclei, trufflehog) y de propiedades (Hypothesis). Frontend: eslint + vitest + `vite build` en un contenedor Node limpio.
 - **Secretos (TruffleHog v3):** el JSON es `SourceMetadata.Data.Git.{file,line,commit}` y `DetectorName`; nunca copies `Raw`/`SecretParts` a un hallazgo. La verificación activa envía la credencial a su emisor: solo con `SECRETS_VERIFY_LIVE=1`.
 - **Nuclei propio:** plantillas versionadas en `templates/nuclei/`, solo GET; valida con `nuclei -t <dir> -validate` y pruébalas contra un servidor local real.
+- **Escáneres que no cubren todo el árbol:** un archivo que agota el tiempo (Semgrep `Timeout`, nivel `warn`) NO fue analizado: sus hallazgos abiertos se conservan, nunca se cierran por "no reproducidos". Al cortar un escáner por tiempo, mata el grupo de procesos (`start_new_session` + `killpg`), no solo el padre.
 - **Accesibilidad renderizada (`wcag-render`):** el id es `WCAG-<criterio>-AXE-<regla>`; un render vacío (sin texto) NO es una auditoría válida (no persistir ni reconciliar). Solo se cubren criterios para los que axe tiene regla (`AXE_DECIDABLE` en `coverage_matrix.py`).
 - **Contenedores hermanos** (ZAP, a11y, schemathesis): límite de memoria/CPU, tiempo máximo y `docker rm -f` en `finally`.
 - **Fuzzing de API (`api-fuzz`):** opt-in por objetivo, GET/HEAD, determinista; **nunca** contra la pila propia (ya tumbó el backend una vez). Corrida incompleta = no reconciliar.
@@ -393,6 +416,11 @@ Complementa las secciones 1–9. Cada fila es un `cve_id` real que emite el cód
 | `CICD-DOCKER-PRIVILEGED` | Evita `privileged: true`; usa Kaniko/BuildKit sin privilegios. |
 | `CICD-TLS-VERIFICATION-DISABLED` | No desactives la verificación TLS (`-k`, `verify=False`, `GIT_SSL_NO_VERIFY`). |
 | `CICD-REMOTE-INCLUDE-INSECURE` | Los `include:` remotos solo por HTTPS y a una versión fija. |
+| `CICD-INCLUDE-UNPINNED` | `include: project:` siempre con `ref:` a un tag o commit. |
+| `CICD-UNTRUSTED-INPUT-INJECTION` / `CICD-INPUT-INTERPOLATION-IN-SCRIPT` | Rama, mensaje de commit, título de MR o `$[[ inputs ]]` nunca dentro de `eval`/`sh -c`; como `"$VAR"` o con `\| posix_escape`. |
+| `CICD-DEPENDENCY-INSTALL-NOT-FROZEN` | `npm ci` / `yarn install --frozen-lockfile` en CI. |
+| `REPO-BINARY-ARTIFACT` / `REPO-BUILD-OUTPUT-COMMITTED` | Sin binarios, llaves ni salidas de compilación en git. |
+| `SCA-MAL-*`, `SUPPLY-CHAIN-INSTALL-SCRIPT-RISKY`, `SUPPLY-CHAIN-DEPENDENCY-FROM-URL`, `SUPPLY-CHAIN-LOCKFILE-INSECURE-SOURCE`, `SUPPLY-CHAIN-POSSIBLE-TYPOSQUAT` | Retirar paquetes maliciosos; sin descargas en scripts de instalación; dependencias del registro (o commit completo fijado) y por HTTPS; verificar nombres parecidos a paquetes populares. |
 | `GITLAB-PROJECT-BRANCH-FORCE-PUSH` / `GITLAB-PROJECT-BRANCH-DEVELOPER-PUSH` | Rama por defecto protegida, sin force-push y con push solo de mantenedores. |
 | `GITLAB-PROJECT-CI-VARIABLE-UNMASKED` / `GITLAB-PROJECT-CI-VARIABLE-UNPROTECTED` | Marca las variables sensibles como enmascaradas y protegidas. |
 | `GITLAB-PROJECT-MR-NO-PIPELINE-GATE` | Exige pipeline verde para fusionar. |

@@ -140,6 +140,65 @@ def _osv_fixed_version(vuln: Dict[str, Any], ecosystem: str, pkg_name: str, inst
     return fallback
 
 
+MALICIOUS_FIXED_VERSION = "ninguna: retirar el paquete"
+
+
+def is_malicious_advisory(vuln: Dict[str, Any]) -> bool:
+    """OSV carries the OpenSSF Malicious Packages database as `MAL-*` entries: the package (version) itself is malware
+    (typosquat, dependency confusion, hijacked maintainer), not a vulnerable library. There is no 'fixed version' and no
+    CVSS; before this the entry fell to the generic MEDIUM default like any advisory without a score (ADR-0022 §2)."""
+    ids = [str(vuln.get("id", ""))] + [str(a) for a in (vuln.get("aliases") or [])]
+    return any(i.startswith("MAL-") for i in ids)
+
+
+def minimal_safe_version(fixed_versions: List[str]) -> Tuple[str, bool]:
+    """Smallest version that is at or above every known fix of one package: one upgrade instead of one per advisory
+    (the idea behind OSV-Scanner's remediation guidance). `_osv_fixed_version` already picks, per advisory, the fix on
+    the INSTALLED release line, so the maximum of those fixes is the answer as far as OSV knows.
+    Returns (version, complete); complete=False when some advisory has no parseable fix (then the version is only a
+    lower bound) and ("", False) when none parse."""
+    from packaging.version import InvalidVersion, Version
+    best, complete = None, True
+    for raw in fixed_versions:
+        try:
+            v = Version(str(raw).strip().lstrip("v"))
+        except (InvalidVersion, TypeError):
+            complete = False
+            continue
+        if best is None or v > best:
+            best = v
+    return (str(best), complete) if best is not None else ("", False)
+
+
+def verify_upgrade_targets(targets: Dict[str, str], ecosystem: str, max_rounds: int = 3) -> Dict[str, Tuple[str, str]]:
+    """{package: (version, state)} with state "clean" (OSV reports nothing for that version), "still_vulnerable" (after
+    `max_rounds` the target still has advisories) or "unverified" (OSV unreachable). Each round moves a still-vulnerable
+    target up to the highest fix OSV gives FOR THAT TARGET; one batched query per round for all packages."""
+    out: Dict[str, Tuple[str, str]] = {}
+    pending = {n: t for n, t in targets.items() if t}
+    for _ in range(max_rounds):
+        if not pending:
+            break
+        res = query_osv_batch(list(pending.items()), ecosystem)
+        if res is None:
+            out.update({n: (t, "unverified") for n, t in pending.items()})
+            return out
+        nxt: Dict[str, str] = {}
+        for name, target in pending.items():
+            vulns = res.get((name, target), [])
+            if not vulns:
+                out[name] = (target, "clean")
+                continue
+            new_target, _complete = minimal_safe_version([v["fixed_version"] for v in vulns if not v.get("malicious")])
+            if not new_target or minimal_safe_version([new_target, target])[0] == target:   # never moves down or stays
+                out[name] = (target, "still_vulnerable")
+            else:
+                nxt[name] = new_target
+        pending = nxt
+    out.update({n: (t, "still_vulnerable") for n, t in pending.items()})
+    return out
+
+
 def _osv_cve_id(vuln: Dict[str, Any]) -> str:
     for alias in vuln.get("aliases", []) or []:
         if alias.startswith("CVE-"):
@@ -201,11 +260,21 @@ def query_osv_batch(deps: List[Tuple[str, str]], ecosystem: str):
             if cve in seen:
                 continue
             seen.add(cve)
+            summary = (detail.get("summary") or detail.get("details") or "Sin resumen disponible.")[:300]
+            if is_malicious_advisory(detail):
+                out.setdefault(dep, []).append({
+                    "cve": cve, "severity": "CRITICAL", "fixed_version": MALICIOUS_FIXED_VERSION, "malicious": True,
+                    "desc": ("PAQUETE MALICIOSO CONOCIDO (base OpenSSF Malicious Packages vía OSV): esta versión del paquete es "
+                             "código dañino, no una librería con un error. Retírelo, revise si se ejecutó en máquinas de "
+                             "desarrollo o en CI (scripts de instalación) y rote las credenciales que esos equipos tenían. "
+                             + summary)[:600],
+                })
+                continue
             out.setdefault(dep, []).append({
                 "cve": cve,
                 "severity": _osv_severity(detail),
                 "fixed_version": _osv_fixed_version(detail, ecosystem, dep[0], dep[1]) or "ver aviso original",
-                "desc": (detail.get("summary") or detail.get("details") or "Sin resumen disponible.")[:300],
+                "desc": summary,
             })
     return out
 
@@ -237,12 +306,42 @@ def _findings_from_osv(deps_with_lines: Dict[str, Tuple[str, int]], ecosystem: s
             findings.extend(_static_fallback_findings(name, version, idx, file_path, manifest))
         return findings
 
+    # One upgrade per package (idea: OSV-Scanner). The first target is the highest fix on the INSTALLED release line; it
+    # is then checked against OSV itself, because a fix on one line can still be affected by an advisory with a range on
+    # another line (Angular publishes fixes per major version). Measured 2026-11-12 on a real Angular 16 frontend.
+    candidates: Dict[str, Tuple[str, bool, int]] = {}
+    for name, (version, _idx) in queryable.items():
+        vulns = osv_results.get((name, version), [])
+        fixes = [v["fixed_version"] for v in vulns if not v.get("malicious")]
+        if fixes and not any(v.get("malicious") for v in vulns):
+            target, complete = minimal_safe_version(fixes)
+            if target:
+                candidates[name] = (target, complete, len(fixes))
+    verified = verify_upgrade_targets({n: c[0] for n, c in candidates.items()}, ecosystem)
+
     for name, (version, idx) in queryable.items():
-        for vuln in osv_results.get((name, version), []):
+        vulns = osv_results.get((name, version), [])
+        upgrade_note = ""
+        if any(v.get("malicious") for v in vulns):
+            upgrade_note = "Hay un aviso de paquete malicioso para esta versión: subir de versión no basta, hay que retirarla."
+        elif name in candidates:
+            first, complete, n = candidates[name]
+            target, state = verified.get(name, (first, "unverified"))
+            if state == "clean":
+                if n > 1 or target != first:
+                    upgrade_note = (f"Actualice a {target}: corrige los {n} avisos actuales y OSV no reporta avisos para esa versión"
+                                    + ("" if complete else " (algún aviso no indica versión corregida: revise el aviso original)"))
+            elif state == "still_vulnerable":
+                upgrade_note = (f"Actualizar al menos a {target}; esa versión todavía tiene avisos en OSV (revise la última versión "
+                                "estable del paquete)")
+            elif n > 1:
+                upgrade_note = (f"Actualizar al menos a {target} (corrige los {n} avisos actuales; no se pudo comprobar en OSV si esa "
+                                "versión tiene otros)")
+        for vuln in vulns:
             findings.append({
                 "cve_id": f"SCA-{vuln['cve']}", "severity": vuln["severity"], "file": file_path, "line": idx,
                 "package": name, "installed_version": version, "fixed_version": vuln["fixed_version"],
-                "manifest": manifest,
+                "manifest": manifest, "upgrade_note": upgrade_note, "malicious": bool(vuln.get("malicious")),
                 "description": f"Vulnerable dependency '{name}' ({version}). {vuln['desc']} ({vuln['cve']}). Fixed in {vuln['fixed_version']}. Fuente: OSV.dev.",
             })
     return findings
@@ -499,7 +598,8 @@ def run_sca_audit(target_dir: str = "/app", asset_id: str = None) -> List[Dict[s
                     f"**Paquete:** {item['package']}\n"
                     f"**Versión instalada:** {item['installed_version']}\n"
                     f"**Versión segura:** {item['fixed_version']}\n"
-                    f"**Manifiesto:** {item['manifest']}\n"
+                    + (f"**Actualización recomendada:** {item['upgrade_note']}\n" if item.get("upgrade_note") else "")
+                    + f"**Manifiesto:** {item['manifest']}\n"
                     f"**Alcanzabilidad:** {reachability}\n"
                     f"{item['description']}"
                 )
@@ -510,7 +610,8 @@ def run_sca_audit(target_dir: str = "/app", asset_id: str = None) -> List[Dict[s
                     "sca-native", url_path=location, open_status="OPEN",
                     reachability_status=reachability, preserve_status=True
                 )
-                if reachability == "UNREACHABLE" and _vuln_id and _action != "suppressed":
+                # A malicious package does its damage at install time (install scripts), imported or not: never downgraded.
+                if reachability == "UNREACHABLE" and _vuln_id and _action != "suppressed" and not item.get("malicious"):
                     _apply_unreachable_downgrade(cur, deduplication_engine, _vuln_id, item["severity"])
 
             if asset_id is not None:

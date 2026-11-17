@@ -91,3 +91,7 @@ npm test -- --testNamePattern="nuevo comportamiento"
 
 ## Pares positivo/negativo (regla de oro de los detectores y validaciones)
 Toda regla, validación o función que decide («¿esto es válido/peligroso?») se prueba con **al menos un caso que debe disparar y otro que no debe disparar**. Una regla sin caso negativo termina marcando lo que no debe; sin caso positivo, nunca se sabe si funciona. Si una prueba solo usa mocks de red, decláralo (`clean-code-contract/references/honesty.md` §3).
+
+## Reglas del escáner que esta skill evita
+`TEST-SKIPPED-WITHOUT-REASON`, `CICD-GATE-ALLOW-FAILURE`.
+Corrección de cada una y el resto del catálogo: skill `prevencion-hallazgos-seguridad-calidad`.

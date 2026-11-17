@@ -1,6 +1,6 @@
 # Accessibility render worker: headless Chromium + axe-core. Run on demand as a sibling container (like ZAP); NOT part of the main images.
-FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
-RUN pip install --no-cache-dir "playwright==1.49.0" axe-playwright-python
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
+RUN pip install --no-cache-dir "playwright==1.64.1" axe-playwright-python
 WORKDIR /work
 COPY auditors/a11y_render_worker.py /work/a11y_render_worker.py
 USER pwuser

@@ -1,4 +1,5 @@
 // Generated from Dashboard.jsx by scratch/extract_dashboard.mjs (ADR-0008 #2): code moved verbatim; state comes from DashboardContext.
+import GitLabIssueButton from './GitLabIssueButton'
 import { Activity, AlertTriangle, CheckCircle, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, Clock, Cpu, Download, FileText, Info, PlusCircle, Search, Server, ShieldAlert, X, XCircle, Zap, ZapOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { useDashboard } from './DashboardContext'
@@ -92,6 +93,7 @@ export default function SoarView() {
                                 >
                                     <option value="ALL">TODAS</option>
                                     <option value="VULNERABILITY">VULNERABILIDAD REAL</option>
+                                    <option value="COMPLIANCE">CUMPLIMIENTO (ACCESIBILIDAD)</option>
                                     <option value="INFORMATIONAL">INFORMATIVO / CALIDAD</option>
                                 </select>
                                 <ChevronDown size={11} className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
@@ -344,10 +346,10 @@ export default function SoarView() {
                                                     Ejecutar Remedio AI
                                                 </button>
                                             )}
-                                            {/* Redmine/Gitea ticket-creation buttons removed 2026-08-11 -- neither integration is
-                                                deployed yet (no Gitea or Redmine instance exists in this environment), so these
-                                                buttons offered an action that could never actually succeed. Re-add once one or
-                                                both are actually integrated. */}
+                                            {/* Code findings: an issue in the finding's own GitLab project (Redmine/Gitea are not deployed here). */}
+                                            {!(selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool) && (
+                                                <GitLabIssueButton key={selectedRemediation.id} vulnId={selectedRemediation.id} assetName={selectedRemediation.asset_name} />
+                                            )}
                                             {!(selectedRemediation.status === 'RESOLVED' || selectedRemediation.executed_bool) && (
                                                 <button
                                                     onClick={() => setShowManualModal(true)}

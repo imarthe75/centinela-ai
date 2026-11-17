@@ -66,17 +66,17 @@ class TestRuntimeSessionFindings(unittest.TestCase):
 
 class TestDependencyProbe(unittest.TestCase):
     def test_parse_endpoint_skips_what_cannot_be_probed(self):
-        self.assertEqual(dp.parse_endpoint("jdbc:postgresql://user:pw@192.0.2.6:5432/db"), ("192.0.2.6", 5432, "postgresql"))
+        self.assertEqual(dp.parse_endpoint("jdbc:postgresql://user:pw@192.0.2.8:5432/db"), ("192.0.2.8", 5432, "postgresql"))
         self.assertEqual(dp.parse_endpoint("https://docs.internal-corp.net/path"), ("docs.internal-corp.net", 443, "https"))
         for bad in ("http://localhost:8080", "http://${HOST}:80", "http://redis:6379", "https://api.example.com", "http://127.0.0.1:9"):
             self.assertIsNone(dp.parse_endpoint(bad), bad)
 
     def test_extract_reads_configuration_files_only_and_drops_credentials(self):
-        d = _tree({"src/main/resources/application-qa.properties": "spring.datasource.url=jdbc:postgresql://admin:secret@192.0.2.22:5432/app\n# url=http://192.0.2.21:80\n",
-                   "src/environments/environment.dev.ts": "export const environment = { onlyoffice: 'http://192.0.2.20:8099' }\n",
-                   "src/main/java/A.java": 'String u = "http://192.0.2.19:80";\n'})
+        d = _tree({"src/main/resources/application-qa.properties": "spring.datasource.url=jdbc:postgresql://admin:secret@192.0.2.25:5432/app\n# url=http://192.0.2.23:80\n",
+                   "src/environments/environment.dev.ts": "export const environment = { onlyoffice: 'http://192.0.2.22:8099' }\n",
+                   "src/main/java/A.java": 'String u = "http://192.0.2.21:80";\n'})
         deps = dp.extract_dependencies(d)
-        self.assertEqual({(x["host"], x["port"], x["profile"]) for x in deps}, {("192.0.2.22", 5432, "qa"), ("192.0.2.20", 8099, "dev")})
+        self.assertEqual({(x["host"], x["port"], x["profile"]) for x in deps}, {("192.0.2.25", 5432, "qa"), ("192.0.2.22", 8099, "dev")})
         self.assertNotIn("secret", repr(deps))
 
     def test_real_tcp_probe_reachable_and_refused(self):
@@ -84,16 +84,18 @@ class TestDependencyProbe(unittest.TestCase):
         srv.bind(("127.0.0.1", 0))
         srv.listen(1)
         port = srv.getsockname()[1]
-        threading.Thread(target=lambda: srv.accept(), daemon=True).start()
+        t = threading.Thread(target=lambda: srv.accept()[0].close(), daemon=True)
+        t.start()
         self.assertEqual(dp.probe("127.0.0.1", port), "ok")
+        t.join(5)          # a still-blocked accept() keeps the socket listening after close(): the next probe would be "ok"
         srv.close()
         dp._cache.clear()
         self.assertIn(dp.probe("127.0.0.1", port), ("refused", "timeout"))
 
     def test_findings_severity_by_profile_and_secret_free(self):
-        deps = [{"host": "192.0.2.3", "port": 8099, "scheme": "http", "file": "src/main/resources/application-qa.properties", "line": 7, "profile": "qa"},
-                {"host": "192.0.2.4", "port": 80, "scheme": "http", "file": "src/main/resources/application-dev.properties", "line": 3, "profile": "dev"},
-                {"host": "192.0.2.5", "port": 80, "scheme": "http", "file": "x/application.yml", "line": 1, "profile": "base"}]
+        deps = [{"host": "192.0.2.5", "port": 8099, "scheme": "http", "file": "src/main/resources/application-qa.properties", "line": 7, "profile": "qa"},
+                {"host": "192.0.2.6", "port": 80, "scheme": "http", "file": "src/main/resources/application-dev.properties", "line": 3, "profile": "dev"},
+                {"host": "192.0.2.7", "port": 80, "scheme": "http", "file": "x/application.yml", "line": 1, "profile": "base"}]
         out = dp.check_dependencies(deps, prober=lambda h, p: "ok" if h.endswith("3") else "timeout")
         self.assertEqual([(f["severity"], f["url_path"]) for f in out], [("MEDIUM", "src/main/resources/application-qa.properties:7"), ("LOW", "src/main/resources/application-dev.properties:3")])
 

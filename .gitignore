@@ -40,3 +40,5 @@ entregables-ca/
 # build output / local audit artifacts
 frontend/dist/
 frontend/audit_report.json
+.env.bak*
+.env.*.bak

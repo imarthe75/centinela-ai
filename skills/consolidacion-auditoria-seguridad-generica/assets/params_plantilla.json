@@ -1,0 +1,99 @@
+{
+ "titulo": "Matriz de seguimiento — Auditoría de seguridad de <SISTEMA>",
+ "fecha_base": "2026-10-09",
+ "dias_secreto": 1,
+ "firma_seguridad": "Director de Tecnología — <titular vigente>; prepara evidencia: analista de ciberseguridad asignado",
+ "firma_no_seguridad": "Gerencia de Análisis / Calidad (QA) — propuesta",
+ "leeme": [
+  [
+   "Elaborado",
+   "<fecha y fuentes>"
+  ],
+  [
+   "Clasificación",
+   "Vulnerabilidad / Falso positivo / Calidad: criterio del analista (catálogo de causas raíz); lo no cubierto está como SIN CLASIFICAR."
+  ]
+ ],
+ "slas": [
+  {
+   "clase": "Seguridad",
+   "severidad": "Crítica",
+   "contencion": 3,
+   "correccion": 15,
+   "fundamento": "Contención corta (Centinela fija 24 h); corrección en 15 días, orden CISA BOD 19-02"
+  },
+  {
+   "clase": "Seguridad",
+   "severidad": "Alta",
+   "contencion": 7,
+   "correccion": 30,
+   "fundamento": "Contención 7 días (Centinela); corrección 30 días"
+  },
+  {
+   "clase": "Seguridad",
+   "severidad": "Media",
+   "correccion": 90,
+   "fundamento": "Centinela fija 30 días; 90 por volumen. Ajustar si el volumen es bajo"
+  },
+  {
+   "clase": "Seguridad",
+   "severidad": "Baja",
+   "correccion": 180
+  },
+  {
+   "clase": "Seguridad",
+   "severidad": "Informativa",
+   "correccion": 30,
+   "fundamento": "Validar el falso positivo"
+  },
+  {
+   "clase": "No seguridad",
+   "severidad": "Crítica",
+   "correccion": 30
+  },
+  {
+   "clase": "No seguridad",
+   "severidad": "Alta",
+   "correccion": 60
+  },
+  {
+   "clase": "No seguridad",
+   "severidad": "Media",
+   "correccion": 120
+  },
+  {
+   "clase": "No seguridad",
+   "severidad": "Baja",
+   "correccion": 180
+  },
+  {
+   "clase": "No seguridad",
+   "severidad": "Informativa",
+   "correccion": 30
+  }
+ ],
+ "gerencias": [
+  {
+   "gerencia": "Gerencia de Programación",
+   "titular": "<del organigrama vigente>",
+   "n3": "Dirección de Operaciones — <titular>"
+  },
+  {
+   "gerencia": "Gerencia de Arquitectura y BD",
+   "titular": "<del organigrama vigente>",
+   "n3": "Dirección de Operaciones — <titular>"
+  },
+  {
+   "gerencia": "Gerencia de Infraestructura y Telecomunicaciones",
+   "titular": "<del organigrama vigente>",
+   "n3": "Dirección de Tecnología — <titular>",
+   "nota": "Asignaciones a confirmar"
+  },
+  {
+   "gerencia": "Gerencia de Análisis / Calidad",
+   "titular": "<del organigrama vigente>",
+   "n3": "Dirección de Operaciones — <titular>"
+  }
+ ],
+ "_instrucciones": "Cambia fecha_base (AAAA-MM-DD) y titulo; los titulares salen del organigrama vigente. Las claves que empiezan con _ se ignoran."
+}

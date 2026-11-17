@@ -136,7 +136,7 @@ def run_secrets_history_job(job: Dict[str, Any]) -> Dict[str, Any]:
         dest = os.path.join(tmp, "repo")
         _clone_full(proj.get("http_url_to_repo") or payload["project"].get("http_url_to_repo"), integ.instance, dest)
         verify_live = os.getenv("SECRETS_VERIFY_LIVE", "0") == "1"
-        cmd = ["trufflehog", "git", f"file://{dest}", "--json", "--no-update", "--concurrency=2", "--results=verified,unverified" if verify_live else "--no-verification"]
+        cmd = ["trufflehog", "git", f"file://{dest}", "--json", "--no-update", "--concurrency=2", auditor_secrets.TRUFFLEHOG_RESULTS_VERIFY if verify_live else "--no-verification"]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
         if r.returncode not in (0, 183):     # 183 = findings present when --fail is used; plain runs exit 0
             raise RuntimeError(f"trufflehog exited {r.returncode}: {(r.stderr or '')[-300:]}")

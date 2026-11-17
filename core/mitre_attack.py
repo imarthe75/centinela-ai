@@ -117,6 +117,15 @@ _RULES = [
     ("CICD-CURL-PIPE-SHELL", None, "T1195.002", "Supply Chain Compromise: Compromise Software Supply Chain", "Initial Access"),
     ("CICD-UNPINNED-IMAGE", None, "T1195.002", "Supply Chain Compromise: Compromise Software Supply Chain", "Initial Access"),
     ("CICD-HARDCODED-SECRET", None, "T1552.001", "Unsecured Credentials: Credentials In Files", "Credential Access"),
+    ("CICD-UNTRUSTED-INPUT-INJECTION", None, "T1195.002", "Supply Chain Compromise: Compromise Software Supply Chain", "Initial Access"),
+    ("CICD-INPUT-INTERPOLATION-IN-SCRIPT", None, "T1195.002", "Supply Chain Compromise: Compromise Software Supply Chain", "Initial Access"),
+    ("CICD-INCLUDE-UNPINNED", None, "T1195.002", "Supply Chain Compromise: Compromise Software Supply Chain", "Initial Access"),
+    # Dependency supply chain (auditors/supply_chain_rules.py, ADR-0022)
+    ("SUPPLY-CHAIN-INSTALL-SCRIPT-RISKY", None, "T1195.001", "Supply Chain Compromise: Compromise Software Dependencies and Development Tools", "Initial Access"),
+    ("SUPPLY-CHAIN-POSSIBLE-TYPOSQUAT", None, "T1195.001", "Supply Chain Compromise: Compromise Software Dependencies and Development Tools", "Initial Access"),
+    ("SUPPLY-CHAIN-DEPENDENCY-FROM-URL", None, "T1195.001", "Supply Chain Compromise: Compromise Software Dependencies and Development Tools", "Initial Access"),
+    ("SUPPLY-CHAIN-LOCKFILE-INSECURE-SOURCE", None, "T1195.001", "Supply Chain Compromise: Compromise Software Dependencies and Development Tools", "Initial Access"),
+    ("SCA-MAL-", None, "T1195.001", "Supply Chain Compromise: Compromise Software Dependencies and Development Tools", "Initial Access"),
 ]
 
 

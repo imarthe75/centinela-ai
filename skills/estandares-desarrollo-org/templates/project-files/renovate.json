@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Plantilla del kit: dependencias al día con un bot de Renovate contra el GitLab del proyecto.",
+  "extends": ["config:recommended", ":dependencyDashboard", ":semanticCommits"],
+  "timezone": "America/Mexico_City",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "minimumReleaseAge": "14 days",
+  "vulnerabilityAlerts": { "enabled": true, "labels": ["seguridad"], "minimumReleaseAge": null, "schedule": ["at any time"] },
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on the first day of the month"] },
+  "packageRules": [
+    {
+      "description": "Parches y menores de dependencias de desarrollo: un solo MR agrupado.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "dependencias de desarrollo (menores)"
+    },
+    {
+      "description": "Versión mayor: MR separado y nunca automático; requiere revisar notas de la versión y pruebas.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["version-mayor"]
+    }
+  ]
+}

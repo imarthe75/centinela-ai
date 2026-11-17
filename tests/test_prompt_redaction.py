@@ -34,8 +34,8 @@ def test_token_shapes():
 def test_private_key_block_and_url_credentials():
     pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----"
     assert "MIIEow" not in red("k:\n" + pem)
-    out = red("jdbc:postgresql://u:p4ssw0rd@192.0.2.13/db and https://admin:s3cr3t@host/x")
-    assert "p4ssw0rd" not in out and "s3cr3t" not in out and "192.0.2.13/db" in out
+    out = red("jdbc:postgresql://u:p4ssw0rd@192.0.2.15/db and https://admin:s3cr3t@host/x")
+    assert "p4ssw0rd" not in out and "s3cr3t" not in out and "192.0.2.15/db" in out
 
 
 def test_empty_and_clean_text_are_untouched():

@@ -178,7 +178,7 @@ class SecretsScanner:
         # outward-facing action on customer secrets, so it is opt-in: SECRETS_VERIFY_LIVE=1. Off -> --no-verification (nothing leaves the host).
         verify_live = os.getenv("SECRETS_VERIFY_LIVE", "0") == "1"
         cmd = ["trufflehog", "git", f"file://{repo_path}", "--json", "--no-update"]
-        cmd.append("--results=verified,unverified" if verify_live else "--no-verification")
+        cmd.append(TRUFFLEHOG_RESULTS_VERIFY if verify_live else "--no-verification")
         if max_commits:
             cmd.extend(["--max-depth", str(max_commits)])
 
@@ -199,6 +199,29 @@ class SecretsScanner:
         return findings
 
 
+# With live verification on, "unknown" (the issuer could not be asked: network error, rate limit) must be requested explicitly
+# alongside verified/unverified. It was missing until 2026-11-06, so a possibly-live credential whose check errored was dropped.
+TRUFFLEHOG_RESULTS_VERIFY = "--results=verified,unverified,unknown"
+
+VERIFICATION_LABELS = {
+    "verified": " (VERIFIED LIVE: credential still active)",
+    "error": " (verificación en vivo fallida por error: podría seguir activa)",
+    "unconfirmed": " (no confirmada en vivo: inválida o sin verificador para este tipo)",
+    "not_run": "",
+}
+
+
+def verification_status(rec: Dict, verify_live: bool) -> str:
+    """verified | error | unconfirmed (checked, not valid -- or no verifier exists) | not_run (live verification off)."""
+    if not verify_live:
+        return "not_run"
+    if rec.get("Verified"):
+        return "verified"
+    if rec.get("VerificationError"):
+        return "error"
+    return "unconfirmed"
+
+
 def parse_trufflehog_output(stdout: str, verify_live: bool = False) -> List[Dict]:
     """Parse `trufflehog --json` (v3.x) lines. The raw secret (`Raw`/`RawV2`/`SecretParts`) is NEVER copied into a finding: only the
     detector's own redacted preview is kept. `verified` is True/False when live verification ran, None when it did not (unknown, not "dead")."""
@@ -215,19 +238,19 @@ def parse_trufflehog_output(stdout: str, verify_live: bool = False) -> List[Dict
             continue
         git = ((rec.get("SourceMetadata") or {}).get("Data") or {}).get("Git") or {}
         name = rec.get("DetectorName") or "unknown"
-        is_verified = bool(rec.get("Verified"))
-        if verify_live:
-            severity = "CRITICAL" if is_verified else ("HIGH" if "private" in name.lower() else "MEDIUM")
-        else:
-            severity = "HIGH" if "private" in name.lower() else "MEDIUM"
+        status = verification_status(rec, verify_live)
+        is_verified = status == "verified"
+        base = "HIGH" if "private" in name.lower() else "MEDIUM"
+        severity = "CRITICAL" if is_verified else ("HIGH" if status == "error" else base)
         findings.append({
             "file": git.get("file") or "unknown",
             "line": git.get("line") or 0,
             "type": name,
-            "description": name + (" (VERIFIED LIVE: credential still active)" if is_verified else ""),
+            "description": name + VERIFICATION_LABELS[status],
             "severity": severity,
             "commit": (git.get("commit") or "")[:8],
             "verified": is_verified if verify_live else None,
+            "verification": status,
             "masked_context": (rec.get("Redacted") or "")[:40],
         })
     return findings

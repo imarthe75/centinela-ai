@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('react-oidc-context', () => ({
   useAuth: () => ({
-    isLoading: false, isAuthenticated: true, error: null, events: { addAccessTokenExpired: () => () => {} }, signinRedirect: () => {}, signoutRedirect: () => {},
+    isLoading: false, isAuthenticated: true, error: null, events: { addAccessTokenExpired: () => () => {}, addSilentRenewError: () => () => {} }, signinRedirect: () => {}, signinSilent: () => Promise.resolve(null), signoutRedirect: () => {},
     user: { access_token: 't', profile: { preferred_username: 'tester', email: 'tester@example.com', name: 'Tester' } },
   }),
 }))
@@ -16,11 +16,12 @@ vi.mock('./MapChart', () => ({ default: () => null }))
 vi.mock('axios', () => {
   const reply = (url) => {
     if (String(url).endsWith('/users')) return [{ username: 'tester', email: 'tester@example.com', role: 'Admin' }]
+    if (String(url).endsWith('/users/me')) return { username: 'tester', role: globalThis.__testRole || 'Admin' }
     if (/\/(inventory|remediation|alerts|map|incidents|suppressions|suppression-proposals)(\?|$)/.test(String(url))) return []
     return {}
   }
   const ok = (url) => { (globalThis.__apiCalls ||= []).push(String(url)); return Promise.resolve({ data: reply(url), status: 200 }) }
-  const api = { get: ok, post: ok, put: ok, delete: ok, patch: ok, create: () => api, defaults: { headers: { common: {} } }, interceptors: { request: { use() {} }, response: { use() {} } } }
+  const api = { get: ok, post: ok, put: ok, delete: ok, patch: ok, create: () => api, defaults: { headers: { common: {} } }, interceptors: { request: { use() { return 0 }, eject() {} }, response: { use() { return 0 }, eject() {} } } }
   return { default: api, ...api }
 })
 
@@ -61,7 +62,19 @@ describe('Dashboard shell', () => {
     // each nav click must really change the view (URL-driven), not just re-render the same one
     expect(new Set(Object.values(views)).size).toBeGreaterThan(8)
     vi.useRealTimers()
-  })
+  }, 30000)
+
+  it('a user with no Centinela role sees the disabled screen (and it renders)', async () => {
+    globalThis.__testRole = 'Disabled'
+    try {
+      const { default: Dashboard } = await import('./Dashboard')
+      const { container } = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter><Dashboard /></MemoryRouter></QueryClientProvider>)
+      await settle()
+      expect(container.textContent).toContain('Acceso deshabilitado')
+    } finally {
+      globalThis.__testRole = undefined
+    }
+  }, 30000)
 
   it('polls through TanStack Query: one round on mount, and the same data is not requested twice per round', async () => {
     globalThis.__apiCalls = []
@@ -72,5 +85,5 @@ describe('Dashboard shell', () => {
     expect(hits('/stats/extended')).toBe(1)
     expect(hits('/inventory')).toBe(1)
     expect(hits('/audit/iso27001-report')).toBe(1)        // secondary round also exactly once
-  })
+  }, 30000)
 })

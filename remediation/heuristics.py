@@ -1137,8 +1137,23 @@ def _infra_hygiene_guidance(vuln):
         'TLS-WEAK-CIPHER-ENABLED': ("Suites de cifrado débiles habilitadas", "Permiten descifrar o degradar el tráfico protegido.", f"Restringir `ssl_ciphers` en {loc} a suites AEAD con ECDHE (p. ej. `ECDHE+AESGCM:ECDHE+CHACHA20`)."),
         'TLS-STATIC-RSA-KEX-ENABLED': ("Intercambio de llaves RSA estático (sin forward secrecy)", "Si la llave privada se compromete, el tráfico pasado grabado queda descifrable.", f"Reemplazar `ssl_ciphers HIGH:!aNULL:!MD5` en {loc} por una lista solo ECDHE (p. ej. `ECDHE+AESGCM:ECDHE+CHACHA20`)."),
     }
-    if cve_u in tls:
-        riesgo, impacto, accion = tls[cve_u]
+    # PostgreSQL hardening (auditors/auditor_db_hardening.py), baseline of the organization's PostgreSQL 18 installation guide.
+    pg = {
+        'DB-AUTH-TRUST': ("PostgreSQL acepta conexiones sin contraseña (pg_hba.conf con 'trust')",
+            "Cualquiera que alcance el puerto entra como cualquier rol existente, incluido el superusuario: lectura, alteración o borrado total de los datos.",
+            f"En el servidor de {loc}: cambiar a `scram-sha-256` toda línea `trust` de pg_hba.conf que no sea `local` del administrador, ejecutar `SELECT pg_reload_conf();` y comprobar que pide contraseña."),
+        'DB-AUTH-MD5': ("PostgreSQL autentica con MD5 (obsoleto en PostgreSQL 18)",
+            "Los hashes MD5 de las contraseñas son débiles frente a ataques de diccionario si se filtran o se interceptan.",
+            f"En {loc}: `password_encryption = scram-sha-256`, restablecer la contraseña de cada rol (para regenerar el hash en SCRAM), cambiar `md5` por `scram-sha-256` en pg_hba.conf y recargar."),
+        'DB-AUTH-CLEARTEXT-PASSWORD': ("PostgreSQL pide la contraseña en texto claro",
+            "La contraseña viaja tal cual; sin TLS, cualquiera en la red puede leerla.",
+            f"En {loc}: cambiar el método `password` por `scram-sha-256` en pg_hba.conf y recargar."),
+        'DB-TLS-BELOW-BASELINE': ("PostgreSQL acepta una versión de TLS por debajo de la línea base",
+            "TLS 1.2 sigue siendo seguro si las suites son modernas, pero la línea base de la organización para PostgreSQL 18 es TLS 1.3.",
+            f"En {loc}: `ssl_min_protocol_version = 'TLSv1.3'` en postgresql.conf y `SELECT pg_reload_conf();` (verificar antes que los clientes soporten TLS 1.3)."),
+    }
+    if cve_u in tls or cve_u in pg:
+        riesgo, impacto, accion = tls.get(cve_u) or pg[cve_u]
         script = hdr + f"echo 'Sin automatización segura: {accion}'\nexit 1\n"
         return (riesgo, impacto, accion, script, False)
     return None
@@ -1177,6 +1192,26 @@ _GITLAB_HYGIENE_GUIDANCE = {
         "Un job comprometido obtiene acceso equivalente a root en el host del runner.", "Evitar `privileged: true`; usar builders sin privilegios (Kaniko/BuildKit rootless)."),
     'CICD-REMOTE-INCLUDE-INSECURE': ("Pipeline incluye definición remota por HTTP",
         "La definición del pipeline puede alterarse en tránsito.", "Usar `include: project:` con ref fija o HTTPS con verificación."),
+    'CICD-UNTRUSTED-INPUT-INJECTION': ("Inyección de comandos en el pipeline por texto controlado por quien hace push",
+        "Un nombre de rama o mensaje de commit preparado ejecuta comandos en el runner con los secretos del job.", "Pasar el valor como variable de entorno entre comillas (\"$VAR\") y nunca a `eval`, `sh -c` o similares."),
+    'CICD-INPUT-INTERPOLATION-IN-SCRIPT': ("Entrada de componente pegada como texto en un script",
+        "`$[[ inputs.* ]]` se sustituye antes de que el shell lea el script; un valor con `;` o `$(...)` se ejecuta.", "Usar `$[[ inputs.x | posix_escape ]]` o exponer la entrada como variable de entorno."),
+    'CICD-INCLUDE-UNPINNED': ("Plantilla de CI incluida sin versión fija",
+        "Un cambio en la rama por defecto del proyecto de plantillas altera este pipeline sin revisión aquí.", "Agregar `ref:` con un tag o un commit al `include: project:`."),
+    'CICD-DEPENDENCY-INSTALL-NOT-FROZEN': ("Instalación de dependencias que ignora el lockfile",
+        "El runner puede instalar versiones distintas a las probadas (incluida una versión comprometida recién publicada).", "Usar `npm ci` o `yarn install --frozen-lockfile` / `--immutable`."),
+    'REPO-BINARY-ARTIFACT': ("Binario versionado en el repositorio",
+        "No se puede revisar como código y puede contener cualquier cosa; si es una llave, está expuesta.", "Publicarlo en un repositorio de artefactos con versión y suma de verificación; si es una llave o certificado, retirarlo y rotarlo."),
+    'SUPPLY-CHAIN-INSTALL-SCRIPT-RISKY': ("Script de instalación de npm que descarga o ejecuta código",
+        "Corre en cada equipo de desarrollo y runner de CI que instala el proyecto, antes de cualquier revisión.", "Mover la descarga a un paso explícito con versión fija y verificación SHA-256, o eliminarla del script `postinstall`/`preinstall`."),
+    'SUPPLY-CHAIN-DEPENDENCY-FROM-URL': ("Dependencia tomada de git o de una URL sin commit fijo",
+        "El código detrás del nombre puede cambiar sin cambiar el manifiesto y ninguna base de avisos lo vigila.", "Publicar el paquete en el registro interno con versión, o fijar el commit completo (`#<sha de 40 caracteres>`)."),
+    'SUPPLY-CHAIN-LOCKFILE-INSECURE-SOURCE': ("Lockfile que descarga paquetes por HTTP sin cifrar",
+        "Un intermediario puede sustituir paquetes durante la instalación.", "Configurar el registro con `https://` y regenerar el lockfile."),
+    'SUPPLY-CHAIN-POSSIBLE-TYPOSQUAT': ("Dependencia con nombre casi idéntico a un paquete popular",
+        "Los nombres parecidos son la vía más común para distribuir paquetes maliciosos.", "Confirmar en el registro que es el paquete correcto (autor, descargas, repositorio); si era un error de escritura, corregir el nombre y revisar los equipos donde se instaló."),
+    'REPO-BUILD-OUTPUT-COMMITTED': ("Salidas de compilación versionadas",
+        "Pueden quedar desfasadas respecto al código fuente u ocultar cambios.", "Agregarlas a `.gitignore` y quitarlas del índice con `git rm -r --cached`."),
 }
 
 

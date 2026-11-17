@@ -18,14 +18,14 @@ RUN apt-get update && apt-get install -y \
 RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
 # Install Nuclei
-RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_amd64.zip -o nuclei.zip \
+RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip -o nuclei.zip \
     && unzip nuclei.zip && mv nuclei /usr/local/bin/ && rm nuclei.zip
 
 # Install Syft
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
 
 # Install ffuf
-RUN curl -sfL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz -o ffuf.tar.gz \
+RUN curl -sfL https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_linux_amd64.tar.gz -o ffuf.tar.gz \
     && tar -xzf ffuf.tar.gz -C /usr/local/bin ffuf && rm ffuf.tar.gz
 
 # Install Kiterunner
@@ -38,6 +38,13 @@ RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main
 # Set working directory
 WORKDIR /app
 ENV PYTHONPATH=/app/libs/centinela-core
+
+# CLI security engines, each in its own virtualenv: their latest releases pin incompatible versions of shared
+# libraries (semgrep vs prowler, checkov vs both), and Centinela only calls them as commands, never imports them.
+# Exact versions here, not in locks/ (2026-11-05).
+RUN python -m venv /opt/tools/semgrep && /opt/tools/semgrep/bin/pip install --no-cache-dir semgrep==1.184.0 && ln -s /opt/tools/semgrep/bin/semgrep /usr/local/bin/semgrep \
+    && python -m venv /opt/tools/checkov && /opt/tools/checkov/bin/pip install --no-cache-dir checkov==3.4.3 && ln -s /opt/tools/checkov/bin/checkov /usr/local/bin/checkov \
+    && python -m venv /opt/tools/prowler && /opt/tools/prowler/bin/pip install --no-cache-dir prowler==5.47.0 && ln -s /opt/tools/prowler/bin/prowler /usr/local/bin/prowler
 
 # Install Python dependencies. locks/ai.txt pins EVERY package (direct and transitive) to the versions known to work together
 # (ADR-0008 #6); to upgrade on purpose, regenerate it from a tested container (see locks/README.md).
@@ -57,14 +64,14 @@ RUN pip install --no-cache-dir -c /tmp/lock-ai.txt \
     hvac \
     python-dotenv \
     PyYAML \
-    checkov \
     docker \
     ansible \
     passlib \
-    semgrep \
-    prowler \
     neo4j \
-    cvss
+    dnspython \
+    xlsxwriter \
+    cvss \
+    ast-grep-cli
 
 # Create non-root user for CMMI / CIS hardening compliance
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app

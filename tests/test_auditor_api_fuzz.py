@@ -36,7 +36,7 @@ def test_refuses_own_stack_and_bad_schemes():
     assert fz.refuse_reason("http://centinela-backend:8000/openapi.json")
     assert fz.refuse_reason("http://127.0.0.1:8302/openapi.json")
     assert fz.refuse_reason("file:///etc/passwd")
-    assert fz.refuse_reason("http://192.0.2.16:8088/openapi.json") is None
+    assert fz.refuse_reason("http://192.0.2.18:8088/openapi.json") is None
     with pytest.raises(ValueError):
         fz.run_schemathesis("http://centinela-backend:8000/openapi.json", "http://centinela-backend:8000")
 

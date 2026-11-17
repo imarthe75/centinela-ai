@@ -36,7 +36,7 @@ def main():
     with db_manager.get_db_cursor() as cur:
         cur.execute("""SELECT i.asset_name, v.url_path, v.cve_id, COALESCE(v.real_severity, v.severity)
                        FROM vulnerability_log v JOIN infra_inventory i ON i.id=v.asset_id
-                       WHERE i.asset_type='GitLab-Repo' AND v.finding_category='VULNERABILITY'
+                       WHERE i.asset_type='GitLab-Repo' AND v.finding_category IN ('VULNERABILITY','COMPLIANCE')
                          AND v.status NOT IN ('RESOLVED','SUPPRESSED') AND v.url_path IS NOT NULL""")
         rows = cur.fetchall()
     by_asset = defaultdict(list)

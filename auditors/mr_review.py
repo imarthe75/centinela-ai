@@ -32,6 +32,7 @@ from auditors import auditor_master_vulnerabilities as _sast
 from auditors import auditor_sca_dependencies as _sca
 from auditors import auditor_semgrep as _semgrep
 from auditors.auditor_secrets import SecretsScanner
+from auditors import mr_ai_review
 from core import agent_ledger
 
 MARKER = "<!-- centinela-mr-review -->"
@@ -112,10 +113,63 @@ def findings_on_changed_lines(findings: List[Dict[str, Any]],
     return kept
 
 
+def _rule_file_key(f: Dict[str, Any]) -> Tuple[str, str]:
+    return (str(f.get("cve_id") or "").upper(), str(f.get("rel_path") or f.get("file") or ""))
+
+
+def mark_preexisting(new_line_findings: List[Dict[str, Any]], head_findings: List[Dict[str, Any]],
+                     base_open_counts: Dict[Tuple[str, str], int]) -> int:
+    """ADR-0021 (idea from Crysk: "a defect this change did not cause never blocks it"). A detector can fire on an
+    ADDED line for code that already existed on the target branch -- the MR moved, re-indented or copied it. Blocking the
+    MR on that punishes it for debt it did not create, and teaches teams to ignore the check.
+
+    Decided by COUNTING, not by trusting a label: for each (rule, file), if the MR head has no more occurrences than the
+    target branch already has open in Centinela, none of them can be new, so they are marked `preexisting` (posted, but
+    not blocking). If the head has MORE, every occurrence on the changed lines stays blocking (we cannot tell which
+    one is new). Unknown base (no scan of the target branch) -> count 0 -> everything stays blocking (fail-closed).
+    Returns how many findings were marked."""
+    head: Dict[Tuple[str, str], int] = {}
+    for f in head_findings:
+        k = _rule_file_key(f)
+        head[k] = head.get(k, 0) + 1
+    marked = 0
+    for f in new_line_findings:
+        k = _rule_file_key(f)
+        if base_open_counts.get(k, 0) > 0 and head.get(k, 0) <= base_open_counts[k]:
+            f["preexisting"] = True
+            marked += 1
+    return marked
+
+
+def base_open_counts_from_db(asset_names: List[str]) -> Dict[Tuple[str, str], int]:
+    """Open (not RESOLVED) findings of the target-branch asset, counted per (rule, file). The first asset name that
+    exists wins (branch assets are `GitLab/<path>@<branch>`; older ones carry no branch). Any DB error -> {} (blocking)."""
+    from core import db_manager
+    try:
+        with db_manager.get_db_cursor() as cur:
+            for name in asset_names:
+                cur.execute("SELECT id FROM infra_inventory WHERE asset_name = %s", (name,))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                cur.execute("""
+                    SELECT UPPER(cve_id), split_part(url_path, ':', 1), COUNT(*)
+                    FROM vulnerability_log WHERE asset_id = %s AND status <> 'RESOLVED' AND url_path IS NOT NULL
+                    GROUP BY 1, 2
+                """, (row[0],))
+                return {(r[0], r[1]): int(r[2]) for r in cur.fetchall()}
+    except Exception:
+        import logging
+        logging.getLogger(__name__).error("base_open_counts_from_db failed; every finding stays blocking", exc_info=True)
+    return {}
+
+
 def decide_state(findings: List[Dict[str, Any]], blocking_severity: str = "HIGH") -> str:
-    """'failed' if any finding is at/above blocking_severity, else 'success'."""
+    """'failed' if any finding NOT marked preexisting is at/above blocking_severity, else 'success'."""
     threshold = _SEVERITY_RANK.get(blocking_severity.upper(), 3)
     for f in findings:
+        if f.get("preexisting"):
+            continue
         if _SEVERITY_RANK.get(str(f.get("severity", "")).upper(), 0) >= threshold:
             return "failed"
     return "success"
@@ -137,7 +191,7 @@ def _semgrep_changed(repo_dir: str, source_rels: List[str]) -> List[Dict[str, An
     cmd = [_semgrep.SEMGREP_BIN, "--json", "--quiet"] + \
           [f"--config={r}" for r in rulesets] + abs_files
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=_SEMGREP_TIMEOUT_S)
+        res = _semgrep.run_semgrep(cmd, _SEMGREP_TIMEOUT_S)
         if res.returncode not in (0, 1):
             return []
         import json as _json
@@ -216,6 +270,26 @@ def scan_changed_files(repo_dir: str, changed_paths: List[str]) -> List[Dict[str
 
 
 # ----------------------------------------------------------------------------- GitLab I/O
+
+
+# Traceability of the change to a requirement (ADR-0022 §7; idea from Qodo PR-Agent's "ticket compliance", deterministic here).
+# A merge request that names no issue/ticket leaves no link between the code and the requirement it implements -- the
+# evidence CMMI RDM/VV and the methodology's change control ask for. Reported in the summary, never blocking.
+_ISSUE_REF = re.compile(r"(?:(?<![\w/])[\w.-]+/[\w./-]+)?#\d+\b|/-/issues/\d+|\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")
+
+
+def linked_issues(title: str, description: str) -> List[str]:
+    """Issue / ticket references in an MR title or description (`#12`, `grupo/proy#12`, `.../-/issues/12`, `PROY-123`)."""
+    text = f"{title or ''}\n{description or ''}"
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)          # code blocks are not references
+    seen: List[str] = []
+    for m in _ISSUE_REF.finditer(text):
+        ref = m.group(0)
+        if re.fullmatch(r"(CVE|CWE|GHSA|ISO|UTF|SHA|RFC|HTTP|TLS|OWASP|WCAG)-\d+", ref):
+            continue
+        if ref not in seen:
+            seen.append(ref)
+    return seen[:10]
 
 class MRReviewer:
     def __init__(self, gitlab_url: Optional[str] = None, token: Optional[str] = None, instance: Optional[str] = None):
@@ -371,12 +445,20 @@ class MRReviewer:
                             "Centinela no pudo clonar/checkout la rama del MR para revisarla")
             return {"status": "error", "reason": "checkout failed", "head_sha": head_sha}
 
+        ai_result: Optional[Dict[str, Any]] = None
         try:
             all_findings = scan_changed_files(repo_dir, changed_paths)
+            findings = findings_on_changed_lines(all_findings, added_by_file)
+            if mr_ai_review.enabled():
+                ai_result = self._run_ai_review(raw_changes, added_by_file, repo_dir, findings, path_ns,
+                                                mr.get("target_branch"), mr.get("title") or "")
         finally:
             shutil.rmtree(repo_dir, ignore_errors=True)
 
-        findings = findings_on_changed_lines(all_findings, added_by_file)
+        target_branch = mr.get("target_branch")
+        preexisting = mark_preexisting(findings, all_findings, base_open_counts_from_db(
+            [self.instance.asset_name(path_ns, target_branch), self.instance.asset_name(path_ns)] if target_branch
+            else [self.instance.asset_name(path_ns)]))
         findings.sort(key=lambda f: (-_SEVERITY_RANK.get(str(f.get("severity", "")).upper(), 0),
                                      f.get("rel_path", ""), f.get("line", 0)))
 
@@ -390,14 +472,35 @@ class MRReviewer:
                 f"{MARKER}\n<!-- key:{key} -->\n"
                 f"### 🛡️ Centinela — `{f['cve_id']}` ({str(f.get('severity','')).upper()})\n\n"
                 f"{f.get('description', '').strip()}\n\n"
-                f"_Detectado en una línea introducida por este MR (`{f['rel_path']}:{f['line']}`). "
-                f"Corrige antes de fusionar, o marca como falso positivo en Centinela "
-                f"(`POST /api/suppressions`)._"
+                + (f"_Ya existía en la rama destino (este MR movió o copió ese código): **no bloquea el merge**, "
+                   f"pero conviene corregirlo (`{f['rel_path']}:{f['line']}`)._"
+                   if f.get("preexisting") else
+                   f"_Detectado en una línea introducida por este MR (`{f['rel_path']}:{f['line']}`). "
+                   f"Corrige antes de fusionar, o marca como falso positivo en Centinela "
+                   f"(`POST /api/suppressions`)._")
             )
             if self.post_inline(project_id, mr_iid, diff_refs, f["rel_path"], f["line"], body):
                 posted += 1
 
+        ai_findings = (ai_result or {}).get("findings") or []
+        ai_posted = 0
+        for af in ai_findings:
+            key = f"ai:{af['path']}:{af['line']}:{af.get('cwe') or 'logic'}"
+            if key in already:
+                continue
+            extra = f" (también líneas {', '.join(map(str, af['merged_lines']))})" if af.get("merged_lines") else ""
+            body = (
+                f"{MARKER}\n<!-- key:{key} -->\n"
+                f"### 🤖 Centinela IA — posible error de lógica ({af['severity']}{', ' + af['cwe'] if af.get('cwe') else ''})\n\n"
+                f"{af['description']}{extra}\n\n"
+                f"Evidencia: {', '.join('`' + r + '`' for r in af.get('evidence_valid', []))}\n\n"
+                f"_Observación de IA: **no bloquea el merge**. Verifícala; puede ser un falso positivo._"
+            )
+            if self.post_inline(project_id, mr_iid, diff_refs, af["path"], af["line"], body):
+                ai_posted += 1
+
         state = decide_state(findings, blocking_severity)
+        issues = linked_issues(mr.get("title", ""), mr.get("description", ""))
         by_sev: Dict[str, int] = {}
         for f in findings:
             by_sev[str(f.get("severity", "")).upper()] = by_sev.get(str(f.get("severity", "")).upper(), 0) + 1
@@ -409,7 +512,19 @@ class MRReviewer:
             f"- Archivos cambiados analizados: **{len(changed_paths)}**\n"
             f"- Hallazgos en líneas nuevas de este MR: **{len(findings)}** ({sev_line})\n"
             f"- Estado del check `{STATUS_CONTEXT}`: **{state.upper()}** "
-            f"(bloquea a partir de severidad `{blocking_severity.upper()}`)\n\n"
+            f"(bloquea a partir de severidad `{blocking_severity.upper()}`)\n"
+            + (f"- De ellos, **{preexisting}** ya existían en la rama destino (código movido o copiado) y no bloquean.\n"
+               if preexisting else "")
+            + (f"- Observaciones de IA sobre lógica (no bloquean): **{len(ai_findings)}**"
+               f" ({ai_result.get('candidates', 0)} propuestas, {ai_result.get('refuted', 0)} refutadas por una segunda revisión,"
+               f" {sum((ai_result.get('drops') or {}).values())} descartadas por no verificarse)\n"
+               if ai_result and ai_result.get("status") == "reviewed" else
+               ("- Revisión de lógica por IA: sin proveedor disponible en este momento.\n"
+                if ai_result and ai_result.get("status") == "unavailable" else ""))
+            + (f"- Requerimiento vinculado: {', '.join(issues)}\n" if issues else
+               "- ⚠️ Este MR no menciona ningún issue o ticket: no queda trazabilidad entre el cambio y el requerimiento "
+               "que implementa (evidencia CMMI RDM/VV). No bloquea.\n")
+            + "\n"
             + ("✅ Sin hallazgos de seguridad en el código introducido por este MR.\n"
                if not findings else
                "❌ Revisa los comentarios en línea. Cada hallazgo está sobre una línea que "
@@ -427,13 +542,30 @@ class MRReviewer:
             entity_type="merge_request", entity_id=mr_iid,
             detail={"project_id": project_id, "head_sha": head_sha, "state": state,
                     "findings": len(findings), "by_severity": by_sev, "comments_posted": posted,
-                    "changed_files": len(changed_paths)},
+                    "changed_files": len(changed_paths), "preexisting": preexisting,
+                    "ai_review": {k: v for k, v in (ai_result or {}).items() if k != "findings"} or None,
+                    "ai_comments_posted": ai_posted, "linked_issues": issues},
             evidence=mr.get("web_url"),
             outcome="success",
         )
         return {"status": "reviewed", "mr_iid": mr_iid, "head_sha": head_sha,
                 "check_state": state, "findings": len(findings), "comments_posted": posted,
-                "by_severity": by_sev}
+                "by_severity": by_sev, "preexisting": preexisting,
+                "ai_findings": len(ai_findings), "ai_comments_posted": ai_posted}
+
+    def _run_ai_review(self, raw_changes, added_by_file, repo_dir, det_findings, path_ns, target_branch, title):
+        """Optional AI logic pass (auditors/mr_ai_review.py). Any failure leaves the deterministic review intact."""
+        try:
+            from core import repo_facts
+            import centinela   # the shared provider cascade (data policy, redaction, cooldowns) lives there
+            facts = repo_facts.load_repo_facts(self.instance.asset_name(path_ns, target_branch), repo_dir)["text"]
+            return mr_ai_review.run_ai_review(raw_changes, added_by_file, repo_dir, det_findings,
+                                              ask=lambda p: centinela.call_ai_cascade(p, want_json=True),
+                                              repo_facts=facts, mr_title=title)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("AI MR review failed; deterministic review unaffected", exc_info=True)
+            return {"status": "error", "findings": []}
 
 
 def _pid(project_id: Any) -> str:

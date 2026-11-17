@@ -28,7 +28,7 @@ class TestNewAssetTypesRouting(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_handle_cicd_pipeline(self, mock_sub):
-        data = {"id": 99995, "type": "CICD-Pipeline", "endpoint": "http://192.0.2.12/devops/runner"}
+        data = {"id": 99995, "type": "CICD-Pipeline", "endpoint": "http://192.0.2.14/devops/runner"}
         handle_asset_discovered(data)
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ def _seed_test_assets(_core_schema):
     assets = [
         ("GitLab/proyecto-g/frontend/frontend-proyecto-g", "GitLab-Repo", "http://gitlab.test/proyecto-g/frontend/frontend-proyecto-g"),
         ("GitLab/otros/proyecto-de-prueba", "GitLab-Repo", "http://gitlab.test/otros/proyecto-de-prueba"),
-        ("servidor-de-pruebas", "SERVER", "192.0.2.24"),
+        ("servidor-de-pruebas", "SERVER", "192.0.2.27"),
     ]
     with db_manager.get_db_cursor() as cur:
         ids = {}
@@ -69,3 +69,22 @@ def _seed_test_assets(_core_schema):
                            VALUES (%s, 'TEST-SEED-FINDING', 'HIGH', 'CORRELATED', 'src/app.ts:1', 'hallazgo sembrado para pruebas',
                                    'Resumen de prueba', 'Impacto de prueba', 'Pasos de prueba', 'test-seed-finding-fp', NOW(),
                                    'VULNERABILITY', 'sast-native')""", (ids[assets[0][0]],))
+
+
+@pytest.fixture(autouse=True)
+def _api_auth_off(monkeypatch):
+    """The suite runs inside centinela-backend, which carries production's API_AUTH_MODE (enforce). Tests of other endpoints must not depend
+    on it: authentication is off unless a test sets the mode itself (tests/test_api_auth.py, test_agent_install_command.py)."""
+    monkeypatch.setenv("API_AUTH_MODE", "off")
+
+
+# --- added by the public-release builder: tests that depend on what the sanitizing removes or rewrites ---
+_PUBLIC_RELEASE_SKIPS = {'tests/test_ai_data_policy.py::TestClassifier::test_internal_signals': 'la copia pública reescribe las IP privadas de los ejemplos a IP de documentación (192.0.2.x), que no son internas', 'tests/test_runtime_and_dependency_audits.py::TestDependencyProbe::test_findings_severity_by_profile_and_secret_free': 'la copia pública reescribe las IP privadas de los ejemplos a IP de documentación (192.0.2.x)', 'tests/test_api_auth.py::test_docs_routes_serve_the_right_documents': 'los manuales (docs-public) son internos y no forman parte de la copia pública', 'tests/test_cmmi_evidence.py::TestOrgCollectorsAgainstThisRepository::test_pad_manifests_are_valid_in_this_repo': 'los manifiestos del generador de entregables son internos y no forman parte de la copia pública', 'tests/test_preflight_and_checklist.py::TestChecklistEvidence::test_counts_are_split_and_use_effective_severity': 'el checklist 0A-4 vive en el generador de entregables, interno y fuera de la copia pública', 'tests/test_no_org_names.py::TestNoOrganisationNames::test_source_and_readme_do_not_name_the_organisation': 'el depurado reescribe el nombre buscado; el constructor de la copia pública aplica esa misma revisión a todo el árbol'}
+
+
+def pytest_collection_modifyitems(config, items):
+    import pytest as _pytest
+    for item in items:
+        reason = _PUBLIC_RELEASE_SKIPS.get(item.nodeid)
+        if reason:
+            item.add_marker(_pytest.mark.skip(reason="copia pública: " + reason))

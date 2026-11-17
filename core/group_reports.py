@@ -36,15 +36,16 @@ _worker_lock = threading.Semaphore(1)   # one bundle at a time: each asset PDF i
 def group_summary(cur, asset_ids: List[str]) -> Dict[str, Any]:
     cur.execute("""
         SELECT i.id::text, i.asset_name, i.asset_type, i.last_audit,
-               count(*) FILTER (WHERE v.finding_category IS DISTINCT FROM 'INFORMATIONAL' AND v.status NOT IN %(ex)s AND v.id IS NOT NULL) AS vulns,
-               count(*) FILTER (WHERE v.finding_category IS DISTINCT FROM 'INFORMATIONAL' AND v.status NOT IN %(ex)s
+               count(*) FILTER (WHERE COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY' AND v.status NOT IN %(ex)s AND v.id IS NOT NULL) AS vulns,
+               count(*) FILTER (WHERE COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY' AND v.status NOT IN %(ex)s
                                 AND upper(COALESCE(v.real_severity, v.severity)) = 'CRITICAL') AS crit,
-               count(*) FILTER (WHERE v.finding_category IS DISTINCT FROM 'INFORMATIONAL' AND v.status NOT IN %(ex)s
+               count(*) FILTER (WHERE COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY' AND v.status NOT IN %(ex)s
                                 AND upper(COALESCE(v.real_severity, v.severity)) = 'HIGH') AS high,
-               count(*) FILTER (WHERE v.finding_category IS DISTINCT FROM 'INFORMATIONAL' AND v.status NOT IN %(ex)s
+               count(*) FILTER (WHERE COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY' AND v.status NOT IN %(ex)s
                                 AND upper(COALESCE(v.real_severity, v.severity)) = 'MEDIUM') AS med,
-               count(*) FILTER (WHERE v.finding_category IS DISTINCT FROM 'INFORMATIONAL' AND v.status NOT IN %(ex)s
+               count(*) FILTER (WHERE COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY' AND v.status NOT IN %(ex)s
                                 AND upper(COALESCE(v.real_severity, v.severity)) = 'LOW') AS low,
+               count(*) FILTER (WHERE v.finding_category = 'COMPLIANCE' AND v.status NOT IN %(ex)s) AS compliance,
                count(*) FILTER (WHERE v.finding_category = 'INFORMATIONAL' AND v.status NOT IN %(ex)s) AS info,
                count(*) FILTER (WHERE v.status = 'RESOLVED') AS resolved,
                count(*) FILTER (WHERE v.status = 'SUPPRESSED') AS suppressed
@@ -61,11 +62,11 @@ def group_summary(cur, asset_ids: List[str]) -> Dict[str, Any]:
                string_agg(DISTINCT upper(COALESCE(v.real_severity, v.severity)), ' / ') AS sev,   -- one row per rule; severities can differ per occurrence
                count(*) AS n, count(DISTINCT v.asset_id) AS assets
         FROM public.vulnerability_log v
-        WHERE v.asset_id = ANY(%s::uuid[]) AND v.status NOT IN %s AND v.finding_category IS DISTINCT FROM 'INFORMATIONAL'
+        WHERE v.asset_id = ANY(%s::uuid[]) AND v.status NOT IN %s AND COALESCE(v.finding_category, 'VULNERABILITY') = 'VULNERABILITY'
         GROUP BY 1 ORDER BY count(*) DESC LIMIT 15
     """, (list(asset_ids), OPEN_EXCLUDED))
     top = [{"cve_id": r[0], "severity": r[1], "count": r[2], "assets": r[3]} for r in cur.fetchall()]
-    keys = ("vulns", "crit", "high", "med", "low", "info", "resolved", "suppressed")
+    keys = ("vulns", "crit", "high", "med", "low", "compliance", "info", "resolved", "suppressed")
     totals = {k: sum(int(r[k] or 0) for r in rows) for k in keys}
     return {"assets": rows, "top_rules": top, "totals": totals}
 
@@ -99,7 +100,7 @@ def render_group_general_html(title: str, summary: Dict[str, Any]) -> str:
     body_rows = "".join(
         f"<tr><td>{_e(r['asset_name'][len(pre):] or r['asset_name'])}</td><td>{_e(str(r['last_audit'] or '—')[:16])}</td>"
         f"<td class='n crit'>{r['crit'] or ''}</td><td class='n high'>{r['high'] or ''}</td><td class='n'>{r['med'] or ''}</td>"
-        f"<td class='n'>{r['low'] or ''}</td><td class='n'><b>{r['vulns']}</b></td><td class='n muted'>{r['info']}</td>"
+        f"<td class='n'>{r['low'] or ''}</td><td class='n'><b>{r['vulns']}</b></td><td class='n'>{r['compliance']}</td><td class='n muted'>{r['info']}</td>"
         f"<td class='n'>{r['resolved']}</td></tr>" for r in rows)
     top_rows = "".join(f"<tr><td><code>{_e(x['cve_id'])}</code></td><td>{_e(x['severity'])}</td><td class='n'>{x['count']}</td>"
                        f"<td class='n'>{x['assets']}</td></tr>" for x in summary["top_rules"]) or "<tr><td colspan='4'>Sin vulnerabilidades abiertas.</td></tr>"
@@ -122,12 +123,14 @@ code{{font-size:10px;word-break:break-all}}
  <div class="kpi">Medias<b>{t['med']}</b></div>
  <div class="kpi">Bajas<b>{t['low']}</b></div>
  <div class="kpi">Resueltas (histórico)<b>{t['resolved']}</b></div>
+ <div class="kpi">Cumplimiento: accesibilidad (WCAG)<b>{t['compliance']}</b></div>
 </div>
-<p class="muted">Severidad efectiva (tras el análisis de riesgo real de Centinela). Además hay {t['info']} hallazgos informativos de calidad de código
-(SonarQube, ISO 25010, CMMI) que no son vulnerabilidades, y {t['suppressed']} suprimidos por un analista.</p>
+<p class="muted">Severidad efectiva (tras el análisis de riesgo real de Centinela). Los {t['compliance']} hallazgos de accesibilidad (WCAG 2.1) son
+requisitos de cumplimiento, no vulnerabilidades de seguridad: se atienden con su plazo pero no se suman a las vulnerabilidades. Además hay
+{t['info']} hallazgos informativos de calidad de código (SonarQube, ISO 25010, CMMI) que no son vulnerabilidades, y {t['suppressed']} suprimidos por un analista.</p>
 <h2>Por activo</h2>
 <table><tr><th>Activo</th><th>Último análisis</th><th class="n">Crít.</th><th class="n">Altas</th><th class="n">Medias</th><th class="n">Bajas</th>
-<th class="n">Total vuln.</th><th class="n">Informativos</th><th class="n">Resueltas</th></tr>{body_rows}</table>
+<th class="n">Total vuln.</th><th class="n">Accesibilidad</th><th class="n">Informativos</th><th class="n">Resueltas</th></tr>{body_rows}</table>
 <h2>Reglas más frecuentes (vulnerabilidades abiertas)</h2>
 <table><tr><th>Regla</th><th>Severidad</th><th class="n">Ocurrencias</th><th class="n">Activos</th></tr>{top_rows}</table>
 <p class="muted">El detalle de cada hallazgo, su análisis y los pasos de corrección están en el reporte individual de cada activo.</p>
@@ -203,7 +206,8 @@ def start_bundle(title: str, assets: List[Dict[str, str]],
     os.makedirs(os.path.join(BUNDLE_DIR, bundle_id), exist_ok=True)
     stem = _safe(title, 80)
     st = {"id": bundle_id, "title": title, "status": "queued", "total": len(assets) + 2, "done": 0, "failed": [],
-          "created_at": time.time(), "file": f"{stem}_{_local_now():%Y-%m-%d}.zip"}
+          "created_at": time.time(), "file": f"{stem}_{_local_now():%Y-%m-%d}.zip",
+          "asset_names": [a.get("name") for a in assets]}   # lets core.access_scope check who may read/download this bundle
     _write_status(bundle_id, st)
     threading.Thread(target=_build, args=(bundle_id, st, stem, assets, render_group_pdf, render_comparison_pdf, render_asset_pdf),
                      daemon=True, name=f"report-bundle-{bundle_id[:8]}").start()

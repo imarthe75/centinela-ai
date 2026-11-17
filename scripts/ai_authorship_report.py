@@ -19,7 +19,7 @@ def main(asset):
         return 1
     with db_manager.get_db_cursor() as cur:
         cur.execute("""SELECT v.url_path FROM vulnerability_log v JOIN infra_inventory i ON i.id=v.asset_id
-                       WHERE i.asset_name=%s AND v.finding_category='VULNERABILITY' AND v.status NOT IN ('RESOLVED','SUPPRESSED')
+                       WHERE i.asset_name=%s AND v.finding_category IN ('VULNERABILITY','COMPLIANCE') AND v.status NOT IN ('RESOLVED','SUPPRESSED')
                          AND v.url_path IS NOT NULL""", (asset,))
         findings = [{"url_path": r[0]} for r in cur.fetchall()]
     res = ai_authorship.measure(repo, findings)

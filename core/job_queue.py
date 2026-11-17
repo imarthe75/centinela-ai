@@ -47,6 +47,24 @@ def enqueue(kind: str, target: str, payload: Optional[Dict[str, Any]] = None, *,
         return str(row[0]) if row else None
 
 
+def record_skipped(kind: str, target: str, reason: str, payload: Optional[Dict[str, Any]] = None) -> str:
+    """Record that a periodic job was deliberately not run (e.g. the code did not change since the last analysis) as a finished job, so the
+    producer's own interval/cutoff check treats the target as handled for this window and the decision stays auditable in scan_jobs."""
+    with db_manager.get_db_cursor() as cur:
+        cur.execute("""INSERT INTO scan_jobs (kind, target, payload, status, attempts, max_attempts, started_at, finished_at, last_error)
+                       VALUES (%s, %s, %s::jsonb, 'DONE', 0, 1, now(), now(), %s) RETURNING id""",
+                    (kind, target, json.dumps({**(payload or {}), "skipped": True}), f"omitido: {reason}"))
+        return str(cur.fetchone()[0])
+
+
+def finished_since(kind: str, target: str, since: datetime) -> bool:
+    """True when the target has a DONE/FAILED job finished at or after `since` (aware datetime)."""
+    with db_manager.get_db_cursor() as cur:
+        cur.execute("""SELECT 1 FROM scan_jobs WHERE kind = %s AND target = %s AND status IN ('DONE', 'FAILED')
+                       AND finished_at >= %s LIMIT 1""", (kind, target, since))
+        return cur.fetchone() is not None
+
+
 def requeue_expired() -> int:
     """Jobs whose worker stopped renewing the lease go back to QUEUED, or FAILED once attempts are exhausted. Returns how many were touched."""
     with db_manager.get_db_cursor() as cur:

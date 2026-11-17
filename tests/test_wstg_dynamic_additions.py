@@ -8,7 +8,7 @@ from auditors.auditor_wstg import audit_url_wstg
 
 LEAKY_PAGE = b"""<html><head><title>x</title></head><body>
 <!-- TODO: quitar usuario: admin password: Sup3r -->
-<p>servidor interno 192.0.2.13</p>
+<p>servidor interno 192.0.2.15</p>
 <form><input type="password" name="p"></form></body></html>"""
 CLEAN_PAGE = b"<html><head><title>ok</title></head><body><p>Hola</p></body></html>"
 

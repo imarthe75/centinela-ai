@@ -81,6 +81,15 @@ class TestChecklistEvidence(_Base):
         self.assertIn("sast-native", ev["engines_last_detection"])
         self.assertTrue(ev["not_evaluated_by_centinela"])
         self.assertIn("signs_nothing", ev)
+        self.assertEqual(ev["security"]["informs_points"], ["3.10"])
+        self.assertEqual(ev["secrets"]["open_total"], 0)
+        pts = {p["id"]: p for p in ev["checklist_points"]}
+        self.assertEqual(sorted(pts), ["3.10", "3.7", "5.8"])
+        self.assertIn("0B-2", pts["3.10"]["text"])            # text comes from the skill's official 0A-4 file
+
+    def test_checklist_points_degrade_to_ids_without_the_file(self):
+        self.assertEqual(pf.checklist_points(["3.10"], path="/nonexistent/0A-4.json"),
+                         [{"id": "3.10", "text": None, "responde": None, "critico": None}])
 
     def test_unknown_asset_is_none(self):
         self.assertIsNone(pf.checklist_evidence(self.cur, "GitLab/nope/never"))

@@ -20,7 +20,7 @@ from typing import Dict, List, NamedTuple, Optional
 from urllib.parse import urlparse
 
 PRIMARY_KEY = "primary"
-_DEFAULT_PRIMARY_URL = "http://192.0.2.12"
+_DEFAULT_PRIMARY_URL = "http://192.0.2.14"
 
 
 class GitLabInstance(NamedTuple):

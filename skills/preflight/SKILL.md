@@ -27,3 +27,5 @@ GET {PREFLIGHT_URL}/api/preflight?asset=<activo>&paths=ruta/a.java,ruta/b.ts
 4. No corrijas hallazgos que la tarea no pidió; repórtalos.
 
 Esta skill solo lee. No modifica hallazgos ni el escáner.
+
+Qué significa cada regla abierta y cómo corregirla: skill `prevencion-hallazgos-seguridad-calidad`.

@@ -179,18 +179,40 @@ _INFORMATIONAL_CVE_EXACT = {
     "SQL-PK-NOT-UUID", "SQL-TIMESTAMP-WITHOUT-TIMEZONE", "SQL-JSON-NOT-JSONB", "SQL-FLOAT-FOR-MONEY", "SQL-TABLE-WITHOUT-AUDIT-COLUMNS",
     "TRANSACTIONAL-ON-CONTROLLER", "FIELD-INJECTION-AUTOWIRED", "JPA-OBJECT-ARRAY-RESULT", "FRONTEND-HARDCODED-API-URL",
     "API-ENDPOINT-UNDOCUMENTED",
+    # CORE/Starter business-rule catalogue (2026-10-28): data-model conformance (leading zeros), not exploitable
+    "NUMERIC-CODE-STORED-AS-NUMBER",
+    # compiled build output committed to git (ADR-0022): repository hygiene, not exploitable by itself
+    "REPO-BUILD-OUTPUT-COMMITTED",
 }
 _INFORMATIONAL_SCAN_ENGINES = {"cmmi-audit"}
 
+# Accessibility (WCAG 2.1) findings: a legal/contractual compliance requirement for the public-sector projects audited here, not a
+# security vulnerability and not optional quality debt either. They keep their SLA, AI analysis and visibility, but are counted
+# in their own COMPLIANCE category instead of the security-vulnerability headline (owner decision 2026-10-29).
+FINDING_CATEGORIES = ("VULNERABILITY", "COMPLIANCE", "INFORMATIONAL")
+_COMPLIANCE_CVE_PREFIXES = ("WCAG-", "ACCESSIBILITY-WCAG")
+_COMPLIANCE_SCAN_ENGINES = {"accessibility-wcag", "wcag-render"}
+# SQL twin of is_compliance_rule(), for backfills and filters that must match the classifier exactly.
+COMPLIANCE_RULE_SQL = "(v.cve_id LIKE 'WCAG-%%' OR v.cve_id LIKE 'ACCESSIBILITY-WCAG%%' OR v.scan_engine IN ('accessibility-wcag', 'wcag-render'))"
+
+
+def is_compliance_rule(cve_id: str, scan_engine: Optional[str] = None) -> bool:
+    """True for accessibility (WCAG) findings, which belong to the COMPLIANCE category."""
+    cve_u = str(cve_id or "").strip().upper()
+    return cve_u.startswith(_COMPLIANCE_CVE_PREFIXES) or str(scan_engine or "").strip().lower() in _COMPLIANCE_SCAN_ENGINES
+
 
 def classify_finding_category(cve_id: str, scan_engine: Optional[str], description: str = "") -> str:
-    """Returns 'VULNERABILITY' (a real, individually actionable security finding) or
-    'INFORMATIONAL' (an aggregate marker, code-quality metric, or process-debt item -- real and
-    worth showing, but not a vulnerability). Only exact cve_id matches are used (never a prefix
-    match), so a real per-check finding that merely shares an engine with a marker -- e.g. a real
-    CIS-SSH-ROOT-LOGIN failure sharing scan_engine='cis-benchmark' with the CIS-BENCHMARK-AUDIT
-    completion marker -- is never miscategorized alongside it."""
+    """Returns 'VULNERABILITY' (a real, individually actionable security finding), 'COMPLIANCE'
+    (an accessibility/WCAG requirement: actionable and with SLA, but not a security vulnerability)
+    or 'INFORMATIONAL' (an aggregate marker, code-quality metric, or process-debt item -- real and
+    worth showing, but not a vulnerability). Only exact cve_id matches are used for INFORMATIONAL
+    (never a prefix match), so a real per-check finding that merely shares an engine with a marker
+    -- e.g. a real CIS-SSH-ROOT-LOGIN failure sharing scan_engine='cis-benchmark' with the
+    CIS-BENCHMARK-AUDIT completion marker -- is never miscategorized alongside it."""
     cve_u = str(cve_id or "").strip().upper()
+    if is_compliance_rule(cve_u, scan_engine):
+        return "COMPLIANCE"
     if cve_u in _INFORMATIONAL_CVE_EXACT:
         return "INFORMATIONAL"
     if str(scan_engine or "").strip().lower() in _INFORMATIONAL_SCAN_ENGINES:
@@ -285,7 +307,7 @@ def log_finding_deduplicated(cur, asset_id: str, cve_id: str, severity: str, des
     other caller's existing tested behavior), Tier 1 only matches non-RESOLVED rows and always
     sets status to open_status on update.
 
-    finding_category: 'VULNERABILITY' (default, auto-classified) or 'INFORMATIONAL' -- see
+    finding_category: 'VULNERABILITY' (default, auto-classified), 'COMPLIANCE' or 'INFORMATIONAL' -- see
     classify_finding_category()'s own docstring. Pass explicitly only when the caller has real
     data the classifier can't see from cve_id/scan_engine/description alone (e.g. SonarQube's
     real per-issue API "type"); leave as None everywhere else so the shared classifier stays the
@@ -485,7 +507,7 @@ def reconcile_resolved_findings(cur, asset_id: str, scan_engine: str, active_fin
     findings it simply didn't get around to checking, since it wouldn't call this at all in that
     case (call sites only invoke this after a scan completes without raising).
 
-    `url_origin` (e.g. "http://192.0.2.14:8080") scopes the reconciliation to findings whose url_path is that
+    `url_origin` (e.g. "http://192.0.2.16:8080") scopes the reconciliation to findings whose url_path is that
     origin or lives under it. Required by any engine that scans ONE asset in several independent calls (one
     per web port): without it, the call for port 8080 saw none of port 80's findings in its active set and
     marked them all RESOLVED, so a server's findings flapped open/resolved on every cycle (2026-09-23).

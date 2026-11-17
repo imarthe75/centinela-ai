@@ -86,7 +86,7 @@ Todo plan de un proyecto org contempla (y cada punto tiene su tarea con comando 
 3. **`@PreAuthorize`** en cada endpoint nuevo y prueba de 403 por rol (`backend-base-spring`, `backend-pruebas-unitarias`).
 4. **Prueba antes del código** (`test-driven-development`); caso que pasa y caso que falla.
 5. **Sin secretos** en el diff (`reglas-globales-org`).
-6. **Escaneo de Centinela** sobre los archivos tocados y cero hallazgos nuevos, o declarar «no verificado por escáner» (`preflight`, `centinela-developer-standards`).
+6. **Escaneo de Centinela** sobre los archivos tocados y cero hallazgos nuevos, o declarar «no verificado por escáner» (`preflight`, `prevencion-hallazgos-seguridad-calidad`).
 7. **Verificación de salud** del servicio al final del plan.
 
 ---
@@ -110,3 +110,6 @@ Al guardar el plan, proponer al usuario:
 - **test-driven-development**: Cada tarea del plan sigue el ciclo RED-GREEN-REFACTOR
 - **verification-before-completion**: Verificar antes de marcar cada tarea como completada
 - **opsx-propose**: Crear el spec formal antes de escribir el plan
+
+## Seguridad y calidad en el plan
+Cada tarea que escribe código cita las secciones del catálogo de `prevencion-hallazgos-seguridad-calidad` que aplican y su verificación (prueba del 403, escáner sobre los cambios).

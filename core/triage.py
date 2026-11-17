@@ -259,12 +259,13 @@ def _match(col: str, asset_prefix: str):
 
 
 def fetch_group_findings(cur, asset_prefix: str) -> List[Dict[str, Any]]:
-    """Open VULNERABILITY-category findings of every asset whose name starts with the prefix (i.e. the group and all its sub-projects)."""
+    """Open VULNERABILITY- and COMPLIANCE-category (accessibility) findings of every asset whose name starts with the prefix (i.e. the group
+    and all its sub-projects). Accessibility stays in the analyst's triage: it is actionable, just not a security vulnerability."""
     cur.execute("""
         SELECT i.asset_name, v.id::text, v.cve_id, v.scan_engine, v.url_path, v.severity,
                COALESCE(v.real_severity, v.severity), v.risk_verdict, v.reachability_status, v.description
         FROM vulnerability_log v JOIN infra_inventory i ON i.id = v.asset_id
-        WHERE """ + _match("i.asset_name", asset_prefix)[0] + """ AND v.finding_category = 'VULNERABILITY' AND v.status NOT IN %s
+        WHERE """ + _match("i.asset_name", asset_prefix)[0] + """ AND v.finding_category IN ('VULNERABILITY', 'COMPLIANCE') AND v.status NOT IN %s
     """, (*_match("i.asset_name", asset_prefix)[1], CLOSED_STATUSES))
     out = []
     for name, vid, rule, engine, up, sev_raw, sev_eff, verdict, reach, desc in cur.fetchall():
@@ -285,7 +286,7 @@ def fetch_group_assets(cur, asset_prefix: str) -> Dict[str, Dict[str, Any]]:
 
 def count_group_informational(cur, asset_prefix: str) -> int:
     cur.execute("""SELECT count(*) FROM vulnerability_log v JOIN infra_inventory i ON i.id=v.asset_id
-                   WHERE """ + _match("i.asset_name", asset_prefix)[0] + """ AND v.finding_category <> 'VULNERABILITY' AND v.status NOT IN %s""",
+                   WHERE """ + _match("i.asset_name", asset_prefix)[0] + """ AND v.finding_category NOT IN ('VULNERABILITY', 'COMPLIANCE') AND v.status NOT IN %s""",
                 (*_match("i.asset_name", asset_prefix)[1], CLOSED_STATUSES))
     return cur.fetchone()[0]
 

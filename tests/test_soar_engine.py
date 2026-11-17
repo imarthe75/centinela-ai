@@ -47,7 +47,7 @@ def test_host_isolate_is_always_manual(capture_ledger):
     assert res["mode"] == "MANUAL_APPROVAL_REQUIRED" and res["executed"] is False
 
 
-@pytest.mark.parametrize("ip,why", [("192.0.2.15", "not_a_public_ip"), ("127.0.0.1", "not_a_public_ip"),
+@pytest.mark.parametrize("ip,why", [("192.0.2.17", "not_a_public_ip"), ("127.0.0.1", "not_a_public_ip"),
                                     ("203.0.113.5", "not_a_public_ip"), ("garbage", "invalid_ip")])
 def test_non_public_ips_are_never_blockable(ip, why):
     assert soar_engine.is_blockable_ip(ip) == (False, why)

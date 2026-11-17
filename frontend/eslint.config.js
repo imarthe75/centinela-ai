@@ -20,4 +20,6 @@ export default [
       'react/jsx-uses-react': 'off',
     },
   },
+  // build/test config runs in Node, not the browser
+  { files: ['vite.config.js', 'vitest.config.js'], languageOptions: { globals: { ...globals.node } } },
 ]

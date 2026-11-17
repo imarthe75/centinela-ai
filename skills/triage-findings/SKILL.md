@@ -23,3 +23,6 @@ description: Método para cruzar varios insumos de seguridad (auditoría manual,
 - Lo descartado por una IA lo confirma una persona antes de suprimirse.
 - Cada decisión humana se guarda con quién y cuándo; no se pisa en una segunda corrida.
 - Ninguna cifra de «cumplimiento» o «resueltos» se publica sin las ocurrencias abiertas que la sustentan.
+
+## Ver también
+`consolidacion-auditoria-seguridad-generica` (scripts, libro de triage y matriz de seguimiento) y `prevencion-hallazgos-seguridad-calidad` (qué significa cada regla y cómo se corrige).

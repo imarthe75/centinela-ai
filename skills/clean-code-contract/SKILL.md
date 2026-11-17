@@ -35,3 +35,7 @@ description: Contrato de generación de código para agentes de IA: lo que se ap
 2. Si el proyecto cuenta con un escáner de seguridad, ejecútalo sobre tus cambios y corrige hasta cero hallazgos nuevos. Si no puedes ejecutarlo, escribe «no verificado por un escáner».
 3. Declara los límites: lo que ese escáner no cubre (pruebas dinámicas, TLS, configuración de servidores) queda como no verificado.
 4. Entrega con el formato de `references/honesty.md` §5 (estado, matriz de evidencia, salida real, deuda).
+
+## Reglas del escáner que esta skill evita
+`SWALLOWED-ERROR`, `CMMI-CAR-SWALLOWED-EXCEPTION`, `CMMI-PQA-DEBT-TODO`, `STD-ISO25010-LONG-METHOD`, `COGNITIVE-COMPLEXITY-EXCEEDED`, `CODE-INJECTION-EVAL`, `STD-STRIDE-LOG-SENSITIVE-DATA`, `HARDCODED-SECRET`.
+Corrección de cada una y el resto del catálogo: skill `prevencion-hallazgos-seguridad-calidad`.

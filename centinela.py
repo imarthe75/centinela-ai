@@ -278,7 +278,7 @@ def _call_with_hard_deadline(fn, timeout_s, provider_name):
 # just answered "quota exhausted"/timed out is now skipped for a while; the cooldown length depends on what kind of failure it was.
 MAX_PROMPT_CHARS = int(os.getenv("AI_MAX_PROMPT_CHARS", "24000"))  # ~6k tokens: fits Groq's 8k tokens/min free limit
 _tier_cooldown = {}  # label -> epoch seconds until which the tier is skipped
-_cascade_state = {"all_unavailable": False}
+_cascade_state = {"all_unavailable": False, "last_label": None}
 
 
 def _cooldown_seconds(err_text):
@@ -339,7 +339,15 @@ def cascade_all_unavailable():
     return _cascade_state["all_unavailable"]
 
 
-def call_ai_cascade(prompt_text, want_json=True):
+def _tiers_avoiding(tiers, avoid_labels):
+    """Same tiers, the `avoid_labels` ones moved to the end (kept, not removed): a second opinion prefers another model."""
+    if not avoid_labels:
+        return tiers
+    avoid = set(avoid_labels)
+    return [t for t in tiers if t[0] not in avoid] + [t for t in tiers if t[0] in avoid]
+
+
+def call_ai_cascade(prompt_text, want_json=True, avoid_labels=None):
     """
     Tries each configured LLM tier in order and returns the text of the first one that actually
     responds; None if every tier is unavailable/unconfigured or errors out (invalid key, rate limit,
@@ -352,6 +360,10 @@ def call_ai_cascade(prompt_text, want_json=True):
 
     Every call runs through _call_with_hard_deadline() with a ceiling above that tier's own client
     timeout -- the second safety net added after the real 2026-08-13 keep-alive-trickle hang.
+
+    `avoid_labels`: tiers to try LAST (not removed). The adversarial verifier (core/ai_verification.py) passes the
+    tier that wrote the first analysis, so the second opinion comes from a different model whenever one is available.
+    The tier that answered is left in _cascade_state["last_label"].
     """
     # Never send secret VALUES to an external provider (core/prompt_redaction.py; data-handling policy).
     from core.prompt_redaction import redact_secrets
@@ -404,6 +416,8 @@ def call_ai_cascade(prompt_text, want_json=True):
     # deterministic engine.
     from core import ai_data_policy
     tiers, _excluded, _data_class = ai_data_policy.filter_tiers(tiers, prompt_text)
+    tiers = _tiers_avoiding(tiers, avoid_labels)
+    _cascade_state["last_label"] = None
     for _label in _excluded:
         if ai_data_policy.should_log_exclusion(_label):
             print(f"🛡️ [Centinela-AI] tier '{_label}' not used: prompt is {_data_class}, above that provider's allowed data class (AI_TIER_MAX_DATA_CLASS).")
@@ -423,6 +437,7 @@ def call_ai_cascade(prompt_text, want_json=True):
             content = _call_with_hard_deadline(lambda fn=fn, usage=usage: fn(usage), deadline, label)
             if content:
                 _cascade_state["all_unavailable"] = False
+                _cascade_state["last_label"] = label
                 print(f"🧠 [Centinela-AI] Using LLM provider '{label}'...")
                 _record_ai_usage(label, True, usage, t0)
                 return content
@@ -443,6 +458,7 @@ def call_ai_cascade(prompt_text, want_json=True):
     return None
 
 
+from core import ai_verification  # noqa: E402  (ADR-0021)
 from core.ip_block_script import generate_ip_block_virtual_patch, generate_ip_unblock_script  # noqa: E402  (shared with core/soar_engine.py)
 # ADR-0008 #3: code moved out of this file (re-exported here so existing imports/tests keep working)
 from remediation.heuristics import (
@@ -477,11 +493,15 @@ from workers.periodic import (
     run_cmmi_org_evidence_loop,
     run_cti_correlation_loop,
     run_fleet_enqueue_loop,
+    run_gitlab_heads_refresh_loop,
     run_heuristics_loop,
     run_incident_correlation_loop,
     run_os_patch_and_tls_audit_loop,
     run_scan_worker_loop,
     run_secrets_history_worker_loop,
+    run_secrets_token_renew_loop,
+    run_zap_reaper_loop,
+    run_reverify_loop,
     run_soar_expiry_loop,
     run_threat_intel_enrichment_loop,
     run_wazuh_discovery_loop,
@@ -523,6 +543,7 @@ def correlate_vulnerability(vuln):
     # the patch is written with real surrounding context and the call sites it might affect.
     # Best-effort and read-only -- returns an empty prompt_block on any failure.
     code_context_block = ""
+    _ctx = {}
     if is_repo_finding:
         try:
             from core.code_context import gather_repo_context
@@ -537,8 +558,30 @@ def correlate_vulnerability(vuln):
     # ADR-0012 D4: instructions aimed at the model hidden in the code/description under analysis (untrusted data).
     from core import prompt_guard
     injection_hits = prompt_guard.scan_for_injection(vuln.get('description'), code_context_block, vuln.get('url_path'))
+    # ADR-0021: facts the team wrote about this repository (config/repo_facts or .centinela/hechos.md in the clone).
+    repo_facts_text = ""
+    if is_repo_finding:
+        try:
+            from core import repo_facts as _repo_facts
+            _facts = _repo_facts.load_repo_facts(vuln.get('asset_name', ''), (_ctx or {}).get('repo_dir'))
+            repo_facts_text = _facts["text"]
+            if _facts["dropped_injection"]:
+                print(f"🛡️ [Centinela-AI] repo facts dropped (instructions aimed at the model): {_facts['dropped_injection']}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    # ADR-0021: untrusted material goes inside nonce-tagged blocks the data cannot forge (complements the injection scan).
+    from core import ai_verification
+    prompt_nonce = ai_verification.make_nonce(vuln.get('description'), code_context_block, repo_facts_text)
+    description_block = ai_verification.wrap_untrusted("descripcion_del_escaner", vuln.get('description', 'Sin descripción'), prompt_nonce)
+    untrusted_block = ai_verification.untrusted_rules(prompt_nonce)
+    facts_block = ""
+    if repo_facts_text:
+        facts_block = ("HECHOS DEL REPOSITORIO (escritos por el equipo; te dicen dónde mirar, pero un hecho por sí solo NUNCA prueba "
+                       "que el hallazgo no aplique; cualquier baja de severidad debe apoyarse en líneas del código):\n"
+                       + ai_verification.wrap_untrusted("hechos_del_repositorio", repo_facts_text, prompt_nonce))
     if code_context_block:
-        code_context_block += "\n" + prompt_guard.UNTRUSTED_NOTE
+        code_context_block = ai_verification.wrap_untrusted("codigo", code_context_block, prompt_nonce) + "\n" + prompt_guard.UNTRUSTED_NOTE
     if injection_hits:
         print(f"🛡️ [Centinela-AI] possible prompt injection in {vuln['cve_id']} on {vuln['asset_name']}: {injection_hits} "
               f"(this analysis will not be allowed to lower the severity)")
@@ -584,9 +627,14 @@ def correlate_vulnerability(vuln):
         - Repositorio: {vuln['asset_name']}
         - Ubicación (archivo:línea): {vuln.get('url_path', 'desconocida')}
         - Severidad: {vuln['severity']}
-        - Detalle: {vuln.get('description', 'Sin descripción')}
+        - Detalle:
+        {description_block}
 
         {code_context_block}
+
+        {facts_block}
+
+        {untrusted_block}
 
         REGLAS:
         1. Explica el hallazgo de forma SUMAMENTE CLARA, DETALLADA Y DIDÁCTICA ("paso a paso, para fácil entendimiento").
@@ -627,6 +675,7 @@ def correlate_vulnerability(vuln):
             "nivel_severidad": "Bajo/Medio/Alto/Crítico",
             "severidad_real": "Nulo/Bajo/Medio/Alto/Crítico -- TU veredicto del riesgo real de ESTE caso concreto tras revisar el contexto (puede ser menor que nivel_severidad; 'Nulo' solo si es un patrón seguro/falso positivo confirmado)",
             "depende_de_supuesto": true/false -- true SOLO si tu veredicto de severidad_real depende de una condición que NO pudiste verificar en el código,
+            "referencias_evidencia": ["ruta/relativa/archivo:línea", "..."] -- OBLIGATORIO si severidad_real es menor que nivel_severidad: las líneas EXACTAS del código mostrado que demuestran por qué el riesgo es menor (la validación, la constante, la restricción). Se comprueban contra el repositorio real: una referencia inexistente anula la baja,
             "evidencia_tecnica": "Extracto o detalle del código/recurso afectado en español",
             "impacto_negocio": "Explicación clara y comprensible del riesgo operacional o reputacional para la organización",
             "accion_remediacion": "Instrucciones detalladas y comprensibles para resolución por parte del equipo",
@@ -645,8 +694,11 @@ def correlate_vulnerability(vuln):
         - Activo: {vuln['asset_name']}
         - Tipo: {vuln.get('asset_type', 'unknown')}
         - Ubicación: {vuln.get('endpoint', 'unknown')}
-        - Descripción inicial: {vuln.get('description', 'Sin descripción')}
+        - Descripción inicial:
+        {description_block}
         - Severidad reportada: {vuln['severity']}
+
+        {untrusted_block}
 
         CONTEXTO DE EXPOSICIÓN (solo hechos verificables del inventario):
         {_infra_exposure_context(vuln)}
@@ -681,6 +733,7 @@ def correlate_vulnerability(vuln):
             "nivel_severidad": "Bajo/Medio/Alto/Crítico",
             "severidad_real": "Nulo/Bajo/Medio/Alto/Crítico -- TU veredicto del riesgo real de ESTE caso concreto (puede ser menor que nivel_severidad; 'Nulo' solo si es un falso positivo confirmado)",
             "depende_de_supuesto": true/false -- true SOLO si tu veredicto depende de una condición que NO pudiste verificar,
+            "referencias_evidencia": ["el dato concreto del contexto de exposición o de la descripción que justifica bajar la severidad"],
             "evidencia_tecnica": "Evidencia técnica, puerto o parámetro afectado en español",
             "impacto_negocio": "Análisis explícito y comprensible del riesgo operacional y de negocio",
             "accion_remediacion": "Pasos detallados de resolución punto por punto en español",
@@ -777,6 +830,7 @@ def correlate_vulnerability(vuln):
         # UnboundLocalError, losing the whole analysis. "" / None = "provider gave no structured verdict".
         severidad_real_ai = ''
         depende_supuesto_ai = None
+        evidence_refs_ai = []
         try:
             # strict=False allows raw control characters (e.g. literal newlines) inside JSON
             # string values — LLMs routinely write multi-line bash into "remediation_script"
@@ -800,6 +854,8 @@ def correlate_vulnerability(vuln):
             can_automate_raw = analysis.get('can_automate') if isinstance(analysis, dict) else None
             severidad_real_ai = pick(analysis, 'severidad_real', 'real_severity', default='')
             depende_supuesto_ai = analysis.get('depende_de_supuesto') if isinstance(analysis, dict) else None
+            evidence_refs_ai = ai_verification.parse_evidence_refs(
+                analysis.get('referencias_evidencia') or analysis.get('evidence_refs')) if isinstance(analysis, dict) else []
 
             if not riesgo and script == '# Sin script de remediación' and not fix_patch:
                 print("⚠️ [Centinela-AI] AI response has no valid risk, script, or patch.")
@@ -898,6 +954,16 @@ def correlate_vulnerability(vuln):
             "ai_real_severity": severidad_real_ai,
             "ai_depends_on_assumption": depende_supuesto_ai,
             "injection_suspected": injection_hits,
+            # ADR-0021: what the adversarial verifier needs if this analysis lowers the severity.
+            "evidence_refs": evidence_refs_ai,
+            "ai_provider": _cascade_state.get("last_label") if content and not is_synthetic_marker else None,
+            "verification_context": {
+                "repo_dir": (_ctx or {}).get("repo_dir"),
+                "code_block": (_ctx or {}).get("enclosing_snippet", ""),
+                "callers": (_ctx or {}).get("callers", []),
+                "repo_facts": repo_facts_text,
+                "exposure": "" if is_repo_finding else _infra_exposure_context(vuln),
+            },
         }
 
     except Exception as e:
@@ -920,6 +986,47 @@ def _apply_injection_guard(vuln, analysis, risk_verdict_info, business_impact_te
     note = ("[Posible inyección de instrucciones detectada en el código/descripción analizados "
             f"({', '.join(hits)}); la severidad no se modificó y requiere revisión humana.]\n")
     return {"real_severity": None, "risk_verdict": "CONDITIONAL"}, note + str(business_impact_text)
+
+
+def _verify_ai_downgrade(vuln, analysis, risk_verdict_info, business_impact_text):
+    """ADR-0021. If the AI's verdict LOWERS the severity, get an adversarial second opinion (from a different model when
+    possible) and check every cited line against the clone before the reduction is stored. Non-reducing verdicts pass
+    through untouched (no extra provider call). Returns (risk_verdict_info, business_impact_text)."""
+    if risk_verdict_info.get("risk_verdict") not in ai_verification.REDUCING_VERDICTS:
+        return risk_verdict_info, business_impact_text
+    ctx = analysis.get("verification_context") or {}
+    first_label = analysis.get("ai_provider")
+    used = {}
+
+    def ask(prompt):
+        answer = call_ai_cascade(prompt, want_json=True, avoid_labels=[first_label] if first_label else None)
+        used["label"] = _cascade_state.get("last_label")
+        return answer
+
+    try:
+        result = ai_verification.verify_downgrade(
+            vuln=vuln, proposed=risk_verdict_info,
+            analysis={**analysis, "business_impact": business_impact_text},
+            ask=ask, repo_dir=ctx.get("repo_dir"), code_block=ctx.get("code_block", ""), callers=ctx.get("callers") or [],
+            exposure_block=ctx.get("exposure", ""), repo_facts=ctx.get("repo_facts", ""))
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        result = {"real_severity": None, "risk_verdict": "CONDITIONAL", "outcome": "error_verificacion",
+                  "note": "La verificación de la baja de severidad falló; se conserva la severidad de la herramienta.", "detail": {}}
+    detail = dict(result.get("detail") or {})
+    detail.update({"first_model": first_label, "verifier_model": used.get("label"),
+                   "same_model": bool(first_label and used.get("label") == first_label),
+                   "final_verdict": result.get("risk_verdict"), "outcome": result.get("outcome")})
+    agent_ledger.record_action(
+        agent_ledger.ACTION_AI_VERIFICATION,
+        f"Verificación de baja de severidad de {vuln['cve_id']} en {vuln.get('asset_name')}: {result.get('outcome')}",
+        entity_type="vulnerability", entity_id=vuln['id'], asset_id=vuln.get('asset_id'), detail=detail,
+        outcome="success" if result.get("outcome") == "sostiene_baja" else "skipped")
+    print(f"🔎 [Centinela-AI] Downgrade check for {vuln['cve_id']}: {result.get('outcome')} -> {result.get('risk_verdict')}")
+    note = result.get("note") or ""
+    text = (f"[Verificación IA: {note}]\n" + str(business_impact_text)) if note else business_impact_text
+    return {"real_severity": result.get("real_severity"), "risk_verdict": result.get("risk_verdict")}, text
 
 
 def generate_ai_remediation_report(cve_id, log_output):
@@ -965,6 +1072,10 @@ PATTERN_LEVEL_RULES = re.compile(
     r"SPRING-DEVTOOLS-REMOTE-ENABLED|SPRING-H2-CONSOLE-ENABLED|SPRING-ACTUATOR-SENSITIVE-EXPOSED|"
     # 2026-10-27: ddl-auto peligroso y cliente OIDC sin HTTPS/discovery estricto: misma corrección en cada ocurrencia.
     r"SPRING-JPA-DDL-AUTO-SCHEMA-CHANGE|FRONTEND-OIDC-INSECURE-CONFIG|"
+    # 2026-10-28 (auditors/auditor_business_rules.py, catálogo CORE/Starter): corrección idéntica en cada ocurrencia.
+    # SEQUENTIAL-FOLIO-FROM-MAX queda fuera: su riesgo depende de si hay bloqueo en otra clase.
+    r"PASSWORD-MIN-LENGTH-BELOW-STANDARD|NUMERIC-CODE-STORED-AS-NUMBER|AUDIT-LOG-MUTATION-ENDPOINT|ACCOUNT-ENUMERATION-RESPONSE|"
+    r"HTML-TEMPLATE-UNESCAPED-SUBSTITUTION|SVG-UPLOAD-WITHOUT-SANITIZATION|"
     # added 2026-10-01 after measuring where the unanalysed volume really was (proyecto-a/proyecto-l): same structural
     # pattern on every occurrence, fix identical regardless of the line.
     r"WCAG-[0-9.]+-[A-Z0-9-]+|ACCESSIBILITY-WCAG-[A-Z-]+|STD-STRIDE-MISSING-AUDIT-LOG|OOM-BYTE-ARRAY-STREAMING|"
@@ -995,7 +1106,7 @@ def propagate_pattern_analysis(vuln, analysis, verdict, script_path):
     human decision in remediation_history are left alone."""
     if not PATTERN_LEVEL_RULES.match(str(vuln.get('cve_id', '')).upper()):
         return []
-    if verdict.get("risk_verdict") in ("CONFIRMED_NO_RISK", "DOWNGRADED", "ANALYST_OVERRIDDEN"):
+    if verdict.get("risk_verdict") in ("CONFIRMED_NO_RISK", "DOWNGRADED", "ANALYST_OVERRIDDEN", "NO_RISK_PENDING_REVIEW"):
         return []
     if not vuln.get('asset_id'):
         return []
@@ -1107,8 +1218,12 @@ def main_loop():
     incident_thread.start()
     threading.Thread(target=run_cmmi_org_evidence_loop, daemon=True).start()
     threading.Thread(target=run_fleet_enqueue_loop, daemon=True).start()
+    threading.Thread(target=run_gitlab_heads_refresh_loop, daemon=True).start()   # latest commit per branch -> change detection
     threading.Thread(target=run_scan_worker_loop, daemon=True).start()
     threading.Thread(target=run_secrets_history_worker_loop, daemon=True).start()   # git-history secrets (weekly per project)
+    threading.Thread(target=run_secrets_token_renew_loop, daemon=True).start()      # periodic OpenBao token (daily renew-self)
+    threading.Thread(target=run_zap_reaper_loop, daemon=True).start()               # orphaned ZAP containers every 15 min
+    threading.Thread(target=run_reverify_loop, daemon=True).start()                 # ADR-0021 second opinion, nightly 06:00
 
     # External Auditor Thread
     from auditors import auditor_ext
@@ -1209,6 +1324,11 @@ def main_loop():
 
                             risk_verdict_info, business_impact_text = _apply_injection_guard(
                                 vuln, analysis, risk_verdict_info, business_impact_text)
+                            # ADR-0021: a severity reduction only stands after an adversarial second opinion with
+                            # evidence checked against the real code (never on one model's word).
+                            proposed_verdict = dict(risk_verdict_info)
+                            risk_verdict_info, business_impact_text = _verify_ai_downgrade(
+                                vuln, analysis, risk_verdict_info, business_impact_text)
 
                             with db_manager.get_db_cursor() as write_cur:
                                 write_cur.execute("""
@@ -1238,7 +1358,7 @@ def main_loop():
                                 # suppression for a human to review and activate with one click
                                 # via the existing /api/suppressions flow -- never auto-activated,
                                 # an AI verdict is a recommendation here, not a unilateral dismissal.
-                                if risk_verdict_info["risk_verdict"] == "CONFIRMED_NO_RISK":
+                                if risk_verdict_info["risk_verdict"] in ai_verification.PROPOSAL_VERDICTS:
                                     write_cur.execute("""
                                         SELECT 1 FROM finding_suppressions
                                         WHERE asset_id = %s AND cve_id = %s AND created_by = 'centinela-ai'
@@ -1268,7 +1388,11 @@ def main_loop():
                                         VALUES (%s, %s, %s, %s)
                                     """, (vuln['id'], script_path, "PENDING_APPROVAL", analysis.get('can_automate', True)))
                                 
-                            _already_filled.update(propagate_pattern_analysis(vuln, analysis, risk_verdict_info, script_path))
+                            # A verdict that started as a reduction is never shared with sibling occurrences, whatever the
+                            # verifier decided (each occurrence needs its own evidence) -- propagate the PROPOSED verdict.
+                            _already_filled.update(propagate_pattern_analysis(
+                                vuln, analysis, proposed_verdict if proposed_verdict.get("risk_verdict") in ai_verification.REDUCING_VERDICTS
+                                else risk_verdict_info, script_path))
                             print(f"✅ Analysis complete for {vuln['cve_id']}. Script saved.")
                             agent_ledger.record_action(
                                 agent_ledger.ACTION_AI_CORRELATION,

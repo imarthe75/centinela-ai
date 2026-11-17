@@ -234,3 +234,61 @@ def test_fetch_issues_refuses_a_truncated_slice(monkeypatch):
     monkeypatch.setattr(sq, "_fetch_issues_slice", lambda k, e: ([], 20000))
     with pytest.raises(sq.SonarQubeScanError):
         sq._fetch_issues("p")
+
+
+class _Resp:
+    def __init__(self, status=200, payload=None):
+        self.status_code = status
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+def _reset_redaction(monkeypatch, admin_token=""):
+    from auditors import auditor_sonarqube as sq
+    monkeypatch.setattr(sq, "_redaction_state", {"checked": False, "status": None})
+    monkeypatch.setattr(sq, "SONAR_ADMIN_TOKEN", admin_token)
+    return sq
+
+
+def test_secret_redaction_reports_disabled_without_admin_token(monkeypatch):
+    sq = _reset_redaction(monkeypatch)
+    monkeypatch.setattr(sq.requests, "get", lambda *a, **k: _Resp(200, {"settings": [{"key": sq.SECRET_REDACTION_KEY, "value": "false"}]}))
+    posted = []
+    monkeypatch.setattr(sq.requests, "post", lambda *a, **k: posted.append(1) or _Resp(204))
+    st = sq.secret_redaction_status()
+    assert st["enabled"] is False and st["changed"] is False
+    assert posted == []  # never tries to change it without the owner's admin token
+
+
+def test_secret_redaction_enabled_with_admin_token(monkeypatch):
+    sq = _reset_redaction(monkeypatch, admin_token="adm")
+    monkeypatch.setattr(sq.requests, "get", lambda *a, **k: _Resp(200, {"settings": [{"key": sq.SECRET_REDACTION_KEY, "value": "false"}]}))
+    calls = []
+    monkeypatch.setattr(sq.requests, "post", lambda url, data=None, headers=None, timeout=None: calls.append((data, headers)) or _Resp(204))
+    st = sq.secret_redaction_status()
+    assert st == {"enabled": True, "changed": True, "detail": "Activado con SONAR_ADMIN_TOKEN."}
+    assert calls[0][0] == {"key": sq.SECRET_REDACTION_KEY, "value": "true"}
+    assert calls[0][1]["Authorization"] == "Bearer adm"
+
+
+def test_secret_redaction_unknown_when_server_unreachable(monkeypatch):
+    sq = _reset_redaction(monkeypatch)
+    def boom(*a, **k):
+        raise requests.ConnectionError("down")
+    monkeypatch.setattr(sq.requests, "get", boom)
+    st = sq.secret_redaction_status()
+    assert st["enabled"] is None  # never claimed on or off without the server saying so
+
+
+def test_secret_redaction_admin_token_rejected(monkeypatch):
+    sq = _reset_redaction(monkeypatch, admin_token="bad")
+    monkeypatch.setattr(sq.requests, "get", lambda *a, **k: _Resp(200, {"settings": [{"key": sq.SECRET_REDACTION_KEY, "value": "false"}]}))
+    monkeypatch.setattr(sq.requests, "post", lambda *a, **k: _Resp(403))
+    st = sq.secret_redaction_status()
+    assert st["enabled"] is False and "HTTP 403" in st["detail"]

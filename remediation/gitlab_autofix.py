@@ -107,6 +107,10 @@ def patch_dependency_bump(repo_dir: str, vuln: Dict[str, Any]):
 
     if not (package and fixed_version and manifest):
         return False, "No se pudo determinar paquete/versión segura/manifiesto desde el hallazgo."
+    # "ver aviso original" (advisory without a parseable fix) or a malicious package ("ninguna: retirar el paquete")
+    # must never be written into a manifest as if it were a version.
+    if not re.match(r"^v?\d[\w.+-]*$", fixed_version):
+        return False, f"La versión segura no es una versión concreta ({fixed_version!r}): requiere remediación manual."
 
     manifest_path = os.path.join(repo_dir, file_hint) if file_hint else None
     if not manifest_path or not os.path.exists(manifest_path):

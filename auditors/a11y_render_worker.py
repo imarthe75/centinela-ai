@@ -2,7 +2,9 @@
 
     a11y_render_worker.py <url> [<url> ...]  ->  {"results":[{"url":..,"ok":true,"violations":[...],"passes":N,"incomplete":N} | {"url":..,"ok":false,"error":..}]}
 
-Read-only: navigation + DOM inspection only, no form submission, no clicks. Every error is reported per URL, never swallowed."""
+Read-only: navigation + DOM inspection only, no form submission, no clicks. Every error is reported per URL, never swallowed.
+Each result also carries the page's own uncaught JavaScript errors and console errors (Playwright 1.56+ page_errors() /
+console_messages()): they explain an SPA that never hydrated, which otherwise looks like an empty page."""
 import json
 import sys
 
@@ -23,6 +25,21 @@ def audit(page, url: str) -> dict:
             "passes": len(res.get("passes", [])), "incomplete": len(res.get("incomplete", []))}
 
 
+MAX_DIAGNOSTICS = 10
+
+
+def diagnostics(page) -> dict:
+    """Uncaught page errors and console errors seen since the page was created (text only, truncated)."""
+    out = {"page_errors": [], "console_errors": []}
+    try:
+        out["page_errors"] = [f"{getattr(e, 'name', '') or 'Error'}: {getattr(e, 'message', str(e))}"[:300]
+                              for e in page.page_errors()][:MAX_DIAGNOSTICS]
+        out["console_errors"] = [m.text[:300] for m in page.console_messages() if m.type == "error"][:MAX_DIAGNOSTICS]
+    except Exception as e:      # never hide the audit result because diagnostics failed
+        out["diagnostics_error"] = f"{type(e).__name__}: {e}"[:200]
+    return out
+
+
 def main(urls):
     out = []
     with sync_playwright() as p:
@@ -31,11 +48,14 @@ def main(urls):
         for u in urls:
             page = ctx.new_page()
             try:
-                out.append(audit(page, u))
+                result = audit(page, u)
             except Exception as e:      # reported per URL; the caller decides what a failure means
-                out.append({"url": u, "ok": False, "error": f"{type(e).__name__}: {e}"[:500]})
+                result = {"url": u, "ok": False, "error": f"{type(e).__name__}: {e}"[:500]}
+            try:
+                result.update(diagnostics(page))
             finally:
                 page.close()
+            out.append(result)
         browser.close()
     print(json.dumps({"results": out}))
 

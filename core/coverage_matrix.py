@@ -238,6 +238,8 @@ RULE_MAP: List[Tuple[re.Pattern, Dict[str, List[str]]]] = [(re.compile(p), m) fo
      _m(top10=["A05"], api10=["API8", "API9"], wstg=["CONF-05"], asvs=["V14"], iso=["8.31", "8.9"])),
     # --- identidad, contraseñas, sesión
     (r"^AUTH-ENDPOINT-NO-RATE-LIMIT$", _m(top10=["A07"], api10=["API2", "API4"], wstg=["ATHN-03"], asvs=["V2"], iso=["5.17", "8.5"])),
+    (r"^(DB-AUTH-TRUST|DB-AUTH-MD5|DB-AUTH-CLEARTEXT-PASSWORD)$", _m(top10=["A07"], wstg=["ATHN-01"], asvs=["V2"], iso=["8.5", "5.17"])),
+    (r"^DB-TLS-BELOW-BASELINE$", _m(top10=["A02"], wstg=["CRYP-01"], asvs=["V9"], iso=["8.24", "8.20"])),
     (r"^PASSWORD-POLICY-NOT-ENFORCED$", _m(top10=["A07"], api10=["API2"], wstg=["ATHN-07"], asvs=["V2"], iso=["5.17", "8.5"])),
     (r"^STD-STRIDE-JWT-INSECURE-ALG$", _m(top10=["A02", "A07"], api10=["API2"], asvs=["V3", "V6"], iso=["8.24", "8.5"])),
     (r"^(INSECURE-COOKIE-FLAGS|WSTG-SESS-02-COOKIE-SAMESITE)$", _m(top10=["A05"], wstg=["SESS-02"], asvs=["V3"], iso=["8.26"])),
@@ -256,6 +258,7 @@ RULE_MAP: List[Tuple[re.Pattern, Dict[str, List[str]]]] = [(re.compile(p), m) fo
      _m(top10=["A05", "A02"], api10=["API8"], asvs=["V14", "V6"], iso=["8.9", "8.31"])),
     # --- criptografía y transporte
     (r"^WEAK-CRYPTOGRAPHY$", _m(top10=["A02"], wstg=["CRYP-04"], asvs=["V6"], iso=["8.24"])),
+    (r"^IMAGE-CERT-(EXPIRED|WEAK-KEY|WEAK-SIGNATURE)$", _m(top10=["A02"], asvs=["V9", "V6"], iso=["8.24"])),  # certificados propios dentro de imágenes (Trivy CBOM)
     (r"^TIMING-UNSAFE-SECRET-COMPARISON$", _m(top10=["A02"], asvs=["V6"], iso=["8.24"])),  # sin prueba WSTG equivalente (CWE-208)
     (r"^(TLS-NOT-ENABLED|TLS-CERT-.*|TLS-LEGACY-PROTOCOL-ENABLED|TLS-WEAK-CIPHER-ENABLED|TLS-STATIC-RSA-KEX-ENABLED|OSINT-TLS-MISCONFIGURATION)$",
      _m(top10=["A02"], api10=["API8"], wstg=["CRYP-01"], asvs=["V9"], iso=["8.24", "8.20", "8.21"])),
@@ -332,6 +335,10 @@ RULE_MAP: List[Tuple[re.Pattern, Dict[str, List[str]]]] = [(re.compile(p), m) fo
     (r"^XPATH-INJECTION-CONCAT$", _m(top10=["A03"], wstg=["INPV-09"], asvs=["V5"], iso=["8.28"])),
     (r"^LDAP-INJECTION-CONCAT$", _m(top10=["A03"], wstg=["INPV-06"], asvs=["V5"], iso=["8.28"])),
     (r"^(SUPPLY-CHAIN-NO-LOCKFILE|SUPPLY-CHAIN-UNPINNED-DEPENDENCY|DOCKER-CURL-PIPE-SHELL)$", _m(top10=["A08", "A06"], asvs=["V10", "V14"], iso=["8.25"])),
+    # ADR-0022: supply-chain manifests / lockfiles (ideas: GuardDog, OpenSSF Scorecard) and committed binaries
+    (r"^(SUPPLY-CHAIN-INSTALL-SCRIPT-RISKY|SUPPLY-CHAIN-DEPENDENCY-FROM-URL|SUPPLY-CHAIN-LOCKFILE-INSECURE-SOURCE|SUPPLY-CHAIN-POSSIBLE-TYPOSQUAT)$",
+     _m(top10=["A08", "A06"], asvs=["V10", "V14"], iso=["8.25"])),
+    (r"^(REPO-BINARY-ARTIFACT|REPO-BUILD-OUTPUT-COMMITTED)$", _m(top10=["A08"], asvs=["V10"], iso=["8.25"])),
     # --- logging
     (r"^(STD-STRIDE-MISSING-AUDIT-LOG|STRIDE-REPUDIATION)$", _m(top10=["A09"], asvs=["V7"], iso=["8.15"])),
     (r"^STD-STRIDE-LOG-SENSITIVE-DATA$", _m(top10=["A09"], asvs=["V7", "V8"], iso=["8.11", "8.15"])),
@@ -340,6 +347,9 @@ RULE_MAP: List[Tuple[re.Pattern, Dict[str, List[str]]]] = [(re.compile(p), m) fo
     # --- SCA / cadena de suministro
     (r"^(SCA-CVE-.*|SCA-GHSA-.*|CVE-\d{4}-\d+)$", _m(top10=["A06"], api10=["API10"], asvs=["V14"], iso=["8.8"])),
     (r"^(DOCKER-UNPINNED-BASE-IMAGE|CICD-UNPINNED-IMAGE|CICD-CURL-PIPE-SHELL|CICD-REMOTE-INCLUDE-INSECURE)$", _m(top10=["A08"], asvs=["V10", "V14"], iso=["8.25", "8.32"])),
+    # ADR-0022: GitLab CI injection / pinning (idea: poutine)
+    (r"^(CICD-UNTRUSTED-INPUT-INJECTION|CICD-INPUT-INTERPOLATION-IN-SCRIPT)$", _m(top10=["A03", "A08"], asvs=["V5", "V14"], iso=["8.25", "8.28"])),
+    (r"^(CICD-INCLUDE-UNPINNED|CICD-DEPENDENCY-INSTALL-NOT-FROZEN)$", _m(top10=["A08"], asvs=["V10", "V14"], iso=["8.25", "8.32"])),
     # --- contenedores / IaC / nube / DB / SO / CI-CD / GitLab
     (r"^(DOCKER-ROOT-USER|DOCKER-MISSING-NON-ROOT-USER|K8S-RUN-AS-ROOT|K8S-PRIVILEGED-CONTAINER|K8S-PRIVILEGE-ESCALATION|K8S-WRITABLE-ROOT-FS|K8S-HOSTPATH-MOUNT|K8S-AUTOMOUNT-TOKEN|CSPM-K8S-.*|CICD-DOCKER-PRIVILEGED)$",
      _m(top10=["A05"], asvs=["V14"], iso=["8.9"])),
@@ -396,6 +406,14 @@ RULE_MAP: List[Tuple[re.Pattern, Dict[str, List[str]]]] = [(re.compile(p), m) fo
      r"JPA-OBJECT-ARRAY-RESULT|FRONTEND-HARDCODED-API-URL)$", _m(iso=["8.28"])),
     # tables without the audit standard's canonical columns: the audit trail (8.15) cannot be kept for them
     (r"^SQL-TABLE-WITHOUT-AUDIT-COLUMNS$", _m(iso=["8.15", "8.28"])),
+    # CORE/Starter business-rule catalogue (auditors/auditor_business_rules.py, 2026-10-28). WSTG only where the rule IS that test.
+    (r"^PASSWORD-MIN-LENGTH-BELOW-STANDARD$", _m(top10=["A07"], api10=["API2"], wstg=["ATHN-07"], asvs=["V2"], iso=["5.17", "8.5"])),
+    (r"^ACCOUNT-ENUMERATION-RESPONSE$", _m(top10=["A07"], api10=["API2"], wstg=["IDNT-04"], asvs=["V2"], iso=["8.5"])),
+    (r"^AUDIT-LOG-MUTATION-ENDPOINT$", _m(top10=["A09"], asvs=["V7"], iso=["8.15"])),
+    (r"^SVG-UPLOAD-WITHOUT-SANITIZATION$", _m(top10=["A03", "A04"], wstg=["BUSL-09"], asvs=["V12"], iso=["8.28"])),
+    (r"^HTML-TEMPLATE-UNESCAPED-SUBSTITUTION$", _m(top10=["A03"], asvs=["V5"], iso=["8.28"])),
+    (r"^SEQUENTIAL-FOLIO-FROM-MAX$", _m(top10=["A04"], iso=["8.28"])),
+    (r"^NUMERIC-CODE-STORED-AS-NUMBER$", _m(iso=["8.28"])),
 ]]
 
 # ----------------------------------------------------------------------------- motores externos (capacidad declarada)

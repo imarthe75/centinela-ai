@@ -107,3 +107,6 @@ Sólo entonces marca las tareas como completadas en STATE.md.
 
 - **test-driven-development**: El test que prueba el comportamiento es la evidencia primaria
 - **systematic-debugging**: Si la verificación falla, usar debugging sistemático — no adivinar
+
+## Antes de declarar terminado un cambio de código
+Recorre la lista de chequeo de `prevencion-hallazgos-seguridad-calidad` y, si hay escáner disponible, córrelo sobre los cambios; si no, declara «no verificado por escáner».

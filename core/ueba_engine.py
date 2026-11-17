@@ -14,7 +14,7 @@ def analyze_behavioral_anomalies():
     real ya trae su username/client_ip reales).
 
     Corregido: la versión anterior nunca leía qué usuario/IP causó realmente el evento --
-    hardcodeaba literalmente "Usuario: admin_test" e "IP: 192.0.2.29" como si fueran
+    hardcodeaba literalmente "Usuario: admin_test" e "IP: 192.0.2.32" como si fueran
     detecciones reales, sin importar qué haya en la base de datos. Confirmado que esto violaba
     directamente el principio de honestidad técnica del proyecto (datos simulados presentados
     como reales) -- corregido antes de conectar esto a infraestructura real.

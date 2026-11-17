@@ -126,8 +126,8 @@ class TestGitLabPushWebhook(unittest.TestCase):
                         "project": {
                             "id": 99,
                             "path_with_namespace": "org-x/proyecto-k-backend",
-                            "web_url": "http://192.0.2.12/org-x/proyecto-k-backend",
-                            "git_http_url": "http://192.0.2.12/org-x/proyecto-k-backend.git"
+                            "web_url": "http://192.0.2.14/org-x/proyecto-k-backend",
+                            "git_http_url": "http://192.0.2.14/org-x/proyecto-k-backend.git"
                         }
                     }
                 )
@@ -190,7 +190,7 @@ class TestWebhookHardening(unittest.TestCase):
                 "/api/gitlab/push-webhook",
                 headers={"X-Gitlab-Token": "s3cret"},
                 json={"object_kind": "push", "ref": "refs/heads/main", "after": "a" * 40,
-                      "project": {"id": 7, "web_url": "http://192.0.2.12/g/x",
+                      "project": {"id": 7, "web_url": "http://192.0.2.14/g/x",
                                   "http_url_to_repo": "http://attacker.example/x.git"}},
             )
             self.assertEqual(resp.status_code, 200)
@@ -212,17 +212,17 @@ class TestWebhookHardening(unittest.TestCase):
             mock_bg.assert_not_called()
 
     def test_clone_refuses_foreign_host_and_does_not_leak_token(self):
-        gl = GitLabIntegrator(gitlab_url="http://192.0.2.12", token="TOPSECRET")
+        gl = GitLabIntegrator(gitlab_url="http://192.0.2.14", token="TOPSECRET")
         with patch("auditors.gitlab_integration.subprocess.run") as run:
             out = gl.clone_or_pull("http://attacker.example/x.git", "evil/x")
             self.assertEqual(out, "")
             run.assert_not_called()
 
     def test_clone_injects_token_only_for_own_host(self):
-        gl = GitLabIntegrator(gitlab_url="http://192.0.2.12", token="TOPSECRET")
+        gl = GitLabIntegrator(gitlab_url="http://192.0.2.14", token="TOPSECRET")
         with patch("auditors.gitlab_integration.subprocess.run") as run, \
              patch("auditors.gitlab_integration.os.path.exists", return_value=False), \
              patch("auditors.gitlab_integration.os.makedirs"):
-            gl.clone_or_pull("http://192.0.2.12/grp/proj.git", "grp/proj")
+            gl.clone_or_pull("http://192.0.2.14/grp/proj.git", "grp/proj")
             cmd = run.call_args[0][0]
-            self.assertIn("http://oauth2:TOPSECRET@192.0.2.12/grp/proj.git", cmd)
+            self.assertIn("http://oauth2:TOPSECRET@192.0.2.14/grp/proj.git", cmd)

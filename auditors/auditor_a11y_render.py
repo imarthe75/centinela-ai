@@ -88,6 +88,13 @@ def persist(asset_id, page: Dict) -> int:
     return len(findings)
 
 
+def describe_js_errors(page: Dict) -> str:
+    errs = (page.get("page_errors") or []) + (page.get("console_errors") or [])
+    if not errs:
+        return "sin errores de JavaScript registrados"
+    return f"{len(errs)} error(es) de JavaScript, p. ej. «{errs[0]}»"
+
+
 def scan_url_assets(asset_id, url: str) -> Optional[int]:
     """Audit one URL and persist. Returns the finding count, or None when the audit could not run (logged with traceback)."""
     try:
@@ -97,13 +104,15 @@ def scan_url_assets(asset_id, url: str) -> Optional[int]:
         return None
     page = (res.get("results") or [{}])[0]
     if not page.get("ok"):
-        logger.error("a11y render could not load %s: %s", url, page.get("error"))
+        logger.error("a11y render could not load %s: %s (%s)", url, page.get("error"), describe_js_errors(page))
         return None
     if not rendered_meaningfully(page):
         # Zero visible text means the SPA never hydrated (blocked external script, JS error...). "0 violations" on an empty shell is not
         # evidence of accessibility, so nothing is persisted or reconciled.
-        logger.error("a11y render of %s produced an empty page (elements=%s, text=%s chars); audit not valid", url, page.get("elements"), page.get("text_len"))
+        logger.error("a11y render of %s produced an empty page (elements=%s, text=%s chars; %s); audit not valid",
+                     url, page.get("elements"), page.get("text_len"), describe_js_errors(page))
         return None
     n = persist(asset_id, page)
-    print(f"♿ [A11y-Render] {url}: {n} WCAG violations ({page.get('passes')} rules passed, {page.get('incomplete')} need manual review)")
+    print(f"♿ [A11y-Render] {url}: {n} WCAG violations ({page.get('passes')} rules passed, {page.get('incomplete')} need manual review; "
+          f"{describe_js_errors(page)})")
     return n

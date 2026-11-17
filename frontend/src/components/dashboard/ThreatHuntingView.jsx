@@ -93,7 +93,7 @@ export default function ThreatHuntingView() {
                                             </span>
                                         </td>
                                         <td className="py-6 text-[13px] font-bold text-slate-500">{new Date(alert.detected_at).toLocaleString()}</td>
-                                        <td className="py-6 text-[13px] font-bold text-white">{alert.asset_name || "Servidor Centinela-AI (192.0.2.15)"}</td>
+                                        <td className="py-6 text-[13px] font-bold text-white">{alert.asset_name || "Servidor Centinela-AI (192.0.2.17)"}</td>
                                         <td className="py-6 text-[13px] text-[#06B6D4] font-bold">{alert.rule_name}</td>
                                         <td className="py-6 text-[13px] text-slate-400 max-w-xs truncate">{alert.alert_text}</td>
                                         <td className="py-6 text-right">

@@ -194,14 +194,14 @@ class TestAuthzScopeAndLoginUi(unittest.TestCase):
 class TestUrlOnlyApplications(unittest.TestCase):
     """Applications registered only as a URL/endpoint (no repository)."""
     def test_vault_key_is_url_safe_and_stable(self):
-        for name in ("http://192.0.2.10/fe-app-qa/auth/login", "GitLab2/grupo-a/x/y@develop", "https://api.example.test:8443/v1/"):
+        for name in ("http://192.0.2.12/fe-app-qa/auth/login", "GitLab2/grupo-a/x/y@develop", "https://api.example.test:8443/v1/"):
             k = tc.vault_key(name)
             self.assertRegex(k, r"^[A-Za-z0-9._@-]+$")
             self.assertEqual(k, tc.vault_key(name))
         self.assertNotEqual(tc.vault_key("http://a.test/x"), tc.vault_key("http://a.test/y"))
 
     def test_credentials_of_a_url_asset_roundtrip_under_the_slug_path(self):
-        v, a = FakeVault(), "http://192.0.2.10/fe-app-qa/auth/login"
+        v, a = FakeVault(), "http://192.0.2.12/fe-app-qa/auth/login"
         tc.upsert_role(a, "Oficial de Partes", "o@example.test", "pw", client=v)
         self.assertTrue(all("//" not in p and ":" not in p for p in v.store))
         self.assertEqual(tc.describe(a, client=v)["roles"][0]["name"], "Oficial de Partes")

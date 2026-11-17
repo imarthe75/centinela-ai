@@ -1,0 +1,20 @@
+# Barreras antes del commit (plantilla del kit). Copiar a la raíz del proyecto junto con commitlint.config.mjs.
+# Instalación (una vez por clon):  npm i -D lefthook @commitlint/cli @commitlint/config-conventional && npx lefthook install
+# Requiere el binario gitleaks en el PATH (https://github.com/gitleaks/gitleaks/releases). Si falta, el commit FALLA: la barrera
+# no se salta en silencio. Saltarla a propósito (git commit --no-verify) queda a criterio de quien lo haga y el CI vuelve a revisar.
+
+pre-commit:
+  parallel: true
+  commands:
+    secretos:
+      # Solo lo que está en staging; --redact evita imprimir el secreto en la terminal.
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+    sintaxis-python:
+      glob: "*.py"
+      run: python3 -m py_compile {staged_files}
+
+commit-msg:
+  commands:
+    conventional-commits:
+      # Formato de rules/common/git-workflow.md (feat, fix, docs, style, refactor, test, chore...).
+      run: npx --no -- commitlint --edit {1}

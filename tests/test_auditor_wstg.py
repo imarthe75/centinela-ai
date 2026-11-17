@@ -10,7 +10,7 @@ import centinela
 
 
 class MockResponse:
-    def __init__(self, status_code=200, text="", headers=None, url="http://192.0.2.23/login/"):
+    def __init__(self, status_code=200, text="", headers=None, url="http://192.0.2.26/login/"):
         self.status_code = status_code
         self.text = text
         self.headers = headers or {}
@@ -29,7 +29,7 @@ def test_wstg_cleartext_login_and_unencrypted_cookie():
             "Set-Cookie": "session=eyJhbGciOi...; Path=/; HttpOnly",  # Missing Secure & SameSite
             "Server": "nginx/1.27.5",
         },
-        url="http://192.0.2.23/login/",
+        url="http://192.0.2.26/login/",
     )
 
     with patch.object(requests.Session, "get", return_value=mock_resp), \
@@ -38,7 +38,7 @@ def test_wstg_cleartext_login_and_unencrypted_cookie():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("http://192.0.2.23/login/")
+        findings = auditor_wstg.audit_url_wstg("http://192.0.2.26/login/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-ATHN-02-CLEARTEXT-LOGIN" in cves
@@ -64,7 +64,7 @@ def test_wstg_host_header_injection_reflected():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/login/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/login/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-INPV-17-HOST-HEADER-INJECTION" in cves
@@ -81,7 +81,7 @@ def test_wstg_dangerous_connect_method():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-CONF-06-DANGEROUS-HTTP-METHOD" in cves
@@ -103,7 +103,7 @@ def test_wstg_open_redirect_detection():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/login/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/login/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-CLNT-04-OPEN-REDIRECT" in cves
@@ -116,7 +116,7 @@ def test_wstg_improper_error_handling_superset_json():
         '"error_type": "GENERIC_BACKEND_ERROR", "level": "error", "extra": {"issue_codes": [{"code": 1011, '
         '"message": "Issue 1011 - Superset ha encontrado un error inesperado."}]}}]}'
     )
-    err_resp = MockResponse(status_code=405, text=superset_err_body, url="https://192.0.2.23/superset/log/?explode=events")
+    err_resp = MockResponse(status_code=405, text=superset_err_body, url="https://192.0.2.26/superset/log/?explode=events")
     err_resp.request.method = "PATCH"
 
     with patch.object(requests.Session, "get", return_value=MockResponse(status_code=200, headers={"Strict-Transport-Security": "max-age=31536000; includeSubDomains"})), \
@@ -125,7 +125,7 @@ def test_wstg_improper_error_handling_superset_json():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-ERRH-01-VERBOSE-BACKEND-ERROR" in cves
@@ -147,7 +147,7 @@ def test_wstg_insecure_cors_reflection():
          patch.object(requests.Session, "options", return_value=cors_resp), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-CLNT-07-INSECURE-CORS" in cves
@@ -166,7 +166,7 @@ def test_wstg_sensitive_files_exposure():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-CONF-04-SENSITIVE-FILES" in cves
@@ -185,7 +185,7 @@ def test_wstg_debug_endpoints_exposure():
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=MockResponse(status_code=401)):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-CONF-05-DEBUG-ENDPOINTS" in cves
@@ -197,7 +197,7 @@ def test_wstg_default_credentials_check(monkeypatch):
     mock_login_resp = MockResponse(
         status_code=302,
         headers={"Location": "/superset/welcome/", "Set-Cookie": "session=authenticated_cookie"},
-        url="https://192.0.2.23/login/",
+        url="https://192.0.2.26/login/",
     )
 
     with patch.object(requests.Session, "get", return_value=MockResponse(status_code=200, headers={"Strict-Transport-Security": "max-age=31536000; includeSubDomains"})), \
@@ -206,7 +206,7 @@ def test_wstg_default_credentials_check(monkeypatch):
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post", return_value=mock_login_resp):
 
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         cves = [f["cve_id"] for f in findings]
 
         assert "WSTG-AUTH-02-DEFAULT-CREDENTIALS" in cves
@@ -219,7 +219,7 @@ def test_wstg_default_credentials_probe_is_off_by_default(monkeypatch):
          patch.object(requests.Session, "request", return_value=MockResponse(status_code=404)), \
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)), \
          patch.object(requests.Session, "post") as post:
-        findings = auditor_wstg.audit_url_wstg("https://192.0.2.23/")
+        findings = auditor_wstg.audit_url_wstg("https://192.0.2.26/")
         post.assert_not_called()
         assert "WSTG-AUTH-02-DEFAULT-CREDENTIALS" not in [f["cve_id"] for f in findings]
 
@@ -229,7 +229,7 @@ def test_centinela_remediation_generation_for_wstg():
     vuln_cve = {
         "cve_id": "WSTG-ATHN-02-CLEARTEXT-LOGIN",
         "asset_name": "proyecto-k-Conciliacion",
-        "endpoint": "192.0.2.23",
+        "endpoint": "192.0.2.26",
         "severity": "High",
         "description": "Formulario transmitido por HTTP sin TLS",
     }
@@ -273,11 +273,11 @@ def test_compliance_matrix_wstg_mappings():
 
 def test_wstg_open_redirect_not_flagged_when_query_string_is_merely_echoed():
     """http->https redirects that keep the query string contain the canary text but redirect to the same host."""
-    echo = MockResponse(status_code=301, headers={"Location": "https://192.0.2.23/login/?next=http://canary-centinela-eval.internal/auth/callback",
+    echo = MockResponse(status_code=301, headers={"Location": "https://192.0.2.26/login/?next=http://canary-centinela-eval.internal/auth/callback",
                                                    "Strict-Transport-Security": "max-age=31536000"})
     with patch.object(requests.Session, "get", return_value=echo), \
          patch.object(requests.Session, "send", return_value=MockResponse(status_code=405)), \
          patch.object(requests.Session, "request", return_value=MockResponse(status_code=404)), \
          patch.object(requests.Session, "options", return_value=MockResponse(status_code=200)):
-        cves = [f["cve_id"] for f in auditor_wstg.audit_url_wstg("https://192.0.2.23/")]
+        cves = [f["cve_id"] for f in auditor_wstg.audit_url_wstg("https://192.0.2.26/")]
     assert "WSTG-CLNT-04-OPEN-REDIRECT" not in cves

@@ -28,7 +28,7 @@ export const SEV_BADGE_CLS = {
 export function healthStatusTier(status) {
   if (status === 'Online' || status === 'Active') return 'ok'
   if (typeof status === 'string' && /^Autonomous/.test(status)) return 'ok'
-  if (typeof status === 'string' && /^(Available|No Data|No Recent Data|Observation|Manual only|Stale)/.test(status)) return 'warn'
+  if (typeof status === 'string' && /^(Available|No Data|No Recent Data|Observation|Manual only|Stale|Module Off|Online \(Warning)/.test(status)) return 'warn'
   return 'fail'
 }
 

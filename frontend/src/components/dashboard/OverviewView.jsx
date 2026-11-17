@@ -17,7 +17,7 @@ export default function OverviewView() {
               <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-4">
                 <MetricCard
                     label="Usuarios Activos"
-                    value={stats?.users || 0}
+                    value={stats?.users ?? '—'}
                     icon={<Users size={20} />}
                     color="text-[#06B6D4]"
                     sub="Sincronizado CDMX"
@@ -78,7 +78,7 @@ export default function OverviewView() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
                 <div className="bg-[#1E293B]/50 border border-slate-800 rounded-[24px] p-4">
                   <p className="text-[11px] font-black text-orange-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Server size={12} /> Infraestructura</p>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
                     <MetricCard
                         label="Vulnerabilidades"
                         value={vulnStats?.infra_vulnerabilities || 0}
@@ -97,11 +97,20 @@ export default function OverviewView() {
                         onClick={() => { setSoarCategoryFilter('INFORMATIONAL'); setSoarAssetCategoryFilter('INFRA'); setCurrentView('soar') }}
                         title="Hallazgos informativos sobre infraestructura: marcadores de auditoría (CIS Benchmarks, escaneos completados) -- no son vulnerabilidades de seguridad. Haz clic para ver filtrado."
                     />
+                    <MetricCard
+                        label="Accesibilidad"
+                        value={vulnStats?.infra_compliance || 0}
+                        icon={<CheckCircle2 size={20} />}
+                        color="text-sky-400"
+                        sub="Cumplimiento WCAG"
+                        onClick={() => { setSoarCategoryFilter('COMPLIANCE'); setSoarAssetCategoryFilter('INFRA'); setCurrentView('soar') }}
+                        title="Hallazgos de accesibilidad (WCAG 2.1): requisito de cumplimiento normativo y contractual, con plazo de atención; no se suman a las vulnerabilidades de seguridad. Haz clic para ver filtrado."
+                    />
                   </div>
                 </div>
                 <div className="bg-[#1E293B]/50 border border-slate-800 rounded-[24px] p-4">
                   <p className="text-[11px] font-black text-amber-400 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Code2 size={12} /> Código</p>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
                     <MetricCard
                         label="Vulnerabilidades"
                         value={vulnStats?.code_vulnerabilities || 0}
@@ -119,6 +128,15 @@ export default function OverviewView() {
                         sub="Calidad de código"
                         onClick={() => { setSoarCategoryFilter('INFORMATIONAL'); setSoarAssetCategoryFilter('CODE'); setCurrentView('soar') }}
                         title="Hallazgos informativos sobre código: SonarQube code smells, métricas ISO 25010 (longitud de método), CMMI (deuda técnica) -- no son vulnerabilidades de seguridad. Haz clic para ver filtrado."
+                    />
+                    <MetricCard
+                        label="Accesibilidad"
+                        value={vulnStats?.code_compliance || 0}
+                        icon={<CheckCircle2 size={20} />}
+                        color="text-sky-400"
+                        sub="Cumplimiento WCAG"
+                        onClick={() => { setSoarCategoryFilter('COMPLIANCE'); setSoarAssetCategoryFilter('CODE'); setCurrentView('soar') }}
+                        title="Hallazgos de accesibilidad (WCAG 2.1): requisito de cumplimiento normativo y contractual, con plazo de atención; no se suman a las vulnerabilidades de seguridad. Haz clic para ver filtrado."
                     />
                   </div>
                 </div>

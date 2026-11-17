@@ -197,8 +197,12 @@ def stop_zap_container(container_id: str):
         logger.warn(f"Could not cleanup {container_id}: {e}")
 
 
-def reap_orphaned_zap_containers(max_age_minutes: int = 40):
+def reap_orphaned_zap_containers(max_age_minutes: int = 40, quiet: bool = False):
     """
+    Called at service startup AND every 15 minutes (workers.periodic.run_zap_reaper_loop): an orphan younger than
+    the age gate when its parent restarted used to survive until the next restart (2026-11-12: one ZAP container sat
+    idle for 9 hours with 3.5 GB of heap after centinela-ai was recreated 7 minutes into its scan).
+
     Removes leftover zap-scan-* sibling containers older than `max_age_minutes`. Real incident,
     2026-08-13: run_zap_scan()'s own `finally: stop_zap_container(...)` is correctly structured
     and does clean up on a normal exception -- but if the PARENT process itself gets restarted/
@@ -238,7 +242,8 @@ def reap_orphaned_zap_containers(max_age_minutes: int = 40):
             if created < cutoff:
                 stale.append(name)
         if not stale:
-            print("✅ [ZAP-Auditor] No stale (>%dmin) zap-scan-* containers found at startup." % max_age_minutes)
+            if not quiet:
+                print("✅ [ZAP-Auditor] No stale (>%dmin) zap-scan-* containers found." % max_age_minutes)
             return
         print(f"🧹 [ZAP-Auditor] Reaping {len(stale)} stale zap-scan-* container(s) older than {max_age_minutes}min...")
         subprocess.run(["docker", "stop", "-t", "5"] + stale, capture_output=True, timeout=30)
@@ -250,7 +255,7 @@ def reap_orphaned_zap_containers(max_age_minutes: int = 40):
             detail={"containers": stale}, actor="centinela", outcome="success",
         )
     except Exception as e:
-        logger.warn(f"Could not reap orphaned zap-scan-* containers at startup: {e}")
+        logger.error(f"Could not reap orphaned zap-scan-* containers: {e}", exc_info=True)
 
 def configure_zap_context(target_url: str, scan_profile: str = "balanced"):
     """
